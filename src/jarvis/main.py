@@ -7,16 +7,20 @@ from pathlib import Path
 from typing import Annotated
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from jarvis import __version__
+from jarvis.actions.engine import ActionEngine
+from jarvis.actions.models import ActionOutcome
 from jarvis.config import Settings
 from jarvis.providers.brain import build_brain
 from jarvis.providers.stt import WhisperTranscriber
 from jarvis.providers.tts import PiperTTS
 from jarvis.schemas import (
+    ActionDecisionRequest,
+    ActionInfo,
     ChatRequest,
     ChatResponse,
     HealthResponse,
@@ -45,11 +49,26 @@ def http_origin(host: str, port: int) -> str:
     return f"http://{rendered_host}:{port}"
 
 
+def action_info(outcome: ActionOutcome | None) -> ActionInfo | None:
+    if outcome is None:
+        return None
+    return ActionInfo(
+        action_id=outcome.action_id,
+        name=outcome.name.value if outcome.name is not None else None,
+        status=outcome.status.value,
+        risk=outcome.risk.value if outcome.risk is not None else None,
+        description=outcome.description,
+        requires_confirmation=outcome.requires_confirmation,
+        details=outcome.details,
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
     state_hub = StateHub()
     brain = build_brain(config)
-    conversation = ConversationService(config, brain)
+    action_engine = ActionEngine(config)
+    conversation = ConversationService(config, brain, action_engine)
     transcriber = WhisperTranscriber(config)
     tts = PiperTTS(config)
     wake_gate = WakeGate(config.wake_word, config.wake_window_seconds, config.max_sessions)
@@ -57,7 +76,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         (config.data_dir / "tmp").mkdir(parents=True, exist_ok=True)
-        yield
+        try:
+            yield
+        finally:
+            await action_engine.close()
 
     app = FastAPI(
         title="Jarvis Local Core",
@@ -73,6 +95,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.transcriber = transcriber
     app.state.tts = tts
     app.state.wake_gate = wake_gate
+    app.state.action_engine = action_engine
     trusted_origins = {
         f"http://127.0.0.1:{config.port}",
         f"http://localhost:{config.port}",
@@ -109,6 +132,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             brain=brain_status,
             stt=await transcriber.status(),
             tts=await tts.status(),
+            actions=await action_engine.status(),
+            vision=await action_engine.vision_status(),
             wake_word=config.wake_word,
         )
 
@@ -123,7 +148,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await state_hub.set("error", "No pude generar una respuesta")
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         await state_hub.set("ready", "Respuesta preparada")
-        return ChatResponse(response=answer.text, provider=answer.provider)
+        return ChatResponse(
+            response=answer.text,
+            provider=answer.provider,
+            action=action_info(answer.action),
+        )
+
+    @app.post("/api/actions/decision", response_model=ChatResponse)
+    async def decide_action(request: ActionDecisionRequest) -> ChatResponse:
+        if not valid_session_id(request.session_id):
+            raise HTTPException(status_code=400, detail="Identificador de sesion invalido")
+        await state_hub.set("thinking", "Aplicando decisión de seguridad")
+        answer = await conversation.decide_action(
+            request.session_id,
+            request.action_id,
+            request.approve,
+        )
+        await state_hub.set("ready", "Decisión procesada")
+        return ChatResponse(
+            response=answer.text,
+            provider=answer.provider,
+            action=action_info(answer.action),
+        )
+
+    @app.get("/api/actions/audit")
+    async def action_audit(limit: Annotated[int, Query(ge=1, le=100)] = 30):
+        return {"entries": action_engine.recent_audit(limit)}
 
     @app.delete("/api/conversation/{session_id}", status_code=204)
     async def reset_conversation(session_id: str) -> Response:
@@ -190,6 +240,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 activated=decision.activated,
                 response=answer.text,
                 provider=answer.provider,
+                action=action_info(answer.action),
             )
         except HTTPException:
             raise

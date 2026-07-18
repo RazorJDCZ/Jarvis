@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-local"
-version = "0.1.0"
+version = "0.2.0"
 description = "A private, local-first voice assistant for Windows"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -20,6 +20,13 @@ dependencies = [
 voice = [
   "faster-whisper>=1.2.1,<2",
   "piper-tts>=1.5,<2",
+]
+actions = [
+  "pillow>=11,<13",
+  "playwright>=1.61,<2",
+  "pycaw>=20251023,<20260000",
+  "pyperclip>=1.11,<2",
+  "pywinauto>=0.6.9,<1",
 ]
 dev = [
   "httpx2>=2.7,<3",

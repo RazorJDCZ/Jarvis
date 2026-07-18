@@ -1,4 +1,4 @@
-const CACHE_NAME = "jarvis-stage-1-v1";
+const CACHE_NAME = "jarvis-stage-2-v2";
 const STATIC_ASSETS = [
   "/",
   "/static/styles.css",

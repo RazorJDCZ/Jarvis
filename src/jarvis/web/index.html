@@ -32,7 +32,7 @@
       <aside class="status-panel glass-panel" aria-label="Estado de componentes">
         <div class="panel-heading">
           <span>SUBSYSTEMS</span>
-          <span class="tiny-code">STAGE_01</span>
+          <span class="tiny-code">STAGE_02</span>
         </div>
         <div class="status-list">
           <div class="status-row" id="brainStatus">
@@ -46,6 +46,14 @@
           <div class="status-row" id="ttsStatus">
             <span class="status-dot"></span>
             <div><strong>VOICE</strong><small>Comprobando...</small></div>
+          </div>
+          <div class="status-row" id="actionsStatus">
+            <span class="status-dot"></span>
+            <div><strong>ACTIONS</strong><small>Comprobando...</small></div>
+          </div>
+          <div class="status-row" id="visionStatus">
+            <span class="status-dot"></span>
+            <div><strong>VISION</strong><small>Comprobando...</small></div>
           </div>
         </div>
 
@@ -113,6 +121,18 @@
           </article>
         </div>
 
+        <section class="action-confirmation" id="actionConfirmation" hidden>
+          <div>
+            <span>SECURITY GATE</span>
+            <strong id="actionDescription">Acción pendiente</strong>
+            <small id="actionRisk">RIESGO MEDIO</small>
+          </div>
+          <div class="action-buttons">
+            <button id="rejectActionButton" type="button">CANCELAR</button>
+            <button id="approveActionButton" type="button">CONFIRMAR</button>
+          </div>
+        </section>
+
         <form class="text-console" id="textForm">
           <label class="sr-only" for="textInput">Escribe un mensaje</label>
           <span class="prompt">›</span>
@@ -131,7 +151,7 @@
     <footer class="footer-bar">
       <span><i class="online-indicator"></i> PRIVATE LOOPBACK CONNECTION</span>
       <span id="footerHint">PULSA Y MANTÉN PARA HABLAR // ESPACIO TAMBIÉN FUNCIONA</span>
-      <span>JARVIS 0.1.0</span>
+      <span>JARVIS 0.2.0</span>
     </footer>
 
     <div class="toast" id="toast" role="status"></div>

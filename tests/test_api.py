@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
+from jarvis.actions.models import ExecutionResult
 from jarvis.config import Settings
 from jarvis.main import create_app, safe_audio_suffix, valid_session_id
 
@@ -12,6 +13,7 @@ def fallback_settings(**overrides: object) -> Settings:
     return Settings(
         brain_mode="fallback",
         safe_actions_enabled=False,
+        action_model_planning=False,
         **overrides,
     )
 
@@ -29,6 +31,8 @@ def test_health_and_ui_are_available() -> None:
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
     assert health.json()["brain"]["available"] is True
+    assert "actions" in health.json()
+    assert "vision" in health.json()
     assert index.status_code == 200
     assert "JARVIS // Local Core" in index.text
     assert manifest.status_code == 200
@@ -83,6 +87,92 @@ def test_cross_origin_browser_request_is_rejected() -> None:
 
     assert rejected.status_code == 403
     assert accepted.status_code == 200
+
+
+def test_low_risk_action_returns_verified_metadata(tmp_path: Path) -> None:
+    app = create_app(
+        Settings(
+            project_root=tmp_path,
+            brain_mode="fallback",
+            action_model_planning=False,
+        )
+    )
+    app.state.action_engine.catalog.execute = AsyncMock(
+        return_value=ExecutionResult(True, "Calculadora verificada", {"verified": True})
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat",
+            json={"message": "abre la calculadora", "session_id": "action-test"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["provider"] == "action-engine"
+    assert payload["action"]["status"] == "completed"
+    assert payload["action"]["details"]["verified"] is True
+
+
+def test_sensitive_action_requires_and_accepts_confirmation(tmp_path: Path) -> None:
+    app = create_app(
+        Settings(
+            project_root=tmp_path,
+            brain_mode="fallback",
+            action_model_planning=False,
+        )
+    )
+    app.state.action_engine.catalog.execute = AsyncMock(
+        return_value=ExecutionResult(True, "Clic verificado")
+    )
+
+    with TestClient(app) as client:
+        requested = client.post(
+            "/api/chat",
+            json={"message": "haz clic en Aceptar", "session_id": "action-test"},
+        )
+        pending = requested.json()["action"]
+        decided = client.post(
+            "/api/actions/decision",
+            json={
+                "session_id": "action-test",
+                "action_id": pending["action_id"],
+                "approve": True,
+            },
+        )
+        audit = client.get("/api/actions/audit?limit=10")
+
+    assert pending["status"] == "pending"
+    assert pending["requires_confirmation"] is True
+    assert decided.status_code == 200
+    assert decided.json()["action"]["status"] == "completed"
+    assert len(audit.json()["entries"]) == 2
+
+
+def test_action_decision_cannot_cross_sessions(tmp_path: Path) -> None:
+    app = create_app(
+        Settings(
+            project_root=tmp_path,
+            brain_mode="fallback",
+            action_model_planning=False,
+        )
+    )
+    with TestClient(app) as client:
+        requested = client.post(
+            "/api/chat",
+            json={"message": "cierra la ventana de Paint", "session_id": "owner"},
+        ).json()
+        response = client.post(
+            "/api/actions/decision",
+            json={
+                "session_id": "attacker",
+                "action_id": requested["action"]["action_id"],
+                "approve": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["action"]["status"] == "rejected"
 
 
 @pytest.mark.parametrize("session_id", ["con espacio", "../escape", "", "x" * 129])

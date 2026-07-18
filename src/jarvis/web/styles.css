@@ -256,10 +256,10 @@ h1 span { color: var(--cyan); font-weight: 300; }
 .control-button strong { display: block; color: #bde7f3; font-size: 8px; letter-spacing: 0.12em; }
 .control-button small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px; }
 
-.conversation-panel { display: flex; flex-direction: column; }
+.conversation-panel { min-height: 600px; display: flex; flex-direction: column; }
 .live-chip { color: var(--success); font-size: 8px; letter-spacing: 0.1em; }
 .live-chip i { display: inline-block; width: 5px; height: 5px; margin-right: 4px; border-radius: 50%; background: var(--success); box-shadow: 0 0 9px var(--success); }
-.transcript { height: 430px; padding: 18px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(97, 219, 255, 0.25) transparent; }
+.transcript { min-height: 330px; flex: 1; padding: 18px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(97, 219, 255, 0.25) transparent; }
 .message { max-width: 94%; padding: 11px 12px; border-left: 1px solid rgba(97, 219, 255, 0.35); background: rgba(4, 19, 28, 0.56); animation: message-in 220ms ease-out; }
 .message span { display: block; margin-bottom: 5px; color: var(--cyan); font-size: 7px; letter-spacing: 0.16em; }
 .message p { margin: 0; color: #bbdae4; line-height: 1.45; font-family: "Segoe UI", sans-serif; font-size: 12px; }
@@ -267,6 +267,25 @@ h1 span { color: var(--cyan); font-weight: 300; }
 .user-message span { color: #8baeff; text-align: right; }
 .system-message { max-width: 100%; border-color: var(--warning); background: rgba(94, 58, 11, 0.1); }
 .system-message span { color: var(--warning); }
+.action-confirmation {
+  margin: 0 14px 10px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(255, 184, 92, 0.42);
+  background: linear-gradient(110deg, rgba(91, 55, 10, 0.26), rgba(18, 28, 34, 0.8));
+  box-shadow: 0 0 20px rgba(255, 184, 92, 0.06);
+}
+.action-confirmation[hidden] { display: none; }
+.action-confirmation span { display: block; color: var(--warning); font-size: 7px; letter-spacing: 0.18em; }
+.action-confirmation strong { display: block; max-width: 190px; margin-top: 5px; color: #f5dfc4; font-size: 10px; font-weight: 500; }
+.action-confirmation small { display: block; margin-top: 4px; color: #aa8560; font-size: 7px; letter-spacing: 0.1em; }
+.action-buttons { display: flex; gap: 6px; }
+.action-buttons button { padding: 8px; border: 1px solid var(--line); background: transparent; cursor: pointer; font-size: 7px; letter-spacing: 0.08em; }
+.action-buttons button:last-child { color: var(--success); border-color: rgba(105, 247, 192, 0.36); background: rgba(105, 247, 192, 0.06); }
+.action-buttons button:first-child { color: var(--danger); border-color: rgba(255, 93, 116, 0.32); }
 .text-console { margin-top: auto; height: 58px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-top: 1px solid var(--line); }
 .prompt { color: var(--cyan); }
 .text-console input { width: 100%; border: 0; outline: 0; color: #d8f5ff; background: transparent; font-size: 11px; }
@@ -311,7 +330,7 @@ body[data-state="error"] .state-copy p { color: var(--danger); }
   h1 { font-size: 16px; }
   .shell { width: calc(100% - 24px); display: flex; flex-direction: column; padding: 14px 0 64px; }
   .status-panel { min-height: 0; order: 2; }
-  .status-list { grid-template-columns: repeat(3, 1fr); padding: 12px; gap: 6px; }
+  .status-list { grid-template-columns: repeat(2, 1fr); padding: 12px; gap: 6px; }
   .status-row { min-height: 72px; padding: 8px; align-items: flex-start; }
   .status-row small { display: none; }
   .telemetry { display: none; }

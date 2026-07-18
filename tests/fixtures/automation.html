@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Banco de pruebas Etapa 2</title>
+    <style>
+      body { font: 24px sans-serif; text-align: center; background: #eef7ff; }
+      main { max-width: 900px; margin: 8vh auto; }
+      #activate { margin: 80px; padding: 32px 64px; font-size: 28px; color: white; background: #075cff; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Automatización accesible</h1>
+      <label for="name">Nombre</label>
+      <input id="name" placeholder="Nombre" />
+      <button id="activate" type="button">ACTIVAR PRUEBA VISUAL</button>
+      <p id="result" aria-live="polite">Esperando acción</p>
+      <a href="result.html"><h3>Primer resultado seguro</h3></a>
+    </main>
+    <script>
+      document.querySelector("#activate").addEventListener("click", () => {
+        document.querySelector("#result").textContent = "Acción verificada";
+      });
+    </script>
+  </body>
+</html>

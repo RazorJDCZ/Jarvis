@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from jarvis.actions.engine import ActionEngine
+from jarvis.actions.models import ActionOutcome
 from jarvis.config import SYSTEM_PROMPT, Settings
 from jarvis.providers.brain import AutoBrain, Brain
 from jarvis.services.commands import SafeCommandRouter
@@ -12,6 +14,7 @@ from jarvis.services.commands import SafeCommandRouter
 class ConversationReply:
     text: str
     provider: str
+    action: ActionOutcome | None = None
 
 
 class ConversationService:
@@ -19,11 +22,13 @@ class ConversationService:
         self,
         settings: Settings,
         brain: Brain,
+        actions: ActionEngine,
         commands: SafeCommandRouter | None = None,
     ) -> None:
         self.settings = settings
         self.brain = brain
-        self.commands = commands or SafeCommandRouter(settings)
+        self.actions = actions
+        self.commands = commands or SafeCommandRouter()
         self._history: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
 
     @property
@@ -33,6 +38,9 @@ class ConversationService:
         return self.brain.name
 
     async def reply(self, session_id: str, message: str) -> ConversationReply:
+        action = await self.actions.try_handle(session_id, message)
+        if action is not None:
+            return ConversationReply(action.message, "action-engine", action)
         safe_command = self.commands.try_handle(message)
         if safe_command is not None:
             if safe_command.reset_history:
@@ -57,3 +65,13 @@ class ConversationService:
 
     def reset(self, session_id: str) -> None:
         self._history.pop(session_id, None)
+        self.actions.reset(session_id)
+
+    async def decide_action(
+        self,
+        session_id: str,
+        action_id: str,
+        approve: bool,
+    ) -> ConversationReply:
+        outcome = await self.actions.decide(session_id, action_id, approve)
+        return ConversationReply(outcome.message, "action-engine", outcome)

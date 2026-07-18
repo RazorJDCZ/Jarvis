@@ -104,8 +104,7 @@ class FallbackBrain:
             return "Hola, Juandi. Sistemas de voz en linea. Es un gusto comenzar."
         if "quien eres" in normalized or "quién eres" in normalized:
             return (
-                "Soy Jarvis, tu asistente local. De momento puedo escucharte "
-                "y conversar contigo."
+                "Soy Jarvis, tu asistente local. De momento puedo escucharte y conversar contigo."
             )
         if "hora" in normalized:
             return f"Son las {datetime.now().strftime('%H:%M')}."

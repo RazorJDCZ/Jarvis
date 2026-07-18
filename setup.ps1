@@ -25,9 +25,9 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
 Write-Host '[2/4] Instalando dependencias dentro de .venv...' -ForegroundColor Cyan
 & $VenvPython -m pip install --upgrade pip
 if ($SkipVoice) {
-    & $VenvPython -m pip install -e '.[dev]'
+    & $VenvPython -m pip install -e '.[actions,dev]'
 } else {
-    & $VenvPython -m pip install -e '.[voice,dev]'
+    & $VenvPython -m pip install -e '.[voice,actions,dev]'
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot '.env'))) {

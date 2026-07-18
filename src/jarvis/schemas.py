@@ -33,9 +33,26 @@ class ChatRequest(BaseModel):
         return clean_value
 
 
+class ActionInfo(BaseModel):
+    action_id: str | None = None
+    name: str | None = None
+    status: str
+    risk: str | None = None
+    description: str | None = None
+    requires_confirmation: bool = False
+    details: dict[str, object] = Field(default_factory=dict)
+
+
 class ChatResponse(BaseModel):
     response: str
     provider: str
+    action: ActionInfo | None = None
+
+
+class ActionDecisionRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    action_id: str = Field(min_length=1, max_length=64)
+    approve: bool
 
 
 class TTSRequest(BaseModel):
@@ -58,6 +75,7 @@ class VoiceResponse(BaseModel):
     needs_command: bool = False
     response: str | None = None
     provider: str | None = None
+    action: ActionInfo | None = None
 
 
 class ProviderStatus(BaseModel):
@@ -73,4 +91,6 @@ class HealthResponse(BaseModel):
     brain: ProviderStatus
     stt: ProviderStatus
     tts: ProviderStatus
+    actions: ProviderStatus
+    vision: ProviderStatus
     wake_word: str

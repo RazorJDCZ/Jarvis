@@ -15,10 +15,17 @@ const elements = {
   brainStatus: document.querySelector("#brainStatus"),
   sttStatus: document.querySelector("#sttStatus"),
   ttsStatus: document.querySelector("#ttsStatus"),
+  actionsStatus: document.querySelector("#actionsStatus"),
+  visionStatus: document.querySelector("#visionStatus"),
   wakeWordLabel: document.querySelector("#wakeWordLabel"),
   footerHint: document.querySelector("#footerHint"),
   toast: document.querySelector("#toast"),
   waveform: document.querySelector("#waveform"),
+  actionConfirmation: document.querySelector("#actionConfirmation"),
+  actionDescription: document.querySelector("#actionDescription"),
+  actionRisk: document.querySelector("#actionRisk"),
+  approveActionButton: document.querySelector("#approveActionButton"),
+  rejectActionButton: document.querySelector("#rejectActionButton"),
 };
 
 const stateLabels = {
@@ -42,6 +49,7 @@ const appState = {
   ttsAvailable: false,
   toastTimer: null,
   socketPing: null,
+  pendingAction: null,
 };
 
 function setVisualState(state, detail) {
@@ -96,15 +104,69 @@ async function refreshHealth() {
     updateProvider(elements.brainStatus, health.brain);
     updateProvider(elements.sttStatus, health.stt);
     updateProvider(elements.ttsStatus, health.tts);
+    updateProvider(elements.actionsStatus, health.actions);
+    updateProvider(elements.visionStatus, health.vision);
     elements.wakeWordLabel.textContent = health.wake_word.toUpperCase();
     appState.ttsAvailable = health.tts.available;
   } catch (error) {
-    for (const element of [elements.brainStatus, elements.sttStatus, elements.ttsStatus]) {
+    for (const element of [
+      elements.brainStatus,
+      elements.sttStatus,
+      elements.ttsStatus,
+      elements.actionsStatus,
+      elements.visionStatus,
+    ]) {
       element.classList.add("offline");
       element.querySelector("small").textContent = "Núcleo no disponible";
     }
     setVisualState("error", "No puedo conectar con el núcleo local");
     console.error(error);
+  }
+}
+
+function handleAction(action) {
+  if (action?.requires_confirmation && action.action_id) {
+    const riskLabels = { low: "BAJO", medium: "MEDIO", high: "ALTO", blocked: "BLOQUEADO" };
+    appState.pendingAction = action;
+    elements.actionDescription.textContent = action.description || action.name || "Acción pendiente";
+    elements.actionRisk.textContent = `RIESGO ${riskLabels[action.risk] || "MEDIO"}`;
+    elements.actionConfirmation.hidden = false;
+    return;
+  }
+  appState.pendingAction = null;
+  elements.actionConfirmation.hidden = true;
+}
+
+async function decideAction(approve) {
+  const pending = appState.pendingAction;
+  if (!pending) return;
+  stopSpeaking();
+  appState.busy = true;
+  elements.approveActionButton.disabled = true;
+  elements.rejectActionButton.disabled = true;
+  setVisualState("thinking", approve ? "Ejecutando acción confirmada" : "Cancelando acción");
+  try {
+    const response = await fetch("/api/actions/decision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: appState.sessionId,
+        action_id: pending.action_id,
+        approve,
+      }),
+    });
+    if (!response.ok) throw new Error(await readError(response));
+    const payload = await response.json();
+    if (payload.action) handleAction(payload.action);
+    addMessage("jarvis", payload.response, "JARVIS // ACTION ENGINE");
+    await speak(payload.response);
+  } catch (error) {
+    appState.busy = false;
+    setVisualState("error", "No pude procesar la confirmación");
+    showToast(error.message, 6000);
+  } finally {
+    elements.approveActionButton.disabled = false;
+    elements.rejectActionButton.disabled = false;
   }
 }
 
@@ -239,6 +301,7 @@ async function sendText(message) {
     });
     if (!response.ok) throw new Error(await readError(response));
     const payload = await response.json();
+    if (payload.action) handleAction(payload.action);
     addMessage("jarvis", payload.response, `JARVIS // ${payload.provider.toUpperCase()}`);
     await speak(payload.response);
   } catch (error) {
@@ -482,6 +545,7 @@ async function sendUtterance(blob, wakeMode) {
       return;
     }
     if (payload.response) {
+      if (payload.action) handleAction(payload.action);
       addMessage("jarvis", payload.response, `JARVIS // ${(payload.provider || "LOCAL").toUpperCase()}`);
       await speak(payload.response);
     } else {
@@ -601,12 +665,16 @@ elements.resetButton.addEventListener("click", async () => {
     });
     if (!response.ok) throw new Error(await readError(response));
     elements.transcript.innerHTML = "";
+    handleAction(null);
     addMessage("jarvis", "Conversación reiniciada. Te escucho.");
     setVisualState("ready", "Contexto de conversación eliminado");
   } catch (error) {
     showToast(error.message);
   }
 });
+
+elements.approveActionButton.addEventListener("click", () => decideAction(true));
+elements.rejectActionButton.addEventListener("click", () => decideAction(false));
 
 function drawWaveform() {
   const canvas = elements.waveform;

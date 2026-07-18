@@ -52,12 +52,20 @@ class Settings:
     max_history_messages: int = _env_int("JARVIS_MAX_HISTORY_MESSAGES", 16)
     max_sessions: int = _env_int("JARVIS_MAX_SESSIONS", 64)
     safe_actions_enabled: bool = _env_bool("JARVIS_SAFE_ACTIONS_ENABLED", True)
+    action_model_planning: bool = _env_bool("JARVIS_ACTION_MODEL_PLANNING", True)
+    action_confirmation_seconds: int = _env_int("JARVIS_ACTION_CONFIRMATION_SECONDS", 90)
+    vision_actions_enabled: bool = _env_bool("JARVIS_VISION_ACTIONS_ENABLED", True)
+    vision_timeout: float = _env_float("JARVIS_VISION_TIMEOUT", 180.0)
+    browser_search_url: str = os.getenv(
+        "JARVIS_BROWSER_SEARCH_URL",
+        "https://www.google.com/search?q={query}",
+    )
     max_audio_bytes: int = 16 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if self.host not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError(
-                "La etapa 1 solo puede escuchar en loopback (127.0.0.1, localhost o ::1)"
+                "Las etapas 1 y 2 solo pueden escuchar en loopback (127.0.0.1, localhost o ::1)"
             )
 
     @property
@@ -96,8 +104,7 @@ Hablas principalmente en espanol y puedes cambiar de idioma si el usuario lo hac
 Tu personalidad es serena, ingeniosa, leal y precisa. Responde de forma natural y breve,
 normalmente en una a tres oraciones, porque tus respuestas se leen en voz alta. Solo amplia una
 respuesta cuando el usuario lo pida o el tema realmente lo requiera. No finjas haber realizado
-acciones. Algunas ordenes locales sencillas se ejecutan mediante una lista blanca fuera del
-modelo; para cualquier otra accion sobre la computadora explica brevemente que esa capacidad se
-habilitara en la etapa del motor de acciones.
+acciones. Las ordenes sobre la computadora se ejecutan mediante un motor externo con lista blanca,
+validacion y confirmaciones. Nunca afirmes que una accion tuvo exito si el motor no lo verifico.
 No reveles razonamientos internos. Cuando no sepas algo, dilo con honestidad.
 """
