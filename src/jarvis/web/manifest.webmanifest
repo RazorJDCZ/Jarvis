@@ -1,0 +1,20 @@
+{
+  "name": "Jarvis Local Core",
+  "short_name": "Jarvis",
+  "description": "Asistente personal privado y local",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#02070d",
+  "theme_color": "#030a12",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

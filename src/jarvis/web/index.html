@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#030a12" />
+    <meta name="description" content="Interfaz local de Jarvis" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <title>JARVIS // Local Core</title>
+  </head>
+  <body data-state="standby">
+    <div class="ambient-grid" aria-hidden="true"></div>
+    <div class="scanline" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true"><span>J</span></div>
+        <div>
+          <p class="eyebrow">PRIVATE INTELLIGENCE SYSTEM</p>
+          <h1>JARVIS <span>// LOCAL CORE</span></h1>
+        </div>
+      </div>
+      <div class="system-clock" aria-label="Hora local">
+        <span id="clock">00:00:00</span>
+        <small>ECUADOR // GMT-5</small>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="status-panel glass-panel" aria-label="Estado de componentes">
+        <div class="panel-heading">
+          <span>SUBSYSTEMS</span>
+          <span class="tiny-code">STAGE_01</span>
+        </div>
+        <div class="status-list">
+          <div class="status-row" id="brainStatus">
+            <span class="status-dot"></span>
+            <div><strong>CORE</strong><small>Comprobando...</small></div>
+          </div>
+          <div class="status-row" id="sttStatus">
+            <span class="status-dot"></span>
+            <div><strong>HEARING</strong><small>Comprobando...</small></div>
+          </div>
+          <div class="status-row" id="ttsStatus">
+            <span class="status-dot"></span>
+            <div><strong>VOICE</strong><small>Comprobando...</small></div>
+          </div>
+        </div>
+
+        <div class="telemetry">
+          <div><span>PRIVACY</span><strong>LOCAL</strong></div>
+          <div><span>WAKE PHRASE</span><strong id="wakeWordLabel">JARVIS</strong></div>
+          <div><span>SESSION</span><strong id="sessionLabel">ACTIVE</strong></div>
+        </div>
+
+        <button class="ghost-button" id="resetButton" type="button">
+          <span aria-hidden="true">↺</span> Reiniciar conversación
+        </button>
+      </aside>
+
+      <section class="core-stage" aria-label="Interfaz de voz">
+        <div class="radar-label radar-label-left" aria-hidden="true">AUDIO_LINK // 16BIT</div>
+        <div class="radar-label radar-label-right" aria-hidden="true">NEURAL_CORE // READY</div>
+
+        <button
+          class="orb-control"
+          id="micButton"
+          type="button"
+          aria-label="Mantener presionado para hablar"
+        >
+          <span class="orbit orbit-one"></span>
+          <span class="orbit orbit-two"></span>
+          <span class="orbit orbit-three"></span>
+          <span class="orb-glow"></span>
+          <span class="orb-surface">
+            <span class="orb-grid"></span>
+            <span class="orb-letter">J</span>
+          </span>
+          <span class="orb-pulse"></span>
+        </button>
+
+        <div class="state-copy" aria-live="polite">
+          <p id="stateLabel">SISTEMA EN ESPERA</p>
+          <h2 id="stateDetail">Mantén pulsado el núcleo para hablar</h2>
+        </div>
+
+        <canvas id="waveform" aria-hidden="true"></canvas>
+
+        <div class="voice-controls">
+          <button class="control-button" id="handsFreeButton" type="button" aria-pressed="false">
+            <span class="control-icon">◉</span>
+            <span><strong>MANOS LIBRES</strong><small>Di “Jarvis”</small></span>
+          </button>
+          <button class="control-button" id="muteButton" type="button" aria-pressed="false">
+            <span class="control-icon">◖</span>
+            <span><strong>RESPUESTA DE VOZ</strong><small>Activada</small></span>
+          </button>
+        </div>
+      </section>
+
+      <aside class="conversation-panel glass-panel" aria-label="Conversación">
+        <div class="panel-heading">
+          <span>CONVERSATION</span>
+          <span class="live-chip"><i></i> LIVE</span>
+        </div>
+
+        <div class="transcript" id="transcript" aria-live="polite">
+          <article class="message jarvis-message">
+            <span>JARVIS</span>
+            <p>Sistemas inicializados. Cuando quieras, estoy listo.</p>
+          </article>
+        </div>
+
+        <form class="text-console" id="textForm">
+          <label class="sr-only" for="textInput">Escribe un mensaje</label>
+          <span class="prompt">›</span>
+          <input
+            id="textInput"
+            name="message"
+            autocomplete="off"
+            maxlength="8000"
+            placeholder="Escribe o usa el micrófono..."
+          />
+          <button type="submit" aria-label="Enviar mensaje">↗</button>
+        </form>
+      </aside>
+    </main>
+
+    <footer class="footer-bar">
+      <span><i class="online-indicator"></i> PRIVATE LOOPBACK CONNECTION</span>
+      <span id="footerHint">PULSA Y MANTÉN PARA HABLAR // ESPACIO TAMBIÉN FUNCIONA</span>
+      <span>JARVIS 0.1.0</span>
+    </footer>
+
+    <div class="toast" id="toast" role="status"></div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
