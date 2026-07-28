@@ -10,7 +10,8 @@ from jarvis.actions.models import ActionName, ActionPlan, ActionWorkflowPlan, Bl
 def normalize_request(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text.casefold())
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
-    normalized = re.sub(r"\s+", " ", normalized).strip(" \t\r\n¿¡.,;:!?")
+    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = re.sub(r"^[\W_]+|[\W_]+$", "", normalized)
     return re.sub(r"^(?:(?:oye|hey)\s+)?jarvis[,:;.!?\s]+", "", normalized)
 
 
@@ -19,14 +20,17 @@ class DeterministicActionParser:
     _COURTESY_PREFIX = re.compile(
         r"^(?:por favor,?\s+)?(?:podrias|puedes|quiero que|quisiera que|necesito que|"
         r"te pido que|me ayudas a|me puedes|serias tan amable de|hazme el favor de)\s+"
+        r"(?:por favor\s+)?"
     )
     _ORIGINAL_COURTESY_PREFIX = re.compile(
         r"^(?:por favor,?\s+)?(?:podr[ií]as|puedes|quiero que|quisiera que|necesito que|"
-        r"te pido que|me ayudas a|me puedes|ser[ií]as tan amable de|hazme el favor de)\s+",
+        r"te pido que|me ayudas a|me puedes|ser[ií]as tan amable de|hazme el favor de)\s+"
+        r"(?:por favor\s+)?",
         flags=re.IGNORECASE,
     )
     _INFINITIVE_COMMANDS = {
         "abrir": "abre",
+        "abrirme": "abre",
         "iniciar": "inicia",
         "lanzar": "lanza",
         "subir": "sube",
@@ -39,13 +43,30 @@ class DeterministicActionParser:
         "escribir": "escribe",
         "mostrar": "muestra",
         "capturar": "captura",
+        "apagar": "apaga",
+        "reiniciar": "reinicia",
+        "borrar": "borra",
+        "eliminar": "elimina",
+        "formatear": "formatea",
+        "comprar": "compra",
+        "pagar": "paga",
+        "transferir": "transfiere",
     }
     _CONJUGATED_COMMANDS = {
         "abras": "abre",
+        "abrieras": "abre",
+        "inicies": "inicia",
+        "iniciaras": "inicia",
+        "lanzaras": "lanza",
+        "busques": "busca",
+        "buscaras": "busca",
         "subas": "sube",
+        "subieras": "sube",
         "bajes": "baja",
+        "bajaras": "baja",
         "silencies": "silencia",
         "cierres": "cierra",
+        "cerraras": "cierra",
         "maximices": "maximiza",
         "minimices": "minimiza",
         "restaures": "restaura",
@@ -111,6 +132,53 @@ class DeterministicActionParser:
         "necesito",
         "deja",
     )
+    _EMBEDDED_ACTION_VERBS = (
+        "abrir",
+        "abrirme",
+        "abras",
+        "abrieras",
+        "iniciar",
+        "inicies",
+        "lanzar",
+        "buscar",
+        "busques",
+        "buscaras",
+        "investigar",
+        "subir",
+        "subas",
+        "bajar",
+        "bajes",
+        "bajaras",
+        "silenciar",
+        "silencies",
+        "cerrar",
+        "cierres",
+        "maximizar",
+        "maximices",
+        "minimizar",
+        "minimices",
+        "restaurar",
+        "restaures",
+        "mostrar",
+        "muestres",
+        "capturar",
+        "captures",
+        "visitar",
+        "navegar",
+        "entrar",
+        "dejar",
+        "dejarme",
+        "llevame",
+        "llevarme",
+        "apagar",
+        "reiniciar",
+        "borrar",
+        "eliminar",
+        "formatear",
+        "comprar",
+        "pagar",
+        "transferir",
+    )
     _WEBSITES = {
         "google": "https://www.google.com",
         "youtube": "https://www.youtube.com",
@@ -130,6 +198,15 @@ class DeterministicActionParser:
         "twitter": "https://x.com",
         "netflix": "https://www.netflix.com",
         "spotify web": "https://open.spotify.com",
+    }
+    _BROWSERS = {
+        "brave": "brave",
+        "brave browser": "brave",
+        "chrome": "chrome",
+        "google chrome": "chrome",
+        "edge": "edge",
+        "microsoft edge": "edge",
+        "navegador predeterminado": "default",
     }
     _APPS = {
         "calculadora": "calculator",
@@ -168,6 +245,55 @@ class DeterministicActionParser:
         return ActionPlan(name=name, arguments=arguments)
 
     @staticmethod
+    def _extract_monitor(command: str) -> tuple[str | None, str]:
+        references = (
+            (r"(?:(?:en|de)\s+)?todas las pantallas", "all"),
+            (r"(?:(?:en|de)\s+)?todos los monitores", "all"),
+            (
+                r"(?:(?:en|de)\s+)?(?:el|la)?\s*(?:monitor|pantalla)\s+principal",
+                "primary",
+            ),
+            (
+                r"(?:(?:en|de)\s+)?(?:el|la)?\s*(?:monitor|pantalla)\s+"
+                r"(?:de la\s+)?izquierda",
+                "left",
+            ),
+            (
+                r"(?:(?:en|de)\s+)?(?:el|la)?\s*(?:monitor|pantalla)\s+"
+                r"(?:de la\s+)?derecha",
+                "right",
+            ),
+            (
+                r"(?:(?:en|de)\s+)?(?:el|la)?\s*(?:monitor|pantalla)\s+"
+                r"(?:numero\s+)?(primer|primero|segundo|tercer|tercero|cuarto|\d{1,2})",
+                None,
+            ),
+            (
+                r"(?:(?:en|de)\s+)?(?:el|la)?\s*"
+                r"(primer|primero|segundo|tercer|tercero|cuarto|\d{1,2})\s+"
+                r"(?:monitor|pantalla)",
+                None,
+            ),
+        )
+        ordinals = {
+            "primer": "1",
+            "primero": "1",
+            "segundo": "2",
+            "tercer": "3",
+            "tercero": "3",
+            "cuarto": "4",
+        }
+        for pattern, fixed in references:
+            match = re.search(pattern, command)
+            if match is None:
+                continue
+            raw = match.group(1) if match.lastindex else fixed
+            monitor = fixed or ordinals.get(raw, raw)
+            cleaned = f"{command[: match.start()]} {command[match.end() :]}"
+            return monitor, re.sub(r"\s+", " ", cleaned).strip(" ,")
+        return None, command
+
+    @staticmethod
     def workflow_parts(text: str) -> list[str]:
         parts: list[str] = []
         start = 0
@@ -198,7 +324,118 @@ class DeterministicActionParser:
         command = self._canonical_command(text)
         if command.startswith(self._META_PREFIXES):
             return False
-        return command.startswith(self._ACTION_PREFIXES)
+        return bool(
+            command.startswith(self._ACTION_PREFIXES)
+            or self._embedded_direct_command(text)
+            or self._natural_search(text)
+        )
+
+    @classmethod
+    def _embedded_direct_command(cls, text: str) -> str:
+        """Extract a direct computer request that follows conversational context."""
+        normalized = normalize_request(text)
+        if normalized.startswith(cls._META_PREFIXES) or re.search(
+            r"\b(?:no quiero|no necesito|no hace falta|sin) que\b",
+            normalized,
+        ):
+            return ""
+        verbs = "|".join(cls._EMBEDDED_ACTION_VERBS)
+        request = re.search(
+            rf"\b(?:"
+            rf"(?:me\s+)?(?:puedes|podrias)(?:\s+ayudar(?:me)?\s+a)?|"
+            rf"quiero\s+que|quisiera\s+que|necesito\s+que|me\s+gustaria\s+que|"
+            rf"te\s+agradeceria\s+que|te\s+pido\s+que|me\s+ayudas\s+a|"
+            rf"me\s+ayudarias\s+a|ayudame\s+a|serias\s+tan\s+amable\s+de|"
+            rf"me\s+harias\s+el\s+favor\s+de|te\s+importaria"
+            rf")\s+(?:por\s+favor\s+)?(?P<request>(?:{verbs})\b.+)$",
+            normalized,
+        )
+        if request is None:
+            request = re.search(
+                r"\b(?:quiero|quisiera|necesito|me gustaria)\s+"
+                r"(?P<request>(?:tener|dejar) .+ abiert[oa])$",
+                normalized,
+            )
+        if request is None and not normalized.startswith(cls._ACTION_PREFIXES):
+            request = re.search(
+                r"(?:[,;.!][\s¿¡]*|\by\s+)(?P<request>(?:"
+                r"abre|me abres|inicia|lanza|busca|investiga|visita|navega|entra|ve a|"
+                r"llevame a|sube|baja|silencia|maximiza|minimiza|restaura|cierra|"
+                r"muestra|captura"
+                r")\b.+)$",
+                normalized,
+            )
+        return request.group("request").strip() if request is not None else ""
+
+    @classmethod
+    def _natural_search(cls, text: str) -> tuple[str, str] | None:
+        """Recognize goal-oriented web searches embedded in natural Spanish."""
+        normalized = normalize_request(text)
+        if normalized.startswith(cls._META_PREFIXES) or re.search(
+            r"\b(?:no quiero|no necesito|no hace falta|sin) que\b",
+            normalized,
+        ):
+            return None
+
+        browsers = "|".join(
+            sorted((re.escape(name) for name in cls._BROWSERS), key=len, reverse=True)
+        )
+        browser_match = re.search(
+            rf"\s+(?:en|usando|con|desde|a traves de)\s+(?:el navegador\s+)?"
+            rf"(?P<browser>{browsers})\s*$",
+            normalized,
+        )
+        browser = cls._BROWSERS[browser_match.group("browser")] if browser_match else ""
+        without_browser = (
+            normalized[: browser_match.start()].rstrip(" ,.;")
+            if browser_match is not None
+            else normalized
+        )
+
+        direct = re.search(
+            r"\b(?:"
+            r"(?:me\s+)?(?:puedes|podrias)(?:\s+ayudar(?:me)?\s+a)?|"
+            r"quiero\s+que|quisiera\s+que|necesito\s+que|me\s+gustaria\s+que|"
+            r"te\s+agradeceria\s+que|te\s+pido\s+que|me\s+ayudas\s+a|"
+            r"me\s+ayudarias\s+a|ayudame\s+a|serias\s+tan\s+amable\s+de|"
+            r"me\s+harias\s+el\s+favor\s+de|te\s+importaria"
+            r")\s+(?:por\s+favor\s+)?"
+            r"(?:dar(?:me)?\s+|estar\s+|(?:me\s+)?ayudar(?:as|me)?\s+a\s+)?"
+            r"(?:buscar|buscando|busques|buscaras|encontrar|encontrando|encuentres|"
+            r"investigar|investigues)"
+            r"\s*(?P<query>.*)$",
+            without_browser,
+        )
+        if direct is None:
+            return None
+
+        query = direct.group("query").strip(" ,.;")
+        query = re.sub(r"^(?:me\s+)?(?:unos?|unas?|algunos?|algunas?)\s+", "", query)
+        context = re.sub(
+            r"[\s,.;:¿¡!?]+$",
+            "",
+            without_browser[: direct.start()],
+        )
+        topic_match = re.search(
+            r"\b(?:estoy|ando)(?:\s+muy)?\s+interesad[oa]\s+en\s+(.+)$",
+            context,
+        )
+        if topic_match is not None:
+            topic = topic_match.group(1).strip(" ,.;")
+            generic_query = normalize_request(query)
+            if (
+                not generic_query
+                or generic_query in {"eso", "esto", "algo", "opciones", "resultados"}
+                or generic_query.startswith(
+                    ("opciones ", "resultados ", "alternativas ", "algunos ", "algunas ")
+                )
+                or len(generic_query.split()) <= 2
+            ):
+                query = topic
+        query = re.sub(r"\s+por favor$", "", query).strip()
+        if not query:
+            return None
+        return query, browser
 
     @classmethod
     def _canonical_command(cls, text: str) -> str:
@@ -246,6 +483,18 @@ class DeterministicActionParser:
                 "Esa operación está bloqueada porque puede causar pérdida de datos o dinero."
             )
 
+        natural_search = self._natural_search(text)
+        if natural_search is not None:
+            query, browser = natural_search
+            arguments: dict[str, Any] = {"query": query}
+            if browser:
+                arguments["browser"] = browser
+            return self._plan(ActionName.BROWSER_SEARCH, **arguments)
+
+        embedded_command = self._embedded_direct_command(text)
+        if embedded_command and embedded_command != command:
+            return self.parse(embedded_command)
+
         original = re.sub(
             r"^(?:(?:oye|hey)\s+)?jarvis[,:;.!?\s]+",
             "",
@@ -288,12 +537,33 @@ class DeterministicActionParser:
             )
             return self._plan(name, path=path_match.group(2))
 
+        leave_open = re.fullmatch(
+            r"(?:deja|dejar|dejarme) (?:la |el )?(.+?) abiert[oa]",
+            command,
+        )
+        if leave_open:
+            target = leave_open.group(1).strip()
+            if target in self._WEBSITES:
+                return self._plan(ActionName.BROWSER_OPEN, url=self._WEBSITES[target])
+            return self._plan(ActionName.APP_OPEN, app=self._APPS.get(target, target))
+
         if command in {"atras", "volver atras", "pagina anterior"}:
             return self._plan(ActionName.BROWSER_BACK)
         if command in {"adelante", "pagina siguiente"}:
             return self._plan(ActionName.BROWSER_FORWARD)
         if command in {"recarga la pagina", "actualiza la pagina", "refresca la pagina"}:
             return self._plan(ActionName.BROWSER_REFRESH)
+        browser_new_tab = re.fullmatch(
+            r"(?:abre )?(?:una )?(?:nueva )?pestana (?:en|usando|con) "
+            r"(?:el navegador )?(google chrome|chrome|microsoft edge|edge|"
+            r"brave browser|brave|navegador predeterminado)",
+            command,
+        )
+        if browser_new_tab:
+            return self._plan(
+                ActionName.BROWSER_NEW_TAB,
+                browser=self._BROWSERS[browser_new_tab.group(1)],
+            )
         if command in {"abre una pestana", "abre una nueva pestana", "nueva pestana"}:
             return self._plan(ActionName.BROWSER_NEW_TAB)
         if command in {"lista las pestanas", "muestra las pestanas", "que pestanas estan abiertas"}:
@@ -327,6 +597,19 @@ class DeterministicActionParser:
             )
 
         if command in {
+            "lista los monitores",
+            "lista las pantallas",
+            "muestra los monitores",
+            "muestra las pantallas",
+            "que monitores hay",
+            "que monitores estan conectados",
+            "que pantallas hay",
+            "cuantos monitores hay",
+        }:
+            return self._plan(ActionName.SCREEN_LIST)
+
+        monitor, screen_command = self._extract_monitor(command)
+        if screen_command in {
             "que ves en la pantalla",
             "que hay en la pantalla",
             "que aparece en la pantalla",
@@ -336,40 +619,94 @@ class DeterministicActionParser:
             "describe lo que ves en la pantalla",
             "dime que ves en la pantalla",
             "mira la pantalla",
+            "que ves",
+            "que hay",
+            "que aparece",
+            "describe",
+            "dime que ves",
+            "mira",
         }:
-            return self._plan(ActionName.SCREEN_DESCRIBE)
+            return self._plan(
+                ActionName.SCREEN_DESCRIBE,
+                **({"monitor": monitor} if monitor is not None else {}),
+            )
         screen_ask = re.fullmatch(
-            r"(?:mira|observa) la pantalla y (?:dime|responde) (.+)|"
+            r"(?:mira|observa)(?: la pantalla)? y (?:dime|responde) (.+)|"
             r"(?:segun|usando) (?:la pantalla|lo que ves),? (.+)",
-            command,
+            screen_command,
         )
         if screen_ask:
             return self._plan(
                 ActionName.SCREEN_ASK,
                 question=next(group for group in screen_ask.groups() if group),
+                **({"monitor": monitor} if monitor is not None else {}),
             )
         screen_find = re.fullmatch(
-            r"(?:encuentra|localiza|ubica) visualmente (.+)|"
+            r"(?:encuentra|localiza|ubica)(?: visualmente)? (.+)|"
             r"donde esta (.+) en (?:la )?pantalla",
-            command,
+            screen_command,
         )
-        if screen_find:
+        if screen_find and (
+            monitor is not None
+            or "visualmente" in screen_command
+            or "pantalla" in screen_command
+        ):
             return self._plan(
                 ActionName.SCREEN_FIND,
                 target=next(group for group in screen_find.groups() if group),
+                **({"monitor": monitor} if monitor is not None else {}),
             )
         screen_click = re.fullmatch(
             r"(?:haz )?clic visualmente en (.+)|"
             r"(?:haz )?clic en (?:la )?pantalla (?:en )?(.+)",
-            command,
+            screen_command,
         )
-        if screen_click:
+        if screen_click or (
+            monitor is not None
+            and (screen_click := re.fullmatch(r"(?:haz )?clic en (.+)", screen_command))
+        ):
             return self._plan(
                 ActionName.SCREEN_CLICK,
                 target=next(group for group in screen_click.groups() if group),
+                **({"monitor": monitor} if monitor is not None else {}),
             )
-        if command in {"haz clic ahi", "haz clic en eso", "pulsa ahi", "presiona ahi"}:
-            return self._plan(ActionName.SCREEN_CLICK, target=self.LAST_VISUAL_TARGET)
+        if screen_command in {
+            "haz clic ahi",
+            "haz clic en eso",
+            "haz clic en ese boton",
+            "haz clic en el boton que mencionaste",
+            "pulsa ahi",
+            "pulsa ese boton",
+            "presiona ahi",
+            "presiona ese boton",
+        }:
+            return self._plan(
+                ActionName.SCREEN_CLICK,
+                target=self.LAST_VISUAL_TARGET,
+                **({"monitor": monitor} if monitor is not None else {}),
+            )
+        if monitor is not None and re.match(
+            r"^(?:que|cual|donde|puedes leer|lee|dime)\b",
+            screen_command,
+        ):
+            return self._plan(
+                ActionName.SCREEN_ASK,
+                question=screen_command,
+                monitor=monitor,
+            )
+
+        browser_search = re.fullmatch(
+            r"(?:busca|buscar|investiga) (?:en (?:google|internet|la web) )?(.+?) "
+            r"(?:en|usando|con) (?:el navegador )?(google chrome|chrome|"
+            r"microsoft edge|edge|brave browser|brave|navegador predeterminado)",
+            command,
+        )
+        if browser_search:
+            return self._plan(
+                ActionName.BROWSER_SEARCH,
+                query=browser_search.group(1),
+                browser=self._BROWSERS[browser_search.group(2)],
+            )
 
         search = re.fullmatch(
             r"(?:busca|buscar|investiga) (?:en (?:google|internet|la web) )?(.+?)(?: en google)?",
@@ -377,6 +714,25 @@ class DeterministicActionParser:
         )
         if search:
             return self._plan(ActionName.BROWSER_SEARCH, query=search.group(1))
+
+        browser_navigation = re.fullmatch(
+            r"(?:abre|ve a|entra a|navega a|visita) "
+            r"(?:la pagina |el sitio |la web de )?(.+?) "
+            r"(?:en|usando|con) (?:el navegador )?(google chrome|chrome|"
+            r"microsoft edge|edge|brave browser|brave|navegador predeterminado)",
+            command,
+        )
+        if browser_navigation:
+            target = browser_navigation.group(1).strip()
+            browser = self._BROWSERS[browser_navigation.group(2)]
+            if target in self._WEBSITES:
+                return self._plan(
+                    ActionName.BROWSER_OPEN,
+                    url=self._WEBSITES[target],
+                    browser=browser,
+                )
+            if target.startswith(("http://", "https://", "www.")) or "." in target:
+                return self._plan(ActionName.BROWSER_OPEN, url=target, browser=browser)
 
         navigation = re.fullmatch(
             r"(?:abre|ve a|entra a|navega a|visita) (?:la pagina |el sitio |la web de )?(.+)",
@@ -419,6 +775,17 @@ class DeterministicActionParser:
         )
         if fill:
             return self._plan(ActionName.BROWSER_FILL, text=fill.group(1), field=fill.group(2))
+
+        if command in {
+            "que aplicaciones puedes abrir",
+            "que apps puedes abrir",
+            "lista aplicaciones",
+            "lista las aplicaciones",
+            "lista aplicaciones instaladas",
+            "lista las aplicaciones instaladas",
+            "muestra las aplicaciones instaladas",
+        }:
+            return self._plan(ActionName.APP_LIST)
 
         app = re.fullmatch(
             r"(?:abre|inicia|lanza|ejecuta) (?:la |el )?(.+?)(?: por favor)?",

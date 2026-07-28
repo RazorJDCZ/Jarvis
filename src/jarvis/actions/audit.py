@@ -8,12 +8,25 @@ from typing import Any
 
 from jarvis.actions.models import ActionOutcome, PreparedAction, PreparedWorkflow
 
-_SENSITIVE_ARGUMENTS = frozenset({"text", "value", "password", "content", "question"})
+_SENSITIVE_ARGUMENTS = frozenset(
+    {
+        "content",
+        "dialog_message",
+        "dialog_title",
+        "options",
+        "password",
+        "question",
+        "text",
+        "value",
+    }
+)
 _SENSITIVE_RESULTS = frozenset(
     {
+        "app.list",
         "browser.list_tabs",
         "browser.read",
         "clipboard.read",
+        "dialog.choose",
         "screen.ask",
         "screen.click",
         "screen.describe",

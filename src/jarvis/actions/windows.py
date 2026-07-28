@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import subprocess  # nosec B404
 import time
 import unicodedata
@@ -24,6 +25,31 @@ class AppSpec:
     display_name: str
     command: tuple[str, ...]
     window_aliases: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledApp:
+    name: str
+    app_id: str
+    target_path: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DialogInfo:
+    parent_handle: int
+    dialog_handle: int
+    title: str
+    message: str
+    options: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "parent_handle": self.parent_handle,
+            "dialog_handle": self.dialog_handle,
+            "title": self.title,
+            "message": self.message,
+            "options": list(self.options),
+        }
 
 
 class WindowController:
@@ -52,6 +78,178 @@ class WindowController:
             return self._desktop().window(handle=handle)
         except Exception:
             return None
+
+    @staticmethod
+    def _control_type(control: Any) -> str:
+        return str(getattr(control.element_info, "control_type", ""))
+
+    @classmethod
+    def _dialog_info(cls, parent: Any, dialog: Any) -> DialogInfo | None:
+        buttons: list[str] = []
+        message_parts: list[str] = []
+        try:
+            descendants = dialog.descendants()
+        except Exception:
+            return None
+        for control in descendants:
+            try:
+                name = control.window_text().strip()
+                control_type = cls._control_type(control)
+                automation_id = str(getattr(control.element_info, "automation_id", ""))
+                if (
+                    control_type == "Button"
+                    and name
+                    and control.is_visible()
+                    and control.is_enabled()
+                ):
+                    if not automation_id and _normalize(name) in {
+                        "cerrar",
+                        "close",
+                        "maximizar",
+                        "maximize",
+                        "minimizar",
+                        "minimize",
+                    }:
+                        continue
+                    if name not in buttons:
+                        buttons.append(name[:120])
+                elif control_type == "Text" and name and len(message_parts) < 3:
+                    if automation_id == "MainInstruction":
+                        message_parts.insert(0, name[:300])
+                    elif name not in message_parts:
+                        message_parts.append(name[:300])
+            except Exception:
+                continue
+        if not buttons:
+            return None
+        title = ""
+        try:
+            title = dialog.window_text().strip() or parent.window_text().strip()
+            parent_handle = int(parent.handle)
+            dialog_handle = int(dialog.handle)
+        except Exception:
+            return None
+        return DialogInfo(
+            parent_handle=parent_handle,
+            dialog_handle=dialog_handle,
+            title=title[:200] or "Diálogo de Windows",
+            message=" ".join(message_parts)[:600],
+            options=tuple(buttons[:8]),
+        )
+
+    def dialogs(self) -> tuple[DialogInfo, ...]:
+        found: list[DialogInfo] = []
+        desktop = self._desktop()
+        for parent_handle, dialog_handle in self._native_dialog_handles():
+            try:
+                parent = desktop.window(handle=parent_handle)
+                dialog = desktop.window(handle=dialog_handle)
+            except Exception:
+                continue
+            info = self._dialog_info(parent, dialog)
+            if info is not None:
+                found.append(info)
+        return tuple(found)
+
+    @staticmethod
+    def _native_dialog_handles() -> tuple[tuple[int, int], ...]:
+        user32 = ctypes.windll.user32
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        found: set[tuple[int, int]] = set()
+
+        def inspect(handle: int, _parameter: int) -> bool:
+            buffer = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(handle, buffer, len(buffer))
+            class_name = buffer.value
+            if user32.IsWindowVisible(handle) and (
+                class_name == "#32770" or "contentdialog" in class_name.casefold()
+            ):
+                parent = int(user32.GetAncestor(handle, 2)) or int(handle)
+                found.add((parent, int(handle)))
+            return True
+
+        callback = callback_type(inspect)
+
+        def inspect_top(handle: int, parameter: int) -> bool:
+            inspect(handle, parameter)
+            user32.EnumChildWindows(handle, callback, 0)
+            return True
+
+        top_callback = callback_type(inspect_top)
+        user32.EnumWindows(top_callback, 0)
+        return tuple(sorted(found))
+
+    def dialog_handles(self) -> frozenset[tuple[int, int]]:
+        return frozenset((item.parent_handle, item.dialog_handle) for item in self.dialogs())
+
+    def wait_for_new_dialog(
+        self,
+        previous: frozenset[tuple[int, int]],
+        timeout: float = 1.1,
+    ) -> DialogInfo | None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for dialog in self.dialogs():
+                if (dialog.parent_handle, dialog.dialog_handle) not in previous:
+                    return dialog
+            time.sleep(0.15)
+        return None
+
+    def choose_dialog_option(
+        self,
+        parent_handle: int,
+        dialog_handle: int,
+        choice: str,
+    ) -> ExecutionResult:
+        requested = _normalize(choice.strip())
+        current = next(
+            (
+                item
+                for item in self.dialogs()
+                if item.parent_handle == parent_handle and item.dialog_handle == dialog_handle
+            ),
+            None,
+        )
+        if current is None:
+            return ExecutionResult(False, "El diálogo ya no está disponible.")
+        exact = next(
+            (option for option in current.options if _normalize(option) == requested),
+            None,
+        )
+        if exact is None:
+            return ExecutionResult(False, "Esa opción ya no pertenece al diálogo actual.")
+        try:
+            dialog = self._desktop().window(handle=dialog_handle)
+            matches = [
+                control
+                for control in dialog.descendants()
+                if self._control_type(control) == "Button"
+                and _normalize(control.window_text().strip()) == requested
+                and control.is_visible()
+                and control.is_enabled()
+            ]
+            if len(matches) != 1:
+                return ExecutionResult(False, "La opción del diálogo no es única o cambió.")
+            try:
+                matches[0].invoke()
+            except Exception:
+                matches[0].click_input()
+            time.sleep(0.4)
+            still_open = any(
+                item.parent_handle == parent_handle and item.dialog_handle == dialog_handle
+                for item in self.dialogs()
+            )
+            return ExecutionResult(
+                not still_open,
+                (
+                    f"Elegí {exact} en el diálogo y verifiqué que se cerró."
+                    if not still_open
+                    else "Activé la opción, pero el diálogo continúa abierto."
+                ),
+                {"choice": exact, "verified": not still_open},
+            )
+        except Exception as exc:
+            return ExecutionResult(False, f"No pude responder al diálogo: {exc}")
 
     def find(self, title: str = "", aliases: tuple[str, ...] = ()):
         if not title and not aliases:
@@ -245,6 +443,25 @@ class WindowController:
         except Exception as exc:
             return ExecutionResult(False, f"No pude enviar el atajo: {exc}")
 
+    def send_browser_shortcut(self, shortcut: str) -> ExecutionResult:
+        from pywinauto.keyboard import send_keys
+
+        keys = {
+            "back": "%{LEFT}",
+            "forward": "%{RIGHT}",
+            "refresh": "^r",
+            "new_tab": "^t",
+            "close_tab": "^w",
+        }
+        sequence = keys.get(shortcut)
+        if sequence is None:
+            return ExecutionResult(False, "Ese control del navegador no esta permitido.")
+        try:
+            send_keys(sequence, pause=0.03)
+            return ExecutionResult(True, f"Ejecute el control seguro del navegador {shortcut}.")
+        except Exception as exc:
+            return ExecutionResult(False, f"No pude controlar el navegador: {exc}")
+
     def press_key(self, key: str) -> ExecutionResult:
         from pywinauto.keyboard import send_keys
 
@@ -275,12 +492,60 @@ class AppController:
         {
             "cmd.exe",
             "cscript.exe",
+            "csi.exe",
+            "git-bash.exe",
+            "git-cmd.exe",
             "mshta.exe",
+            "node.exe",
+            "perl.exe",
             "powershell.exe",
             "pwsh.exe",
+            "python.exe",
+            "pythonw.exe",
             "regedit.exe",
+            "ruby.exe",
+            "wsl.exe",
             "wscript.exe",
             "wt.exe",
+        }
+    )
+    _BLOCKED_APP_TERMS = (
+        "command prompt",
+        "consola",
+        "developer command",
+        "developer powershell",
+        "desinstal",
+        "editor del registro",
+        "git bash",
+        "git cmd",
+        "idle (python",
+        "powershell",
+        "python ",
+        "registry editor",
+        "simbolo del sistema",
+        "terminal",
+        "uninstall",
+        "windows tools",
+    )
+    _BLOCKED_APP_NAMES = frozenset({"ejecutar", "run"})
+    _NON_APP_SUFFIXES = frozenset(
+        {
+            ".bat",
+            ".chm",
+            ".cmd",
+            ".com",
+            ".cpl",
+            ".hta",
+            ".html",
+            ".js",
+            ".lnk",
+            ".msc",
+            ".pdf",
+            ".ps1",
+            ".txt",
+            ".url",
+            ".vbs",
+            ".wsf",
         }
     )
     APPS = {
@@ -324,6 +589,95 @@ class AppController:
     @property
     def allowed_apps(self) -> frozenset[str]:
         return frozenset(self.APPS)
+
+    @classmethod
+    def _safe_installed_app(cls, app: InstalledApp) -> bool:
+        normalized_name = _normalize(app.name)
+        if (
+            not normalized_name
+            or normalized_name in cls._BLOCKED_APP_NAMES
+            or any(term in normalized_name for term in cls._BLOCKED_APP_TERMS)
+        ):
+            return False
+        target = app.target_path.strip()
+        if not target:
+            return bool(app.app_id.strip())
+        if target.casefold().startswith(("http://", "https://", "file:")):
+            return False
+        if re.fullmatch(r"steam://rungameid/\d{1,12}", target, flags=re.IGNORECASE):
+            return True
+        if "://" in target:
+            return False
+        path = Path(target)
+        normalized_target_name = _normalize(path.name)
+        if normalized_target_name.startswith(("unins", "uninstall")):
+            return False
+        if path.suffix.casefold() in cls._NON_APP_SUFFIXES:
+            return False
+        if path.name.casefold() in cls._BLOCKED_TARGETS:
+            return False
+        return path.suffix.casefold() == ".exe"
+
+    @staticmethod
+    def _apps_folder():
+        from win32com.client import Dispatch
+
+        return Dispatch("Shell.Application").Namespace("shell:AppsFolder")
+
+    def installed_apps(self) -> tuple[InstalledApp, ...]:
+        try:
+            folder = self._apps_folder()
+            items = folder.Items()
+        except Exception:
+            return ()
+        apps: list[InstalledApp] = []
+        seen: set[tuple[str, str]] = set()
+        for index in range(items.Count):
+            try:
+                item = items.Item(index)
+                app = InstalledApp(
+                    name=str(item.Name).strip(),
+                    app_id=str(item.Path).strip(),
+                    target_path=str(
+                        item.ExtendedProperty("System.Link.TargetParsingPath") or ""
+                    ).strip(),
+                )
+            except Exception:
+                continue
+            identity = (_normalize(app.name), app.app_id.casefold())
+            if identity in seen or not self._safe_installed_app(app):
+                continue
+            seen.add(identity)
+            apps.append(app)
+        return tuple(sorted(apps, key=lambda app: _normalize(app.name)))
+
+    def find_installed_apps(self, requested_name: str) -> tuple[InstalledApp, ...]:
+        needle = _normalize(requested_name).strip()
+        if len(needle) < 2 or self._blocked_shortcut(needle):
+            return ()
+        apps = self.installed_apps()
+        exact = tuple(app for app in apps if _normalize(app.name) == needle)
+        if exact:
+            return exact
+        prefixes = tuple(app for app in apps if _normalize(app.name).startswith(needle))
+        if prefixes:
+            return prefixes
+        return tuple(app for app in apps if needle in _normalize(app.name))
+
+    def list_installed(self) -> ExecutionResult:
+        apps = self.installed_apps()
+        names = [app.name for app in apps]
+        if not names:
+            return ExecutionResult(False, "Windows no devolvió el inventario de aplicaciones.")
+        preview = ", ".join(names[:24])
+        return ExecutionResult(
+            True,
+            (
+                f"Puedo abrir {len(names)} aplicaciones seguras del menú Inicio. "
+                f"Algunas son: {preview}."
+            ),
+            {"count": len(names), "applications": names},
+        )
 
     @staticmethod
     def _blocked_shortcut(name: str) -> bool:
@@ -385,7 +739,69 @@ class AppController:
             time.sleep(0.2)
         return None
 
-    def open(self, app_name: str, shortcut_path: str = "") -> ExecutionResult:
+    def _open_installed(
+        self,
+        app_id: str,
+        display_name: str,
+        expected_target: str,
+    ) -> ExecutionResult:
+        try:
+            folder = self._apps_folder()
+            items = folder.Items()
+        except Exception:
+            return ExecutionResult(False, "Windows no devolvió el menú de aplicaciones.")
+        selected = None
+        for index in range(items.Count):
+            try:
+                item = items.Item(index)
+                candidate = InstalledApp(
+                    name=str(item.Name).strip(),
+                    app_id=str(item.Path).strip(),
+                    target_path=str(
+                        item.ExtendedProperty("System.Link.TargetParsingPath") or ""
+                    ).strip(),
+                )
+            except Exception:
+                continue
+            if (
+                candidate.app_id == app_id
+                and _normalize(candidate.name) == _normalize(display_name)
+                and candidate.target_path.casefold() == expected_target.casefold()
+                and self._safe_installed_app(candidate)
+            ):
+                selected = item
+                break
+        if selected is None:
+            return ExecutionResult(
+                False,
+                "La aplicación cambió o ya no está publicada en el menú Inicio.",
+            )
+        try:
+            selected.InvokeVerb()
+        except Exception as exc:
+            return ExecutionResult(False, f"Windows no pudo abrir {display_name}: {exc}")
+        time.sleep(0.65)
+        focused = self.windows.focus(title=display_name)
+        return ExecutionResult(
+            True,
+            f"Abrí la aplicación instalada {display_name}.",
+            {
+                "verified": focused.success,
+                "application": display_name,
+                "source": "windows-apps-folder",
+            },
+        )
+
+    def open(
+        self,
+        app_name: str,
+        shortcut_path: str = "",
+        app_id: str = "",
+        display_name: str = "",
+        target_path: str = "",
+    ) -> ExecutionResult:
+        if app_id:
+            return self._open_installed(app_id, display_name, target_path)
         spec = self.APPS.get(app_name)
         if spec is None:
             shortcut = Path(shortcut_path) if shortcut_path else self.resolve_shortcut(app_name)

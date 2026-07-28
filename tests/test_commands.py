@@ -14,8 +14,10 @@ def test_informational_commands_are_local_and_deterministic() -> None:
 
     assert router.try_handle("¿Qué hora es?").response == "Son las 22:30."
     assert router.try_handle("dime la fecha").response == ("Hoy es viernes, 17 de julio de 2026.")
-    assert "etapa dos" in router.try_handle("¿Cuál es tu versión?").response
-    assert "aplicaciones" in router.try_handle("ayuda").response
+    assert "etapa cuatro" in router.try_handle("¿Cuál es tu versión?").response
+    help_response = router.try_handle("ayuda").response
+    assert "aplicaciones" in help_response
+    assert "memoria local" in help_response
 
 
 def test_reset_command_requests_history_and_pending_action_removal() -> None:

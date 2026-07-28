@@ -9,13 +9,15 @@
 4. Las acciones de riesgo bajo se ejecutan. Las de riesgo medio o alto crean una confirmación
    temporal ligada a la sesión.
 5. El controlador ejecuta y verifica cuando Windows o el navegador ofrecen una señal comprobable.
-6. El resultado se registra en una auditoría local con censura de contenido sensible.
+6. Si aparece un diálogo nativo nuevo, el flujo se pausa y Jarvis presenta sus botones como
+   opciones; ninguna respuesta se elige automáticamente.
+7. El resultado se registra en una auditoría local con censura de contenido sensible.
 
 ## Catálogo
 
 | Área | Acciones | Riesgo habitual |
 |---|---|---|
-| Aplicaciones | abrir fija o acceso confiable del menú Inicio | bajo / medio |
+| Aplicaciones | listar; abrir fija o entrada segura del catálogo de Windows | bajo / medio |
 | Navegador | abrir, buscar, atrás, adelante, recargar, crear/listar/cambiar/cerrar pestaña | bajo; cerrar es medio |
 | Página web | leer, activar botón/enlace, llenar un campo sin enviar | bajo / medio |
 | Resultados web | abrir por posición dentro de la página controlada | medio |
@@ -30,15 +32,19 @@
 | Sistema | CPU, memoria y batería | bajo |
 | Rutas | abrir archivo seguro, abrir carpeta | medio / bajo |
 
-Hay 47 acciones ejecutables cerradas en `ActionName`, además del contenedor interno
+Hay 49 acciones ejecutables cerradas en `ActionName`, además del contenedor interno
 `workflow.run`. Agregar otra requiere definir explícitamente su riesgo, validación, ejecución y
 pruebas.
 
 ## Decisiones de seguridad
 
-- El navegador controlado usa CDP sobre un puerto aleatorio enlazado a `127.0.0.1`, una ventana
-  InPrivate y un perfil independiente. Jarvis termina únicamente el proceso de Edge que él creó al
-  cerrarse.
+- El modo predeterminado reutiliza el último perfil personal válido de Chrome, Edge o Brave y el
+  navegador predeterminado de Windows cuando no se especifica otro. No añade incógnito, invitado,
+  `user-data-dir` ni depuración remota. La orden se ejecuta como vector fijo, sin shell, y al cerrar
+  Jarvis no se terminan procesos ni ventanas personales.
+- En modo personal, la navegación básica usa atajos fijos y los campos o controles se buscan por
+  accesibilidad de Windows. `JARVIS_BROWSER_PERSONAL_PROFILE=false` habilita el modo aislado anterior
+  con CDP y un perfil dentro de `.data` cuando se necesita control DOM más preciso.
 - `browser.fill` no presiona Enter ni envía formularios. Los clics web se resuelven por rol o nombre
   accesible y exigen confirmación.
 - Los nombres asociados a compras, pagos, transferencias o eliminación se bloquean incluso después
@@ -48,14 +54,28 @@ pruebas.
 - La visión solo se conecta a Ollama por loopback. Captura las pantallas en memoria, reduce la
   imagen antes de inferir y no conserva el archivo. El contenido visible se delimita como datos no
   confiables para resistir instrucciones incrustadas en páginas.
+- `screen.list` enumera los monitores activos. Las acciones visuales aceptan `all`, `primary`,
+  `left`, `right` o el número de pantalla que reporta Windows y recortan únicamente esa región.
+- Cada sesión conserva hasta cinco minutos el monitor observado, un resumen y los nombres de los
+  controles relevantes. Ese contexto solo resuelve continuaciones conversacionales: toda consulta
+  o clic vuelve a capturar la pantalla y recalcula la posición, de modo que no actúa con píxeles
+  obsoletos. El contexto no se comparte entre sesiones y se elimina al reiniciar la conversación.
 - Un clic visual usa primero UI Automation. Si debe estimar píxeles, solo mueve el cursor; una
   segunda autorización independiente crea el clic. Los objetivos de compra, pago, transferencia o
   eliminación se rechazan antes de moverlo. Si el cursor cambia de posición mientras espera la
   segunda autorización, el clic se cancela.
 - Un flujo encadenado hereda el riesgo más alto y se detiene en el primer error. No puede incluir un
   clic visual porque ese protocolo exige revisar la posición y confirmar por separado.
+- Los diálogos estándar se detectan por su identificador nativo, se leen mediante UI Automation y
+  se vinculan a la sesión. Antes de pulsar una opción se vuelve a comprobar el identificador, el
+  texto exacto del botón y que haya una sola coincidencia. Si aparece otro diálogo, se repite el
+  mismo protocolo.
+- UAC y otros avisos del escritorio seguro quedan fuera del alcance: Jarvis no intenta evadir esa
+  frontera del sistema operativo.
 - Abrir una aplicación no acepta una línea de comandos. Las aplicaciones fijas tienen vectores de
-  argumentos constantes y los accesos dinámicos deben vivir dentro del menú Inicio.
+  argumentos constantes y las dinámicas deben estar publicadas en `shell:AppsFolder`. Nombre,
+  identificador y destino se vuelven a comprobar antes de invocar la entrada exacta; documentos,
+  desinstaladores, scripts, terminales e intérpretes quedan fuera.
 - Abrir un archivo acepta únicamente extensiones de una lista positiva. No se abren ejecutables,
   scripts, accesos directos, documentos con macros ni contenido web local.
 - La auditoría no cambia el resultado de una acción si el disco no está disponible y rota al llegar
@@ -65,10 +85,17 @@ pruebas.
 
 - La automatización de aplicaciones depende de Microsoft UI Automation; algunos programas antiguos,
   juegos o interfaces dibujadas completamente por GPU no exponen controles con nombre.
-- El navegador controlado no reutiliza sesiones del navegador personal por diseño.
+- El perfil personal protege la cuenta del usuario frente a control por CDP, por lo que leer el DOM,
+  enumerar pestañas o seleccionar un resultado solo por número depende de lo que Chrome exponga a
+  UI Automation. Jarvis puede usar el nombre visible o la visión local; para control DOM completo
+  existe el modo aislado opcional. Firefox todavía no participa en el canal web automatizado.
 - Esta etapa admite hasta tres acciones explícitas y percepción visual bajo demanda. Los planes
   autónomos de varios minutos, seguimiento visual continuo y proactividad pertenecen a la etapa 5.
 - La localización por píxeles es probabilística y puede ser imprecisa, especialmente con varias
   pantallas o interfaces escaladas; la confirmación humana sigue siendo obligatoria.
 - El acceso desde el celular permanece deshabilitado hasta implementar identidad de dispositivo,
   cifrado y permisos remotos en la etapa 3.
+- La interrupción por voz requiere que el micrófono ya tenga permiso y una frase cerrada que incluya
+  “Jarvis”. Funciona en manos libres y tras una captura manual. La voz se pausa apenas el detector
+  local percibe habla, Whisper valida la orden y la reproducción continúa si no era una
+  interrupción; pulsar el micrófono la cancela inmediatamente.

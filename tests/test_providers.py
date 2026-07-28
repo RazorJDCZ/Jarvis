@@ -4,12 +4,14 @@ import json
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pytest
 
 from jarvis.config import Settings
 from jarvis.providers.brain import AutoBrain, FallbackBrain, OllamaBrain, build_brain
 from jarvis.providers.stt import WhisperTranscriber
 from jarvis.providers.tts import PiperTTS
+from jarvis.schemas import ProviderStatus
 
 
 def mock_httpx(
@@ -75,6 +77,7 @@ async def test_ollama_chat_sends_non_streaming_request(monkeypatch: pytest.Monke
     assert answer == "Todo listo."
     assert received[0]["stream"] is False
     assert received[0]["think"] is False
+    assert received[0]["options"]["temperature"] == pytest.approx(0.45)
 
 
 @pytest.mark.asyncio
@@ -125,3 +128,105 @@ async def test_voice_provider_statuses_without_models(tmp_path: Path) -> None:
     assert "primera frase" in stt.detail
     assert tts.available is False
     assert "Windows" in tts.detail
+
+
+@pytest.mark.asyncio
+async def test_kokoro_is_preferred_and_generates_pcm_wav(tmp_path: Path) -> None:
+    settings = Settings(
+        project_root=tmp_path,
+        kokoro_voice="em_alex",
+        kokoro_speed=0.96,
+    )
+    provider = PiperTTS(settings)
+
+    class FakeKokoro:
+        voices = ("em_alex", "em_santa")
+        invocation = None
+
+        def create(self, text, voice, speed, lang):
+            self.invocation = (text, voice, speed, lang)
+            return np.zeros(2_400, dtype=np.float32), 24_000
+
+    fake_kokoro = FakeKokoro()
+    provider._kokoro = fake_kokoro
+
+    status = await provider.status()
+    audio = await provider.synthesize("Hola, Juandi.")
+
+    assert status.available is True
+    assert "Kokoro" in status.name
+    assert audio.startswith(b"RIFF")
+    assert fake_kokoro.invocation == ("Hola, Juandi.", "em_alex", 0.96, "es")
+
+
+@pytest.mark.asyncio
+async def test_kokoro_failure_disables_it_and_falls_back_to_piper(tmp_path: Path) -> None:
+    provider = PiperTTS(Settings(project_root=tmp_path))
+
+    class BrokenKokoro:
+        voices = ("em_alex",)
+
+        @staticmethod
+        def create(*_args, **_kwargs):
+            raise ValueError("broken model")
+
+    class FakePiper:
+        @staticmethod
+        def synthesize_wav(_text, wav_file, syn_config=None) -> None:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(22_050)
+            wav_file.writeframes(b"\x00\x00" * 10)
+
+    provider._kokoro = BrokenKokoro()
+    provider._voice = FakePiper()
+
+    audio = await provider.synthesize("Hola.")
+    status = await provider.status()
+
+    assert audio.startswith(b"RIFF")
+    assert provider._kokoro_failed is True
+    assert "Piper" in status.name
+
+
+@pytest.mark.asyncio
+async def test_piper_uses_gentle_configured_voice_parameters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        project_root=tmp_path,
+        piper_speaker_id=0,
+        piper_length_scale=1.06,
+        piper_noise_scale=0.60,
+        piper_noise_w_scale=0.70,
+        piper_volume=0.96,
+    )
+    provider = PiperTTS(settings)
+
+    class FakeVoice:
+        config = None
+
+        def synthesize_wav(self, _text, wav_file, syn_config=None) -> None:
+            self.config = syn_config
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(22_050)
+            wav_file.writeframes(b"\x00\x00" * 10)
+
+    fake_voice = FakeVoice()
+    provider._voice = fake_voice
+
+    async def available() -> ProviderStatus:
+        return ProviderStatus(available=True, name="Piper", detail="ok")
+
+    monkeypatch.setattr(provider, "status", available)
+
+    audio = await provider.synthesize("Hola, Juandi.")
+
+    assert audio.startswith(b"RIFF")
+    assert fake_voice.config.speaker_id == 0
+    assert fake_voice.config.length_scale == pytest.approx(1.06)
+    assert fake_voice.config.noise_scale == pytest.approx(0.60)
+    assert fake_voice.config.noise_w_scale == pytest.approx(0.70)
+    assert fake_voice.config.volume == pytest.approx(0.96)

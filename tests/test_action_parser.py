@@ -12,6 +12,8 @@ from jarvis.actions.parser import DeterministicActionParser, normalize_request
         ("abre la calculadora", ActionName.APP_OPEN, {"app": "calculator"}),
         ("¿Podrías abrir la calculadora?", ActionName.APP_OPEN, {"app": "calculator"}),
         ("¿Podrías abrir la calculadora, por favor?", ActionName.APP_OPEN, {"app": "calculator"}),
+        ("¿Podrías por favor abrir la calculadora?", ActionName.APP_OPEN, {"app": "calculator"}),
+        ("¿Te importaría abrirme la calculadora?", ActionName.APP_OPEN, {"app": "calculator"}),
         ("Me abres el bloc de notas por favor", ActionName.APP_OPEN, {"app": "notepad"}),
         ("Necesito que abras Paint", ActionName.APP_OPEN, {"app": "paint"}),
         ("Quiero que subas el volumen", ActionName.VOLUME_CHANGE, {"step": 5}),
@@ -29,7 +31,28 @@ from jarvis.actions.parser import DeterministicActionParser, normalize_request
         ("abre el explorador de archivos", ActionName.APP_OPEN, {"app": "explorer"}),
         ("abre paint", ActionName.APP_OPEN, {"app": "paint"}),
         ("abre spotify", ActionName.APP_OPEN, {"app": "spotify"}),
+        ("abre la aplicación Discord", ActionName.APP_OPEN, {"app": "aplicacion discord"}),
         ("abre youtube", ActionName.BROWSER_OPEN, {"url": "https://www.youtube.com"}),
+        (
+            "abre YouTube en Google Chrome",
+            ActionName.BROWSER_OPEN,
+            {"url": "https://www.youtube.com", "browser": "chrome"},
+        ),
+        (
+            "visita github.com usando Microsoft Edge",
+            ActionName.BROWSER_OPEN,
+            {"url": "github.com", "browser": "edge"},
+        ),
+        (
+            "busca restaurantes en Chrome",
+            ActionName.BROWSER_SEARCH,
+            {"query": "restaurantes", "browser": "chrome"},
+        ),
+        (
+            "abre una nueva pestaña en Brave",
+            ActionName.BROWSER_NEW_TAB,
+            {"browser": "brave"},
+        ),
         ("ve a openai.com", ActionName.BROWSER_OPEN, {"url": "openai.com"}),
         ("busca en google clima en Quito", ActionName.BROWSER_SEARCH, {"query": "clima en quito"}),
         ("volver atrás", ActionName.BROWSER_BACK, {}),
@@ -89,6 +112,7 @@ from jarvis.actions.parser import DeterministicActionParser, normalize_request
         ("captura la pantalla", ActionName.SCREENSHOT_TAKE, {}),
         ("muestra el escritorio", ActionName.DESKTOP_SHOW, {}),
         ("estado del sistema", ActionName.SYSTEM_STATUS, {}),
+        ("qué aplicaciones puedes abrir", ActionName.APP_LIST, {}),
         ("lee el portapapeles", ActionName.CLIPBOARD_READ, {}),
         (
             'copia "Texto privado" al portapapeles',
@@ -197,7 +221,187 @@ def test_conjunction_inside_search_is_not_mistaken_for_workflow() -> None:
     assert parsed.arguments == {"query": "rock y roll"}
 
 
+@pytest.mark.parametrize(
+    ("phrase", "query", "browser"),
+    [
+        (
+            "Jarvis, estoy muy interesado en cursos de Python en español, "
+            "¿me puedes dar buscando unos cursos usando Google Chrome?",
+            "cursos de python en espanol",
+            "chrome",
+        ),
+        (
+            "Ando interesado en fotografía nocturna; ¿podrías buscar opciones en internet "
+            "con Microsoft Edge?",
+            "fotografia nocturna",
+            "edge",
+        ),
+        (
+            "Me puedes ayudar a encontrar restaurantes tranquilos usando Brave",
+            "restaurantes tranquilos",
+            "brave",
+        ),
+        (
+            "Estoy pensando en cocinar, ¿me ayudarías a encontrar recetas de lasaña en Chrome?",
+            "recetas de lasana",
+            "chrome",
+        ),
+        (
+            "Quisiera que me ayudaras a buscar cursos gratuitos de Linux usando Chrome",
+            "cursos gratuitos de linux",
+            "chrome",
+        ),
+    ],
+)
+def test_natural_goal_oriented_searches_use_context(
+    phrase: str,
+    query: str,
+    browser: str,
+) -> None:
+    parser = DeterministicActionParser()
+
+    parsed = parser.parse(phrase)
+
+    assert parsed is not None
+    assert parsed.name is ActionName.BROWSER_SEARCH
+    assert parsed.arguments == {"query": query, "browser": browser}
+    assert parser.looks_action_like(phrase) is True
+
+
+@pytest.mark.parametrize(
+    ("phrase", "name", "arguments"),
+    [
+        (
+            "Estoy por comenzar a estudiar; ¿me puedes abrir el bloc de notas?",
+            ActionName.APP_OPEN,
+            {"app": "notepad"},
+        ),
+        (
+            "Tengo poca batería, necesito que cierres la ventana de Spotify",
+            ActionName.WINDOW_CLOSE,
+            {"title": "spotify"},
+        ),
+        (
+            "Para ver mejor, me gustaría que maximices la ventana",
+            ActionName.WINDOW_MAXIMIZE,
+            {"title": ""},
+        ),
+        (
+            "Para concentrarme, me gustaría que bajaras un poco el volumen",
+            ActionName.VOLUME_CHANGE,
+            {"step": -5},
+        ),
+        (
+            "Tengo que hacer cuentas; ¿serías tan amable de dejarme la calculadora abierta?",
+            ActionName.APP_OPEN,
+            {"app": "calculator"},
+        ),
+        (
+            "Quisiera revisar mi correo; llévame a Gmail",
+            ActionName.BROWSER_OPEN,
+            {"url": "https://mail.google.com"},
+        ),
+        (
+            "Tengo que hacer una cuenta, ¿me abres la calculadora?",
+            ActionName.APP_OPEN,
+            {"app": "calculator"},
+        ),
+    ],
+)
+def test_actions_can_follow_conversational_context(
+    phrase: str,
+    name: ActionName,
+    arguments: dict[str, object],
+) -> None:
+    parsed = DeterministicActionParser().parse(phrase)
+
+    assert parsed is not None
+    assert parsed.name is name
+    assert parsed.arguments == arguments
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Estoy interesado en Python, pero no quiero que busques cursos todavía",
+        "Me puedes explicar cómo buscar cursos usando Chrome",
+        "Si pudieras buscar cursos algún día sería genial",
+    ],
+)
+def test_natural_context_does_not_turn_negation_explanation_or_hypothesis_into_action(
+    phrase: str,
+) -> None:
+    parser = DeterministicActionParser()
+
+    assert parser.parse(phrase) is None
+    assert parser.looks_action_like(phrase) is False
+
+
+def test_indirect_open_goal_with_context_is_routed_to_restricted_planner() -> None:
+    parser = DeterministicActionParser()
+    phrase = "Voy a escribir unas ideas y quiero tener el bloc de notas abierto"
+
+    assert parser.parse(phrase) is None
+    assert parser.looks_action_like(phrase) is True
+
+
 def test_dangerous_step_blocks_entire_workflow() -> None:
     result = DeterministicActionParser().parse("abre la calculadora y apaga la computadora")
 
     assert isinstance(result, BlockedIntent)
+
+
+@pytest.mark.parametrize(
+    ("phrase", "name", "arguments"),
+    [
+        ("qué monitores están conectados", ActionName.SCREEN_LIST, {}),
+        ("qué ves en el monitor 2", ActionName.SCREEN_DESCRIBE, {"monitor": "2"}),
+        ("describe el segundo monitor", ActionName.SCREEN_DESCRIBE, {"monitor": "2"}),
+        (
+            "mira el monitor principal y dime cuál es el error",
+            ActionName.SCREEN_ASK,
+            {"question": "cual es el error", "monitor": "primary"},
+        ),
+        (
+            "encuentra Aceptar en el monitor de la derecha",
+            ActionName.SCREEN_FIND,
+            {"target": "aceptar", "monitor": "right"},
+        ),
+        (
+            "haz clic en Continuar en el monitor 1",
+            ActionName.SCREEN_CLICK,
+            {"target": "continuar", "monitor": "1"},
+        ),
+        (
+            "qué dice el mensaje en la pantalla de la izquierda",
+            ActionName.SCREEN_ASK,
+            {"question": "que dice el mensaje", "monitor": "left"},
+        ),
+    ],
+)
+def test_monitor_aware_visual_commands(
+    phrase: str,
+    name: ActionName,
+    arguments: dict[str, object],
+) -> None:
+    parsed = DeterministicActionParser().parse(phrase)
+
+    assert parsed is not None
+    assert parsed.name is name
+    assert parsed.arguments == arguments
+
+
+def test_generic_visual_command_leaves_monitor_available_for_session_context() -> None:
+    parsed = DeterministicActionParser().parse("qué ves en la pantalla")
+
+    assert parsed is not None
+    assert parsed.name is ActionName.SCREEN_DESCRIBE
+    assert parsed.arguments == {}
+
+
+def test_visual_pronoun_uses_guarded_recent_target_reference() -> None:
+    parsed = DeterministicActionParser().parse("haz clic en el botón que mencionaste")
+
+    assert parsed is not None
+    assert parsed.name is ActionName.SCREEN_CLICK
+    assert parsed.arguments["target"] == DeterministicActionParser.LAST_VISUAL_TARGET

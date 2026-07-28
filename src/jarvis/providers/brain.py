@@ -64,7 +64,9 @@ class OllamaBrain:
             "stream": False,
             "think": False,
             "options": {
-                "temperature": 0.6,
+                "temperature": 0.45,
+                "top_p": 0.9,
+                "repeat_penalty": 1.08,
                 "num_ctx": 8192,
             },
         }
@@ -101,7 +103,7 @@ class FallbackBrain:
         text = messages[-1]["content"].strip()
         normalized = text.casefold()
         if any(word in normalized for word in ("hola", "buenas", "buenos dias")):
-            return "Hola, Juandi. Sistemas de voz en linea. Es un gusto comenzar."
+            return "Hola, Juandi. Aquí estoy, tranquilo y listo."
         if "quien eres" in normalized or "quién eres" in normalized:
             return (
                 "Soy Jarvis, tu asistente local. De momento puedo escucharte y conversar contigo."
@@ -114,8 +116,8 @@ class FallbackBrain:
                 "y descargar el modelo configurado."
             )
         return (
-            f"Te he escuchado decir: {text}. Mi modelo conversacional aun no esta disponible, "
-            "pero el canal de voz funciona correctamente."
+            f"Te escuché decir: {text}. El núcleo conversacional local no está disponible ahora, "
+            "pero sigo listo para tus acciones y comandos seguros."
         )
 
 

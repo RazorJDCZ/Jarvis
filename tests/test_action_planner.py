@@ -78,6 +78,34 @@ async def test_local_planner_returns_bounded_workflow(
 
 
 @pytest.mark.asyncio
+async def test_local_planner_preserves_explicit_browser_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_httpx(
+        monkeypatch,
+        {
+            "direct_request": True,
+            "action": "browser.open",
+            "arguments": {
+                "website": "https://www.youtube.com",
+                "navegador": "chrome",
+            },
+            "steps": [],
+            "confidence": 0.96,
+        },
+    )
+    planner = LocalActionPlanner(Settings(), ("browser.open",))
+
+    result = await planner.plan("abre YouTube usando Chrome")
+
+    assert result.name is ActionName.BROWSER_OPEN
+    assert result.arguments == {
+        "url": "https://www.youtube.com",
+        "browser": "chrome",
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [

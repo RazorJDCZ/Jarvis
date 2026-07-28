@@ -14,6 +14,7 @@ def fallback_settings(**overrides: object) -> Settings:
         brain_mode="fallback",
         safe_actions_enabled=False,
         action_model_planning=False,
+        memory_enabled=False,
         **overrides,
     )
 
@@ -25,6 +26,7 @@ def test_health_and_ui_are_available() -> None:
         index = client.get("/")
         manifest = client.get("/manifest.webmanifest")
         service_worker = client.get("/service-worker.js")
+        stylesheet = client.get("/static/styles.css")
         icon = client.get("/static/icon.svg")
         openapi = client.get("/api/openapi.json")
 
@@ -33,11 +35,18 @@ def test_health_and_ui_are_available() -> None:
     assert health.json()["brain"]["available"] is True
     assert "actions" in health.json()
     assert "vision" in health.json()
+    assert "memory" in health.json()
     assert index.status_code == 200
-    assert "JARVIS // Local Core" in index.text
+    assert "JARVIS // Neural Interface" in index.text
+    assert 'id="neuralField"' in index.text
+    assert 'id="monitorFocus"' in index.text
     assert manifest.status_code == 200
     assert service_worker.status_code == 200
     assert "javascript" in service_worker.headers["content-type"]
+    assert "height: clamp(610px" in stylesheet.text
+    assert "overflow-y: auto" in stylesheet.text
+    assert "scrollbar-gutter: stable" in stylesheet.text
+    assert "@media (prefers-reduced-motion: reduce)" in stylesheet.text
     assert icon.status_code == 200
     assert openapi.status_code == 200
     assert openapi.json()["info"]["title"] == "Jarvis Local Core"
@@ -69,6 +78,40 @@ def test_safe_command_uses_deterministic_provider() -> None:
     assert response.status_code == 200
     assert response.json()["provider"] == "safe-command"
     assert response.json()["response"].startswith("Son las ")
+
+
+def test_memory_persists_across_app_restart_and_is_reported_in_health(tmp_path: Path) -> None:
+    settings = Settings(
+        project_root=tmp_path,
+        brain_mode="fallback",
+        safe_actions_enabled=False,
+        action_model_planning=False,
+        information_verification_enabled=False,
+        memory_enabled=True,
+    )
+    first_app = create_app(settings)
+    with TestClient(first_app) as client:
+        remembered = client.post(
+            "/api/chat",
+            json={
+                "message": "Recuerda que mi color favorito es el azul",
+                "session_id": "memory-a",
+            },
+        )
+        health = client.get("/api/health")
+
+    second_app = create_app(settings)
+    with TestClient(second_app) as client:
+        recalled = client.post(
+            "/api/chat",
+            json={"message": "¿Qué recuerdas de mí?", "session_id": "memory-b"},
+        )
+
+    assert remembered.json()["provider"] == "local-memory"
+    assert health.json()["memory"]["available"] is True
+    assert "1 recuerdo;" in health.json()["memory"]["detail"]
+    assert recalled.json()["provider"] == "local-memory"
+    assert "color favorito" in recalled.json()["response"]
 
 
 def test_cross_origin_browser_request_is_rejected() -> None:
@@ -175,6 +218,55 @@ def test_action_decision_cannot_cross_sessions(tmp_path: Path) -> None:
     assert response.json()["action"]["status"] == "rejected"
 
 
+def test_dialog_choice_endpoint_requires_and_executes_explicit_option(tmp_path: Path) -> None:
+    app = create_app(
+        Settings(
+            project_root=tmp_path,
+            brain_mode="fallback",
+            action_model_planning=False,
+        )
+    )
+    pending = app.state.action_engine._request_dialog(
+        "dialog-owner",
+        {
+            "parent_handle": 10,
+            "dialog_handle": 20,
+            "title": "Bloc de notas",
+            "message": "¿Quieres guardar los cambios?",
+            "options": ["Guardar", "No guardar", "Cancelar"],
+        },
+    )
+    app.state.action_engine.catalog.choose_dialog_option = AsyncMock(
+        return_value=ExecutionResult(
+            True,
+            "Elegí No guardar.",
+            {"choice": "No guardar", "verified": True},
+        )
+    )
+
+    with TestClient(app) as client:
+        ambiguous = client.post(
+            "/api/actions/decision",
+            json={
+                "session_id": "dialog-owner",
+                "action_id": pending.action_id,
+                "approve": True,
+            },
+        )
+        decided = client.post(
+            "/api/actions/decision",
+            json={
+                "session_id": "dialog-owner",
+                "action_id": pending.action_id,
+                "choice": "No guardar",
+            },
+        )
+
+    assert ambiguous.json()["action"]["status"] == "pending"
+    assert decided.json()["action"]["status"] == "completed"
+    assert decided.json()["action"]["details"]["choice"] == "No guardar"
+
+
 @pytest.mark.parametrize("session_id", ["con espacio", "../escape", "", "x" * 129])
 def test_chat_rejects_invalid_session_ids(session_id: str) -> None:
     app = create_app(fallback_settings())
@@ -270,6 +362,34 @@ def test_voice_wake_mode_ignores_unaddressed_speech(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["accepted"] is False
     assert response.json()["response"] is None
+
+
+@pytest.mark.parametrize(
+    ("transcript", "interrupted"),
+    [
+        ("Jarvis, es suficiente", True),
+        ("Jarvis cuéntame algo más", False),
+        ("es suficiente", False),
+    ],
+)
+def test_voice_interrupt_endpoint_requires_explicit_addressed_phrase(
+    tmp_path: Path,
+    transcript: str,
+    interrupted: bool,
+) -> None:
+    app = create_app(fallback_settings(project_root=tmp_path))
+    app.state.transcriber.transcribe = AsyncMock(return_value=(transcript, "es"))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/voice/interrupt",
+            data={"session_id": "voice"},
+            files={"audio": ("interrupt.wav", b"mock", "audio/wav")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["interrupted"] is interrupted
+    assert list((tmp_path / ".data" / "tmp").iterdir()) == []
 
 
 def test_voice_rejects_invalid_session_before_transcription(tmp_path: Path) -> None:

@@ -41,6 +41,20 @@ class ActionSpec:
 
 
 class ActionCatalog:
+    _DIALOG_MONITORED = frozenset(
+        {
+            ActionName.APP_OPEN,
+            ActionName.BROWSER_CLICK,
+            ActionName.BROWSER_OPEN_RESULT,
+            ActionName.PATH_OPEN,
+            ActionName.POINTER_CLICK,
+            ActionName.SCREEN_CLICK,
+            ActionName.UI_CLICK,
+            ActionName.UI_HOTKEY,
+            ActionName.UI_KEY,
+            ActionName.WINDOW_CLOSE,
+        }
+    )
     _APP_ALIASES = {
         "administrador de tareas": "task_manager",
         "ajustes": "settings",
@@ -49,16 +63,36 @@ class ActionCatalog:
         "calc": "calculator",
         "calculadora": "calculator",
         "calculator": "calculator",
+        "chrome": "google chrome",
+        "code": "visual studio code",
         "configuracion": "settings",
         "configuración": "settings",
         "explorador": "explorer",
         "explorador de archivos": "explorer",
+        "epic games": "epic games launcher",
         "herramienta de recortes": "snipping_tool",
         "mapa de caracteres": "character_map",
+        "minecraft": "minecraft launcher",
         "note pad": "notepad",
         "notepad": "notepad",
         "paint": "paint",
         "recortes": "snipping_tool",
+        "riot": "riot client",
+        "teams": "microsoft teams",
+        "visual studio code": "visual studio code",
+        "vscode": "visual studio code",
+        "zoom": "zoom workplace",
+    }
+    _BROWSER_ALIASES = {
+        "brave": "brave",
+        "brave browser": "brave",
+        "chrome": "chrome",
+        "default": "default",
+        "google chrome": "chrome",
+        "edge": "edge",
+        "microsoft edge": "edge",
+        "navegador predeterminado": "default",
+        "predeterminado": "default",
     }
     _BLOCKED_CONTROL_TERMS = (
         "borr",
@@ -76,6 +110,7 @@ class ActionCatalog:
     )
     _SPECS = {
         ActionName.APP_OPEN: ActionSpec(ActionRisk.LOW, "Abrir una aplicación permitida"),
+        ActionName.APP_LIST: ActionSpec(ActionRisk.LOW, "Listar aplicaciones instaladas seguras"),
         ActionName.BROWSER_OPEN: ActionSpec(ActionRisk.LOW, "Abrir una página web segura"),
         ActionName.BROWSER_SEARCH: ActionSpec(ActionRisk.LOW, "Buscar información en la web"),
         ActionName.BROWSER_BACK: ActionSpec(ActionRisk.LOW, "Volver a la página anterior"),
@@ -127,6 +162,10 @@ class ActionCatalog:
             ActionRisk.MEDIUM,
             "Guardar una captura local de las pantallas",
         ),
+        ActionName.SCREEN_LIST: ActionSpec(
+            ActionRisk.LOW,
+            "Listar los monitores activos",
+        ),
         ActionName.SCREEN_DESCRIBE: ActionSpec(
             ActionRisk.MEDIUM,
             "Analizar localmente lo visible en las pantallas",
@@ -156,12 +195,17 @@ class ActionCatalog:
     _MODEL_READ_ONLY = frozenset(
         {
             ActionName.BROWSER_READ,
+            ActionName.APP_LIST,
             ActionName.WINDOW_LIST,
             ActionName.WINDOW_CURRENT,
             ActionName.UI_INSPECT,
             ActionName.BROWSER_LIST_TABS,
             ActionName.SYSTEM_STATUS,
             ActionName.VOLUME_GET,
+            ActionName.SCREEN_LIST,
+            ActionName.SCREEN_DESCRIBE,
+            ActionName.SCREEN_ASK,
+            ActionName.SCREEN_FIND,
         }
     )
 
@@ -178,7 +222,12 @@ class ActionCatalog:
         self.clipboard = ClipboardController()
         self.system = SystemInfoController()
         self.paths = PathController()
-        self.browser = ControlledBrowser(data_dir, search_url)
+        self.browser = ControlledBrowser(
+            data_dir,
+            search_url,
+            personal_profile=settings.browser_personal_profile if settings is not None else False,
+            windows=self.windows,
+        )
         self.vision = LocalVisionController(settings) if settings is not None else None
         self.screenshot_dir = data_dir / "screenshots" / "actions"
 
@@ -213,6 +262,29 @@ class ActionCatalog:
         if not minimum <= converted <= maximum:
             raise ActionSecurityError(f"El valor {key} está fuera del rango permitido.")
         return converted
+
+    @classmethod
+    def _browser_argument(cls, arguments: dict[str, Any]) -> dict[str, str]:
+        value = arguments.get("browser")
+        if value is None:
+            return {}
+        if not isinstance(value, str) or not value.strip() or len(value) > 40:
+            raise ActionSecurityError("El navegador solicitado no es válido.")
+        browser = cls._BROWSER_ALIASES.get(value.strip().casefold())
+        if browser is None:
+            raise ActionSecurityError(
+                "Solo puedo controlar Chrome, Edge o Brave mediante este canal seguro."
+            )
+        return {"browser": browser}
+
+    @staticmethod
+    def _monitor_argument(arguments: dict[str, Any]) -> dict[str, str]:
+        value = arguments.get("monitor", "all")
+        if not isinstance(value, str) or not value.strip() or len(value) > 60:
+            raise ActionSecurityError("El monitor solicitado no es válido.")
+        if any(character in value for character in "\r\n\t"):
+            raise ActionSecurityError("El monitor solicitado no es válido.")
+        return {"monitor": value.strip()}
 
     @staticmethod
     def _safe_url(value: str) -> str:
@@ -261,21 +333,52 @@ class ActionCatalog:
                     break
             if app.startswith("el ") or app.startswith("la "):
                 app = app[3:].strip()
+            for prefix in (
+                "aplicacion de ",
+                "aplicación de ",
+                "aplicacion ",
+                "aplicación ",
+                "app de ",
+                "app ",
+                "programa ",
+            ):
+                if app.startswith(prefix):
+                    app = app[len(prefix) :].strip()
+                    break
             app = self._APP_ALIASES.get(app, app)
             if app not in self.apps.allowed_apps:
-                shortcut = self.apps.resolve_shortcut(app)
-                if shortcut is None:
+                matches = self.apps.find_installed_apps(app)
+                if not matches:
                     raise ActionSecurityError(
-                        "No encontré esa aplicación en la lista blanca ni en el menú Inicio."
+                        "No encontré una aplicación segura con ese nombre en el menú Inicio."
                     )
-                args = {"app": app, "shortcut": str(shortcut)}
-                description = f"Abrir la aplicación instalada {shortcut.stem}"
+                if len(matches) > 1:
+                    options = ", ".join(match.name for match in matches[:5])
+                    raise ActionSecurityError(
+                        f"Encontré varias aplicaciones: {options}. Indica el nombre completo."
+                    )
+                installed = matches[0]
+                args = {
+                    "app": app,
+                    "app_id": installed.app_id,
+                    "display_name": installed.name,
+                    "target_path": installed.target_path,
+                }
+                description = f"Abrir la aplicación instalada {installed.name}"
             else:
                 args = {"app": app}
         elif plan.name is ActionName.BROWSER_OPEN:
-            args = {"url": self._safe_url(self._string(args, "url", 2_048))}
+            args = {
+                "url": self._safe_url(self._string(args, "url", 2_048)),
+                **self._browser_argument(args),
+            }
         elif plan.name is ActionName.BROWSER_SEARCH:
-            args = {"query": self._string(args, "query", 500)}
+            args = {
+                "query": self._string(args, "query", 500),
+                **self._browser_argument(args),
+            }
+        elif plan.name is ActionName.BROWSER_NEW_TAB:
+            args = self._browser_argument(args)
         elif plan.name in {ActionName.BROWSER_CLICK, ActionName.BROWSER_SWITCH_TAB}:
             args = {"target": self._string(args, "target", 200)}
         elif plan.name is ActionName.BROWSER_OPEN_RESULT:
@@ -347,10 +450,21 @@ class ActionCatalog:
             args = {"path": self._string(args, "path", 1_024)}
         elif plan.name is ActionName.CLIPBOARD_WRITE:
             args = {"text": self._string(args, "text", 2_000)}
+        elif plan.name is ActionName.SCREEN_DESCRIBE:
+            args = self._monitor_argument(args)
+            description = f"{description} en {args['monitor']}"
         elif plan.name is ActionName.SCREEN_ASK:
-            args = {"question": self._string(args, "question", 800)}
+            args = {
+                "question": self._string(args, "question", 800),
+                **self._monitor_argument(args),
+            }
+            description = f"{description} en {args['monitor']}"
         elif plan.name in {ActionName.SCREEN_FIND, ActionName.SCREEN_CLICK}:
-            args = {"target": self._string(args, "target", 300)}
+            args = {
+                "target": self._string(args, "target", 300),
+                **self._monitor_argument(args),
+            }
+            description = f"{description} en {args['monitor']}"
         else:
             args = {}
 
@@ -363,7 +477,7 @@ class ActionCatalog:
                 )
 
         risk = spec.risk
-        if plan.name is ActionName.APP_OPEN and "shortcut" in args:
+        if plan.name is ActionName.APP_OPEN and "app_id" in args:
             risk = ActionRisk.MEDIUM
         if (
             plan.source is ActionSource.LOCAL_MODEL
@@ -387,6 +501,17 @@ class ActionCatalog:
                 step_details.append(
                     {"step": index, "action": step.name.value, "success": result.success}
                 )
+                if result.details.get("dialog_confirmation_required") is True:
+                    return ExecutionResult(
+                        True,
+                        result.message,
+                        {
+                            **result.details,
+                            "steps": step_details,
+                            "completed_steps": index,
+                            "workflow_stopped_for_dialog": True,
+                        },
+                    )
                 if not result.success:
                     return ExecutionResult(
                         False,
@@ -398,18 +523,50 @@ class ActionCatalog:
                 f"Completé y verifiqué los {len(action.steps)} pasos solicitados.",
                 {"steps": step_details, "completed_steps": len(action.steps)},
             )
+        baseline = (
+            await asyncio.to_thread(self.windows.dialog_handles)
+            if action.name in self._DIALOG_MONITORED
+            else frozenset()
+        )
+        result = await self._execute_single(action)
+        if action.name not in self._DIALOG_MONITORED or not result.success:
+            return result
+        dialog = await asyncio.to_thread(self.windows.wait_for_new_dialog, baseline)
+        if dialog is None:
+            return result
+        return ExecutionResult(
+            True,
+            (
+                f"{result.message} Apareció un diálogo que necesita una decisión explícita."
+                if result.message
+                else "Apareció un diálogo que necesita una decisión explícita."
+            ),
+            {
+                **result.details,
+                "dialog_confirmation_required": True,
+                "dialog": dialog.as_dict(),
+                "trigger_succeeded": result.success,
+            },
+        )
+
+    async def _execute_single(self, action: PreparedAction) -> ExecutionResult:
         name = action.name
         args = action.arguments
         if name is ActionName.APP_OPEN:
             return await asyncio.to_thread(
                 self.apps.open,
                 args["app"],
-                args.get("shortcut", ""),
+                "",
+                args.get("app_id", ""),
+                args.get("display_name", ""),
+                args.get("target_path", ""),
             )
+        if name is ActionName.APP_LIST:
+            return await asyncio.to_thread(self.apps.list_installed)
         if name is ActionName.BROWSER_OPEN:
-            return await self.browser.open(args["url"])
+            return await self.browser.open(args["url"], args.get("browser"))
         if name is ActionName.BROWSER_SEARCH:
-            return await self.browser.search(args["query"])
+            return await self.browser.search(args["query"], args.get("browser"))
         if name in {
             ActionName.BROWSER_BACK,
             ActionName.BROWSER_FORWARD,
@@ -418,7 +575,7 @@ class ActionCatalog:
             direction = name.value.split(".", maxsplit=1)[1]
             return await self.browser.navigate(direction)
         if name is ActionName.BROWSER_NEW_TAB:
-            return await self.browser.new_tab()
+            return await self.browser.new_tab(args.get("browser"))
         if name is ActionName.BROWSER_LIST_TABS:
             return await self.browser.list_tabs()
         if name is ActionName.BROWSER_SWITCH_TAB:
@@ -486,29 +643,39 @@ class ActionCatalog:
             return await asyncio.to_thread(self.desktop.scroll, args["amount"])
         if name is ActionName.SCREENSHOT_TAKE:
             return await asyncio.to_thread(self.desktop.screenshot, self.screenshot_dir)
+        if name is ActionName.SCREEN_LIST:
+            if self.vision is None:
+                return ExecutionResult(False, "La visión local no está configurada.")
+            return await asyncio.to_thread(self.vision.list_monitors)
         if name is ActionName.SCREEN_DESCRIBE:
             if self.vision is None:
                 return ExecutionResult(False, "La visión local no está configurada.")
-            return await self.vision.describe()
+            return await self.vision.describe(args["monitor"])
         if name is ActionName.SCREEN_ASK:
             if self.vision is None:
                 return ExecutionResult(False, "La visión local no está configurada.")
-            return await self.vision.ask(args["question"])
+            return await self.vision.ask(args["question"], args["monitor"])
         if name is ActionName.SCREEN_FIND:
             if self.vision is None:
                 return ExecutionResult(False, "La visión local no está configurada.")
-            return await self.vision.find(args["target"])
+            return await self.vision.find(args["target"], args["monitor"])
         if name is ActionName.SCREEN_CLICK:
-            accessible = await asyncio.to_thread(self.windows.click_control, args["target"])
-            if accessible.success:
-                return ExecutionResult(
-                    True,
-                    f"{accessible.message} Usé el árbol accesible de Windows.",
-                    {"method": "accessibility", "verified": True},
-                )
+            if args["monitor"] == "all":
+                accessible = await asyncio.to_thread(self.windows.click_control, args["target"])
+                if accessible.success:
+                    return ExecutionResult(
+                        True,
+                        f"{accessible.message} Usé el árbol accesible de Windows.",
+                        {
+                            "method": "accessibility",
+                            "verified": True,
+                            "monitor": "all",
+                            "monitor_label": "Ventana activa",
+                        },
+                    )
             if self.vision is None:
                 return ExecutionResult(False, "La visión local no está configurada.")
-            located = await self.vision.find(args["target"])
+            located = await self.vision.find(args["target"], args["monitor"])
             if not located.success:
                 return located
             if located.details.get("dangerous") is True:
@@ -549,6 +716,41 @@ class ActionCatalog:
         if name is ActionName.PATH_OPEN_FOLDER:
             return await asyncio.to_thread(self.paths.open_folder, args["path"])
         return ExecutionResult(False, "La acción no tiene un ejecutor disponible.")
+
+    async def choose_dialog_option(
+        self,
+        parent_handle: int,
+        dialog_handle: int,
+        choice: str,
+    ) -> ExecutionResult:
+        baseline = await asyncio.to_thread(self.windows.dialog_handles)
+        result = await asyncio.to_thread(
+            self.windows.choose_dialog_option,
+            parent_handle,
+            dialog_handle,
+            choice,
+        )
+        if not result.success:
+            return result
+        dialog = await asyncio.to_thread(self.windows.wait_for_new_dialog, baseline)
+        if dialog is None:
+            return result
+        return ExecutionResult(
+            True,
+            f"{result.message} Apareció otro diálogo que también necesita tu decisión.",
+            {
+                **result.details,
+                "dialog_confirmation_required": True,
+                "dialog": dialog.as_dict(),
+            },
+        )
+
+    async def dialog_available(self, parent_handle: int, dialog_handle: int) -> bool:
+        dialogs = await asyncio.to_thread(self.windows.dialogs)
+        return any(
+            dialog.parent_handle == parent_handle and dialog.dialog_handle == dialog_handle
+            for dialog in dialogs
+        )
 
     async def close(self) -> None:
         await self.browser.close()

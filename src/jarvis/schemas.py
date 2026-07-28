@@ -52,7 +52,8 @@ class ChatResponse(BaseModel):
 class ActionDecisionRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     action_id: str = Field(min_length=1, max_length=64)
-    approve: bool
+    approve: bool | None = None
+    choice: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class TTSRequest(BaseModel):
@@ -78,6 +79,12 @@ class VoiceResponse(BaseModel):
     action: ActionInfo | None = None
 
 
+class InterruptResponse(BaseModel):
+    transcript: str
+    language: str
+    interrupted: bool
+
+
 class ProviderStatus(BaseModel):
     available: bool
     name: str
@@ -93,4 +100,5 @@ class HealthResponse(BaseModel):
     tts: ProviderStatus
     actions: ProviderStatus
     vision: ProviderStatus
+    memory: ProviderStatus
     wake_word: str

@@ -118,12 +118,178 @@ def controller(
 ) -> ControlledBrowser:
     browser = ControlledBrowser(tmp_path, "https://search.example/?q={query}")
     browser._page = page
+    browser._active_browser = "edge"
 
-    async def page_factory() -> FakePage:
+    async def page_factory(_browser: str | None = None) -> FakePage:
         return browser._page
 
     monkeypatch.setattr(browser, "_ensure_page", page_factory)
     return browser
+
+
+def test_browser_selection_supports_installed_default_and_explicit_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ControlledBrowser,
+        "installed_browsers",
+        classmethod(lambda _cls: ("chrome", "edge")),
+    )
+    monkeypatch.setattr(ControlledBrowser, "_windows_default_browser", lambda: "chrome")
+
+    assert ControlledBrowser.normalize_browser(None) == "chrome"
+    assert ControlledBrowser.normalize_browser("Google Chrome") == "chrome"
+    assert ControlledBrowser.normalize_browser("Microsoft Edge") == "edge"
+
+
+def test_browser_selection_rejects_unknown_or_missing_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ControlledBrowser,
+        "installed_browsers",
+        classmethod(lambda _cls: ("edge",)),
+    )
+
+    with pytest.raises(ValueError, match="compatible"):
+        ControlledBrowser.normalize_browser("Firefox")
+    with pytest.raises(RuntimeError, match="no está instalado"):
+        ControlledBrowser.normalize_browser("Chrome")
+
+
+def test_browser_launch_uses_normal_persistent_profile(tmp_path: Path) -> None:
+    executable = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+    profile = tmp_path / "browser-profile-chrome"
+
+    arguments = ControlledBrowser._launch_arguments(executable, 12345, profile)
+
+    assert "--new-window" in arguments
+    assert f"--user-data-dir={profile}" in arguments
+    assert "--incognito" not in arguments
+    assert "--inprivate" not in arguments
+    assert "--guest" not in arguments
+
+
+def test_personal_launch_reuses_regular_browser_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+    monkeypatch.setattr(
+        ControlledBrowser,
+        "_personal_profile_directory",
+        classmethod(lambda _cls, _browser: "Profile 3"),
+    )
+
+    arguments = ControlledBrowser._personal_launch_arguments(
+        executable,
+        "chrome",
+        "https://www.google.com/search?q=jarvis",
+    )
+
+    assert "--profile-directory=Profile 3" in arguments
+    assert "--new-window" in arguments
+    assert not any(argument.startswith("--user-data-dir") for argument in arguments)
+    assert not any("remote-debugging" in argument for argument in arguments)
+    assert "--incognito" not in arguments
+
+
+@pytest.mark.asyncio
+async def test_personal_mode_opens_url_without_owning_or_closing_user_browser(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeWindows:
+        shortcuts: list[str] = []
+
+        @staticmethod
+        def focus(**_kwargs: object):
+            from jarvis.actions.models import ExecutionResult
+
+            return ExecutionResult(True, "focused")
+
+        def send_browser_shortcut(self, shortcut: str):
+            from jarvis.actions.models import ExecutionResult
+
+            self.shortcuts.append(shortcut)
+            return ExecutionResult(True, "sent")
+
+    class FakeProcess:
+        terminated = False
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    launched: list[list[str]] = []
+
+    def fake_popen(arguments: list[str], **_kwargs: object) -> FakeProcess:
+        launched.append(arguments)
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        ControlledBrowser,
+        "_browser_path",
+        classmethod(lambda _cls, _browser: Path("chrome.exe")),
+    )
+    monkeypatch.setattr(
+        ControlledBrowser,
+        "installed_browsers",
+        classmethod(lambda _cls: ("chrome",)),
+    )
+    monkeypatch.setattr(ControlledBrowser, "_windows_default_browser", lambda: "chrome")
+    monkeypatch.setattr(
+        ControlledBrowser,
+        "_personal_profile_directory",
+        classmethod(lambda *_: "Default"),
+    )
+    monkeypatch.setattr("jarvis.actions.browser.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("jarvis.actions.browser.time.sleep", lambda _seconds: None)
+    windows = FakeWindows()
+    browser = ControlledBrowser(
+        tmp_path,
+        "https://search.example/?q={query}",
+        personal_profile=True,
+        windows=windows,
+    )
+
+    opened = await browser.open("https://example.com")
+    navigated = await browser.navigate("back")
+    await browser.close()
+
+    assert opened.success is True
+    assert opened.details["profile_mode"] == "personal"
+    assert launched[0][-1] == "https://example.com"
+    assert windows.shortcuts == ["back"]
+    assert navigated.success is True
+    assert browser._process is None
+
+
+def test_browser_process_gets_graceful_shutdown_before_termination(tmp_path: Path) -> None:
+    browser = ControlledBrowser(tmp_path, "https://example.com/?q={query}")
+
+    class FakeProcess:
+        waited: list[float] = []
+        terminated = False
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+        def wait(self, timeout: float) -> int:
+            self.waited.append(timeout)
+            return 0
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    process = FakeProcess()
+    browser._process = process
+
+    browser._terminate_process(graceful_timeout=3.0)
+
+    assert process.waited == [3.0]
+    assert process.terminated is False
+    assert browser._process is None
 
 
 @pytest.mark.asyncio
@@ -139,6 +305,7 @@ async def test_open_and_search_report_verified_url(
 
     assert opened.success is True
     assert opened.details["verified"] is True
+    assert opened.details["browser"] == "edge"
     assert searched.success is True
     assert page.url == "https://search.example/?q=voz+local"
 

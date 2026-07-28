@@ -7,11 +7,11 @@ import pytest
 
 from jarvis.actions.catalog import ActionCatalog
 from jarvis.actions.models import ActionName, ActionPlan, ExecutionResult
-from jarvis.actions.vision import LocalVisionController, ScreenCapture
+from jarvis.actions.vision import LocalVisionController, ScreenCapture, ScreenMonitor
 from jarvis.config import Settings
 
 
-def capture() -> ScreenCapture:
+def capture(_monitor: str = "all") -> ScreenCapture:
     return ScreenCapture(
         encoded_png="cG5n",
         left=-100,
@@ -158,7 +158,7 @@ class FakeVision:
     def __init__(self, *, dangerous: bool = False) -> None:
         self.dangerous = dangerous
 
-    async def find(self, target: str) -> ExecutionResult:
+    async def find(self, target: str, monitor: str = "all") -> ExecutionResult:
         return ExecutionResult(
             True,
             "Localizado",
@@ -169,8 +169,88 @@ class FakeVision:
                 "y": 300,
                 "confidence": 0.95,
                 "dangerous": self.dangerous,
+                "monitor": monitor,
+                "monitor_label": f"Monitor {monitor}",
             },
         )
+
+
+def test_monitor_selector_supports_number_position_and_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = LocalVisionController(Settings(project_root=tmp_path))
+    monitors = (
+        ScreenMonitor("1", r"\\.\DISPLAY1", 0, 0, 1920, 1080, True),
+        ScreenMonitor("2", r"\\.\DISPLAY2", 1920, 0, 2560, 1440),
+    )
+    monkeypatch.setattr(controller, "monitors", lambda: monitors)
+
+    assert controller.resolve_monitor("principal") == monitors[0]
+    assert controller.resolve_monitor("monitor 2") == monitors[1]
+    assert controller.resolve_monitor("derecha") == monitors[1]
+    assert controller.resolve_monitor("izquierda") == monitors[0]
+    assert controller.resolve_monitor("todas las pantallas") is None
+    with pytest.raises(ValueError, match="detecté: Monitor 1"):
+        controller.resolve_monitor("monitor 9")
+
+
+def test_list_monitors_returns_safe_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = LocalVisionController(Settings(project_root=tmp_path))
+    monitors = (
+        ScreenMonitor("1", r"\\.\DISPLAY1", -1920, 0, 1920, 1080),
+        ScreenMonitor("2", r"\\.\DISPLAY2", 0, 0, 2560, 1440, True),
+    )
+    monkeypatch.setattr(controller, "monitors", lambda: monitors)
+
+    result = controller.list_monitors()
+
+    assert result.success is True
+    assert result.details["monitors"][1]["primary"] is True
+    assert "Monitor 2 (principal)" in result.message
+
+
+@pytest.mark.asyncio
+async def test_describe_uses_selected_monitor_and_reports_focus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = LocalVisionController(Settings(project_root=tmp_path))
+    captured: list[str] = []
+
+    def selected_capture(monitor: str = "all") -> ScreenCapture:
+        captured.append(monitor)
+        return ScreenCapture(
+            "cG5n",
+            1920,
+            0,
+            2560,
+            1440,
+            monitor="2",
+            monitor_label="Monitor 2",
+        )
+
+    async def response(*_args: object) -> dict[str, object]:
+        return {
+            "summary": "Hay un navegador.",
+            "visible_apps": ["Chrome"],
+            "important_text": [],
+            "interactive_elements": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(controller, "_capture", selected_capture)
+    monkeypatch.setattr(controller, "_request", response)
+
+    result = await controller.describe("2")
+
+    assert result.success is True
+    assert captured == ["2"]
+    assert result.details["monitor"] == "2"
+    assert result.details["monitor_label"] == "Monitor 2"
 
 
 @pytest.mark.asyncio

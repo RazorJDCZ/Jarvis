@@ -2,7 +2,9 @@
 
 const elements = {
   body: document.body,
+  neuralField: document.querySelector("#neuralField"),
   clock: document.querySelector("#clock"),
+  systemDate: document.querySelector("#systemDate"),
   stateLabel: document.querySelector("#stateLabel"),
   stateDetail: document.querySelector("#stateDetail"),
   micButton: document.querySelector("#micButton"),
@@ -17,13 +19,18 @@ const elements = {
   ttsStatus: document.querySelector("#ttsStatus"),
   actionsStatus: document.querySelector("#actionsStatus"),
   visionStatus: document.querySelector("#visionStatus"),
+  memoryStatus: document.querySelector("#memoryStatus"),
   wakeWordLabel: document.querySelector("#wakeWordLabel"),
+  monitorFocus: document.querySelector("#monitorFocus"),
+  activityCode: document.querySelector("#activityCode"),
+  coreLoad: document.querySelector("#coreLoad"),
   footerHint: document.querySelector("#footerHint"),
   toast: document.querySelector("#toast"),
   waveform: document.querySelector("#waveform"),
   actionConfirmation: document.querySelector("#actionConfirmation"),
   actionDescription: document.querySelector("#actionDescription"),
   actionRisk: document.querySelector("#actionRisk"),
+  dialogChoiceButtons: document.querySelector("#dialogChoiceButtons"),
   approveActionButton: document.querySelector("#approveActionButton"),
   rejectActionButton: document.querySelector("#rejectActionButton"),
 };
@@ -50,6 +57,11 @@ const appState = {
   toastTimer: null,
   socketPing: null,
   pendingAction: null,
+  interruptionPending: false,
+  interruptionPaused: false,
+  interruptionCooldownUntil: 0,
+  speechGeneration: 0,
+  activityCount: 0,
 };
 
 function setVisualState(state, detail) {
@@ -76,6 +88,10 @@ function addMessage(role, text, label) {
   textElement.textContent = text;
   article.append(labelElement, textElement);
   elements.transcript.appendChild(article);
+  appState.activityCount += 1;
+  if (elements.activityCode) {
+    elements.activityCode.textContent = `CTX-${String(appState.activityCount).padStart(3, "0")}`;
+  }
   elements.transcript.scrollTo({ top: elements.transcript.scrollHeight, behavior: "smooth" });
 }
 
@@ -106,8 +122,12 @@ async function refreshHealth() {
     updateProvider(elements.ttsStatus, health.tts);
     updateProvider(elements.actionsStatus, health.actions);
     updateProvider(elements.visionStatus, health.vision);
+    updateProvider(elements.memoryStatus, health.memory);
     elements.wakeWordLabel.textContent = health.wake_word.toUpperCase();
     appState.ttsAvailable = health.tts.available;
+    const providers = [health.brain, health.stt, health.tts, health.actions, health.vision, health.memory];
+    const online = providers.filter((provider) => provider.available).length;
+    if (elements.coreLoad) elements.coreLoad.textContent = `${online}/6 NOMINAL`;
   } catch (error) {
     for (const element of [
       elements.brainStatus,
@@ -115,6 +135,7 @@ async function refreshHealth() {
       elements.ttsStatus,
       elements.actionsStatus,
       elements.visionStatus,
+      elements.memoryStatus,
     ]) {
       element.classList.add("offline");
       element.querySelector("small").textContent = "Núcleo no disponible";
@@ -125,25 +146,57 @@ async function refreshHealth() {
 }
 
 function handleAction(action) {
+  const monitorLabel = action?.details?.monitor_label;
+  const monitorCount = action?.details?.monitors?.length;
+  if (elements.monitorFocus && typeof monitorLabel === "string") {
+    elements.monitorFocus.textContent = `VISION // ${monitorLabel.toUpperCase()}`;
+  } else if (elements.monitorFocus && Number.isInteger(monitorCount)) {
+    elements.monitorFocus.textContent = `VISION // ${monitorCount} DISPLAYS`;
+  }
   if (action?.requires_confirmation && action.action_id) {
     const riskLabels = { low: "BAJO", medium: "MEDIO", high: "ALTO", blocked: "BLOQUEADO" };
     appState.pendingAction = action;
     elements.actionDescription.textContent = action.description || action.name || "Acción pendiente";
     elements.actionRisk.textContent = `RIESGO ${riskLabels[action.risk] || "MEDIO"}`;
+    const dialogOptions = action.details?.dialog_options;
+    elements.dialogChoiceButtons.replaceChildren();
+    if (Array.isArray(dialogOptions) && dialogOptions.length) {
+      elements.dialogChoiceButtons.hidden = false;
+      elements.approveActionButton.hidden = true;
+      elements.rejectActionButton.hidden = true;
+      for (const option of dialogOptions) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = option;
+        button.addEventListener("click", () => decideAction(null, option));
+        elements.dialogChoiceButtons.appendChild(button);
+      }
+    } else {
+      elements.dialogChoiceButtons.hidden = true;
+      elements.approveActionButton.hidden = false;
+      elements.rejectActionButton.hidden = false;
+    }
     elements.actionConfirmation.hidden = false;
     return;
   }
   appState.pendingAction = null;
+  elements.dialogChoiceButtons.replaceChildren();
+  elements.dialogChoiceButtons.hidden = true;
+  elements.approveActionButton.hidden = false;
+  elements.rejectActionButton.hidden = false;
   elements.actionConfirmation.hidden = true;
 }
 
-async function decideAction(approve) {
+async function decideAction(approve, choice = null) {
   const pending = appState.pendingAction;
   if (!pending) return;
   stopSpeaking();
   appState.busy = true;
   elements.approveActionButton.disabled = true;
   elements.rejectActionButton.disabled = true;
+  for (const button of elements.dialogChoiceButtons.querySelectorAll("button")) {
+    button.disabled = true;
+  }
   setVisualState("thinking", approve ? "Ejecutando acción confirmada" : "Cancelando acción");
   try {
     const response = await fetch("/api/actions/decision", {
@@ -153,6 +206,7 @@ async function decideAction(approve) {
         session_id: appState.sessionId,
         action_id: pending.action_id,
         approve,
+        choice,
       }),
     });
     if (!response.ok) throw new Error(await readError(response));
@@ -167,6 +221,9 @@ async function decideAction(approve) {
   } finally {
     elements.approveActionButton.disabled = false;
     elements.rejectActionButton.disabled = false;
+    for (const button of elements.dialogChoiceButtons.querySelectorAll("button")) {
+      button.disabled = false;
+    }
   }
 }
 
@@ -206,6 +263,7 @@ function chooseSpanishVoice() {
 }
 
 function finishSpeaking() {
+  appState.interruptionPaused = false;
   appState.speaking = false;
   appState.busy = false;
   setVisualState(
@@ -215,6 +273,7 @@ function finishSpeaking() {
 }
 
 function stopSpeaking() {
+  appState.speechGeneration += 1;
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   if (appState.audioPlayer) {
     appState.audioPlayer.pause();
@@ -227,6 +286,33 @@ function stopSpeaking() {
   }
   appState.speaking = false;
   appState.busy = false;
+  appState.interruptionPaused = false;
+}
+
+function pauseSpeakingForInterruption() {
+  if (!appState.speaking || appState.interruptionPaused) return;
+  appState.interruptionPaused = true;
+  if (appState.audioPlayer && !appState.audioPlayer.paused) {
+    appState.audioPlayer.pause();
+  }
+  if (window.speechSynthesis?.speaking) window.speechSynthesis.pause();
+  setVisualState("listening", "Escuchando posible interrupción");
+}
+
+async function resumeSpeakingAfterInterruption() {
+  if (!appState.speaking || !appState.interruptionPaused) return;
+  appState.interruptionPaused = false;
+  setVisualState("speaking", "Transmitiendo respuesta");
+  if (appState.audioPlayer?.paused) {
+    try {
+      await appState.audioPlayer.play();
+    } catch (error) {
+      console.debug("Could not resume local neural audio", error);
+      finishSpeaking();
+    }
+    return;
+  }
+  if (window.speechSynthesis?.paused) window.speechSynthesis.resume();
 }
 
 function speakWithBrowser(text) {
@@ -236,13 +322,15 @@ function speakWithBrowser(text) {
   }
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = "es-ES";
-  utterance.rate = 1.03;
-  utterance.pitch = 0.88;
+  utterance.rate = 0.96;
+  utterance.pitch = 0.92;
+  utterance.volume = 0.96;
   const voice = chooseSpanishVoice();
   if (voice) utterance.voice = voice;
   utterance.onend = finishSpeaking;
   utterance.onerror = finishSpeaking;
   window.speechSynthesis.speak(utterance);
+  if (appState.interruptionPaused) window.speechSynthesis.pause();
 }
 
 async function speak(text) {
@@ -251,6 +339,7 @@ async function speak(text) {
     return;
   }
   stopSpeaking();
+  const speechGeneration = appState.speechGeneration;
   appState.speaking = true;
   appState.busy = true;
   setVisualState("speaking", "Transmitiendo respuesta");
@@ -264,6 +353,7 @@ async function speak(text) {
       });
       if (!response.ok) throw new Error(await readError(response));
       const audioBlob = await response.blob();
+      if (speechGeneration !== appState.speechGeneration) return;
       appState.audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(appState.audioUrl);
       appState.audioPlayer = audio;
@@ -277,13 +367,16 @@ async function speak(text) {
         appState.ttsAvailable = false;
         speakWithBrowser(text);
       };
+      if (appState.interruptionPaused) return;
       await audio.play();
       return;
     } catch (error) {
-      console.warn("Piper unavailable, falling back to browser voice", error);
+      if (speechGeneration !== appState.speechGeneration) return;
+      console.warn("Local neural voice unavailable, falling back to browser voice", error);
       appState.ttsAvailable = false;
     }
   }
+  if (speechGeneration !== appState.speechGeneration) return;
   speakWithBrowser(text);
 }
 
@@ -366,6 +459,7 @@ class LocalMicrophone {
     this.calibrationValues = [];
     this.calibrating = false;
     this.calibrationTimer = null;
+    this.interruptionCapture = false;
   }
 
   async init() {
@@ -411,7 +505,14 @@ class LocalMicrophone {
       this.addChunk(samples);
       return;
     }
-    if (!this.handsFree || appState.busy || appState.speaking) {
+    const interruptionMode =
+      (this.capturing && this.interruptionCapture) || (this.ready && appState.speaking);
+    if (
+      (!this.handsFree && !interruptionMode) ||
+      (appState.busy && !interruptionMode) ||
+      appState.interruptionPending ||
+      (interruptionMode && Date.now() < appState.interruptionCooldownUntil)
+    ) {
       this.preRoll = [];
       this.preRollSamples = 0;
       return;
@@ -426,16 +527,23 @@ class LocalMicrophone {
     if (!this.capturing) {
       this.preRoll.push(samples);
       this.preRollSamples += samples.length;
-      const maxPreRoll = this.context.sampleRate * 0.45;
+      const maxPreRoll = this.context.sampleRate * (interruptionMode ? 0.18 : 0.45);
       while (this.preRollSamples > maxPreRoll && this.preRoll.length > 1) {
         this.preRollSamples -= this.preRoll.shift().length;
       }
-      if (rms >= this.threshold) {
+      const triggerThreshold = interruptionMode
+        ? Math.max(0.025, this.threshold * 1.25)
+        : this.threshold;
+      if (rms >= triggerThreshold) {
+        this.interruptionCapture = interruptionMode;
+        if (interruptionMode) pauseSpeakingForInterruption();
         this.capturing = true;
         this.chunks = [...this.preRoll];
         this.totalSamples = this.preRollSamples;
         this.silenceSamples = 0;
-        setVisualState("listening", "Detectando frase de activación");
+        if (!interruptionMode) {
+          setVisualState("listening", "Detectando frase de activación");
+        }
       }
       return;
     }
@@ -446,8 +554,9 @@ class LocalMicrophone {
 
     const duration = this.totalSamples / this.context.sampleRate;
     const silenceDuration = this.silenceSamples / this.context.sampleRate;
-    if ((duration > 0.55 && silenceDuration > 0.85) || duration > 18) {
-      this.finish(true);
+    const maximumDuration = this.interruptionCapture ? 6 : 18;
+    if ((duration > 0.55 && silenceDuration > 0.85) || duration > maximumDuration) {
+      this.finish(true, this.interruptionCapture);
     }
   }
 
@@ -484,6 +593,7 @@ class LocalMicrophone {
     this.totalSamples = 0;
     this.preRoll = [];
     this.preRollSamples = 0;
+    this.interruptionCapture = false;
   }
 
   async startManual() {
@@ -495,9 +605,10 @@ class LocalMicrophone {
     this.silenceSamples = 0;
   }
 
-  finish(wakeMode) {
+  finish(wakeMode, interruptOnly = false) {
     if (!this.capturing) return;
     const duration = this.context ? this.totalSamples / this.context.sampleRate : 0;
+    const wasInterruption = interruptOnly || this.interruptionCapture;
     const samples = concatenateChunks(this.chunks, this.totalSamples);
     this.manual = false;
     this.capturing = false;
@@ -506,16 +617,50 @@ class LocalMicrophone {
     this.silenceSamples = 0;
     this.preRoll = [];
     this.preRollSamples = 0;
+    this.interruptionCapture = false;
     if (duration < 0.25) {
-      setVisualState("ready", "Mantén pulsado un poco más para hablar");
+      if (wasInterruption) resumeSpeakingAfterInterruption();
+      if (!wasInterruption) {
+        setVisualState("ready", "Mantén pulsado un poco más para hablar");
+      }
       return;
     }
     const blob = encodeWav(samples, this.context.sampleRate);
-    this.onUtterance(blob, wakeMode);
+    this.onUtterance(blob, wakeMode, wasInterruption);
   }
 }
 
-async function sendUtterance(blob, wakeMode) {
+async function sendInterruption(blob) {
+  if (appState.interruptionPending) return;
+  appState.interruptionPending = true;
+  const form = new FormData();
+  form.append("audio", blob, "interruption.wav");
+  form.append("session_id", appState.sessionId);
+  let interrupted = false;
+  try {
+    const response = await fetch("/api/voice/interrupt", { method: "POST", body: form });
+    if (!response.ok) throw new Error(await readError(response));
+    const payload = await response.json();
+    if (payload.interrupted) {
+      interrupted = true;
+      stopSpeaking();
+      setVisualState("ready", "Respuesta interrumpida por voz");
+      showToast("De acuerdo. He dejado de hablar.");
+    }
+  } catch (error) {
+    console.debug("Voice interruption ignored", error);
+  } finally {
+    if (!interrupted) await resumeSpeakingAfterInterruption();
+    appState.interruptionPending = false;
+    appState.interruptionCooldownUntil = Date.now() + 1800;
+  }
+}
+
+async function sendUtterance(blob, wakeMode, interruptOnly = false) {
+  if (interruptOnly) {
+    await sendInterruption(blob);
+    return;
+  }
   if (appState.busy) return;
   appState.busy = true;
   setVisualState("transcribing", "Convirtiendo voz en texto localmente");
@@ -665,6 +810,9 @@ elements.resetButton.addEventListener("click", async () => {
     });
     if (!response.ok) throw new Error(await readError(response));
     elements.transcript.innerHTML = "";
+    appState.activityCount = 0;
+    if (elements.activityCode) elements.activityCode.textContent = "CTX-000";
+    if (elements.monitorFocus) elements.monitorFocus.textContent = "VISION // ALL DISPLAYS";
     handleAction(null);
     addMessage("jarvis", "Conversación reiniciada. Te escucho.");
     setVisualState("ready", "Contexto de conversación eliminado");
@@ -725,12 +873,103 @@ function drawWaveform() {
 }
 
 function updateClock() {
+  const now = new Date();
   elements.clock.textContent = new Intl.DateTimeFormat("es-EC", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
-  }).format(new Date());
+  }).format(now);
+  if (elements.systemDate) {
+    const date = new Intl.DateTimeFormat("es-EC", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    })
+      .format(now)
+      .replaceAll(".", "")
+      .toUpperCase();
+    elements.systemDate.textContent = `${date} // QUITO GMT-5`;
+  }
+}
+
+function startNeuralField() {
+  const canvas = elements.neuralField;
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let width = 0;
+  let height = 0;
+  let particles = [];
+
+  const seedParticles = () => {
+    const count = Math.max(24, Math.min(62, Math.floor((width * height) / 28000)));
+    particles = Array.from({ length: count }, () => ({
+      x: Math.random() * width,
+      y: Math.random() * height,
+      vx: (Math.random() - 0.5) * 0.12,
+      vy: (Math.random() - 0.5) * 0.12,
+      radius: 0.55 + Math.random() * 1.05,
+      phase: Math.random() * Math.PI * 2,
+    }));
+  };
+
+  const resize = () => {
+    const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = Math.floor(width * ratio);
+    canvas.height = Math.floor(height * ratio);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    seedParticles();
+  };
+
+  const draw = (time = 0) => {
+    if (document.hidden) {
+      if (!reducedMotion) window.requestAnimationFrame(draw);
+      return;
+    }
+    context.clearRect(0, 0, width, height);
+    const active = ["listening", "thinking", "transcribing", "speaking"].includes(
+      appState.visualState,
+    );
+    const connectionDistance = active ? 142 : 112;
+    for (let first = 0; first < particles.length; first += 1) {
+      const particle = particles[first];
+      if (!reducedMotion) {
+        particle.x += particle.vx * (active ? 1.8 : 1);
+        particle.y += particle.vy * (active ? 1.8 : 1);
+        if (particle.x < -10) particle.x = width + 10;
+        if (particle.x > width + 10) particle.x = -10;
+        if (particle.y < -10) particle.y = height + 10;
+        if (particle.y > height + 10) particle.y = -10;
+      }
+      for (let second = first + 1; second < particles.length; second += 1) {
+        const neighbor = particles[second];
+        const distance = Math.hypot(particle.x - neighbor.x, particle.y - neighbor.y);
+        if (distance >= connectionDistance) continue;
+        const alpha = (1 - distance / connectionDistance) * (active ? 0.15 : 0.075);
+        context.beginPath();
+        context.moveTo(particle.x, particle.y);
+        context.lineTo(neighbor.x, neighbor.y);
+        context.strokeStyle = `rgba(88, 209, 255, ${alpha})`;
+        context.lineWidth = 0.55;
+        context.stroke();
+      }
+      const pulse = 0.55 + Math.sin(time / 900 + particle.phase) * 0.25;
+      context.beginPath();
+      context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+      context.fillStyle = `rgba(116, 229, 255, ${active ? pulse : pulse * 0.55})`;
+      context.fill();
+    }
+    if (!reducedMotion) window.requestAnimationFrame(draw);
+  };
+
+  resize();
+  window.addEventListener("resize", resize, { passive: true });
+  draw();
 }
 
 if ("serviceWorker" in navigator) {
@@ -743,3 +982,4 @@ refreshHealth();
 window.setInterval(refreshHealth, 30000);
 connectStateSocket();
 drawWaveform();
+startNeuralField();

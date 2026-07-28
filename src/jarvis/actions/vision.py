@@ -6,6 +6,8 @@ import ctypes
 import io
 import json
 import math
+import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -23,6 +25,36 @@ class ScreenCapture:
     top: int
     width: int
     height: int
+    monitor: str = "all"
+    monitor_label: str = "Todas las pantallas"
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenMonitor:
+    key: str
+    device: str
+    left: int
+    top: int
+    width: int
+    height: int
+    primary: bool = False
+
+    @property
+    def label(self) -> str:
+        suffix = " (principal)" if self.primary else ""
+        return f"Monitor {self.key}{suffix}"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "device": self.device,
+            "left": self.left,
+            "top": self.top,
+            "width": self.width,
+            "height": self.height,
+            "primary": self.primary,
+        }
 
 
 class LocalVisionController:
@@ -68,15 +100,180 @@ class LocalVisionController:
         )
 
     @staticmethod
-    def _capture() -> ScreenCapture:
+    def monitors() -> tuple[ScreenMonitor, ...]:
+        """Return active monitors in Windows virtual-desktop coordinates."""
+
+        class Rect(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long),
+            ]
+
+        class MonitorInfoEx(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_ulong),
+                ("rcMonitor", Rect),
+                ("rcWork", Rect),
+                ("dwFlags", ctypes.c_ulong),
+                ("szDevice", ctypes.c_wchar * 32),
+            ]
+
+        user32 = ctypes.windll.user32
+        callback_type = ctypes.WINFUNCTYPE(
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(Rect),
+            ctypes.c_void_p,
+        )
+        detected: list[ScreenMonitor] = []
+
+        def callback(
+            monitor_handle: int,
+            _device_context: int,
+            _rect: ctypes.POINTER(Rect),
+            _data: int,
+        ) -> int:
+            info = MonitorInfoEx()
+            info.cbSize = ctypes.sizeof(MonitorInfoEx)
+            if not user32.GetMonitorInfoW(monitor_handle, ctypes.byref(info)):
+                return 1
+            rect = info.rcMonitor
+            match = re.search(r"DISPLAY(\d+)$", info.szDevice, flags=re.IGNORECASE)
+            key = match.group(1) if match else str(len(detected) + 1)
+            detected.append(
+                ScreenMonitor(
+                    key=key,
+                    device=info.szDevice,
+                    left=int(rect.left),
+                    top=int(rect.top),
+                    width=int(rect.right - rect.left),
+                    height=int(rect.bottom - rect.top),
+                    primary=bool(info.dwFlags & 1),
+                )
+            )
+            return 1
+
+        callback_ref = callback_type(callback)
+        if not user32.EnumDisplayMonitors(0, 0, callback_ref, 0) or not detected:
+            raise RuntimeError("Windows no devolvió monitores activos")
+        return tuple(
+            sorted(
+                detected,
+                key=lambda monitor: (
+                    int(monitor.key) if monitor.key.isdigit() else 10_000,
+                    monitor.left,
+                    monitor.top,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _normalize_selector(selector: str) -> str:
+        normalized = unicodedata.normalize("NFKD", selector.casefold())
+        normalized = "".join(
+            character for character in normalized if not unicodedata.combining(character)
+        )
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    def resolve_monitor(self, selector: str = "all") -> ScreenMonitor | None:
+        monitors = self.monitors()
+        value = self._normalize_selector(selector or "all")
+        if value in {
+            "all",
+            "ambos",
+            "todas",
+            "todos",
+            "todas las pantallas",
+            "todos los monitores",
+        }:
+            return None
+        if value in {"primary", "principal", "monitor principal", "pantalla principal"}:
+            return next((monitor for monitor in monitors if monitor.primary), monitors[0])
+        if value in {
+            "left",
+            "izquierda",
+            "monitor izquierdo",
+            "monitor de la izquierda",
+            "pantalla izquierda",
+            "pantalla de la izquierda",
+        }:
+            return min(monitors, key=lambda monitor: (monitor.left, monitor.top))
+        if value in {
+            "right",
+            "derecha",
+            "monitor derecho",
+            "monitor de la derecha",
+            "pantalla derecha",
+            "pantalla de la derecha",
+        }:
+            return max(monitors, key=lambda monitor: (monitor.left, -monitor.top))
+        ordinal = {
+            "primer": "1",
+            "primero": "1",
+            "segundo": "2",
+            "tercer": "3",
+            "tercero": "3",
+            "cuarto": "4",
+        }
+        match = re.fullmatch(
+            r"(?:(?:monitor|pantalla)\s+)?"
+            r"(primer|primero|segundo|tercer|tercero|cuarto|\d{1,2})"
+            r"(?:\s+(?:monitor|pantalla))?",
+            value,
+        )
+        key = ordinal.get(match.group(1), match.group(1)) if match else value
+        selected = next((monitor for monitor in monitors if monitor.key == key), None)
+        if selected is not None:
+            return selected
+        choices = ", ".join(monitor.label for monitor in monitors)
+        raise ValueError(f"monitor desconocido; detecté: {choices}")
+
+    def list_monitors(self) -> ExecutionResult:
+        try:
+            monitors = self.monitors()
+            descriptions = [
+                f"{monitor.label}, {monitor.width} por {monitor.height}"
+                for monitor in monitors
+            ]
+            return ExecutionResult(
+                True,
+                f"Detecté {len(monitors)}: " + "; ".join(descriptions) + ".",
+                {
+                    "monitors": [monitor.as_dict() for monitor in monitors],
+                    "monitor": "all",
+                    "monitor_label": "Todas las pantallas",
+                },
+            )
+        except Exception as exc:
+            return self._failure("listar los monitores", exc)
+
+    def _capture(self, monitor: str = "all") -> ScreenCapture:
         from PIL import ImageGrab
 
-        image = ImageGrab.grab(all_screens=True)
-        user32 = ctypes.windll.user32
-        left = int(user32.GetSystemMetrics(76))
-        top = int(user32.GetSystemMetrics(77))
-        width = int(user32.GetSystemMetrics(78)) or image.width
-        height = int(user32.GetSystemMetrics(79)) or image.height
+        selected = self.resolve_monitor(monitor)
+        if selected is None:
+            image = ImageGrab.grab(all_screens=True)
+            user32 = ctypes.windll.user32
+            left = int(user32.GetSystemMetrics(76))
+            top = int(user32.GetSystemMetrics(77))
+            width = int(user32.GetSystemMetrics(78)) or image.width
+            height = int(user32.GetSystemMetrics(79)) or image.height
+            monitor_key = "all"
+            monitor_label = "Todas las pantallas"
+        else:
+            left = selected.left
+            top = selected.top
+            width = selected.width
+            height = selected.height
+            image = ImageGrab.grab(
+                bbox=(left, top, left + width, top + height),
+                all_screens=True,
+            )
+            monitor_key = selected.key
+            monitor_label = selected.label
         image.thumbnail((1_600, 1_600))
         buffer = io.BytesIO()
         image.save(buffer, format="PNG", optimize=True)
@@ -86,6 +283,8 @@ class LocalVisionController:
             top=top,
             width=width,
             height=height,
+            monitor=monitor_key,
+            monitor_label=monitor_label,
         )
 
     async def _request(
@@ -131,7 +330,7 @@ class LocalVisionController:
             raise ValueError("el modelo visual devolvió una estructura inválida")
         return decoded
 
-    async def describe(self) -> ExecutionResult:
+    async def describe(self, monitor: str = "all") -> ExecutionResult:
         schema = {
             "type": "object",
             "properties": {
@@ -150,9 +349,10 @@ class LocalVisionController:
             ],
         }
         try:
-            capture = await asyncio.to_thread(self._capture)
+            capture = await asyncio.to_thread(self._capture, monitor)
             decoded = await self._request(
-                "Describe en español lo que está visible y los controles relevantes. Sé conciso.",
+                f"Estás observando {capture.monitor_label}. Describe en español lo que está "
+                "visible y los controles relevantes. Sé conciso.",
                 schema,
                 capture,
                 180,
@@ -166,13 +366,19 @@ class LocalVisionController:
                 "interactive_elements": elements,
                 "warnings": self._string_list(decoded.get("warnings"), 8),
                 "ephemeral_capture": True,
+                "monitor": capture.monitor,
+                "monitor_label": capture.monitor_label,
             }
             suffix = f" Controles relevantes: {'; '.join(elements[:6])}." if elements else ""
-            return ExecutionResult(True, f"{summary}{suffix}", details)
+            return ExecutionResult(
+                True,
+                f"En {capture.monitor_label}: {summary}{suffix}",
+                details,
+            )
         except Exception as exc:
             return self._failure("describir la pantalla", exc)
 
-    async def ask(self, question: str) -> ExecutionResult:
+    async def ask(self, question: str, monitor: str = "all") -> ExecutionResult:
         schema = {
             "type": "object",
             "properties": {
@@ -183,9 +389,10 @@ class LocalVisionController:
             "required": ["answer", "evidence", "uncertainty"],
         }
         try:
-            capture = await asyncio.to_thread(self._capture)
+            capture = await asyncio.to_thread(self._capture, monitor)
             decoded = await self._request(
-                "Responde en español usando solo la captura. "
+                f"Estás observando {capture.monitor_label}. "
+                "Responde en español usando solo la captura actual. "
                 f"Pregunta: <pregunta>{question}</pregunta>",
                 schema,
                 capture,
@@ -202,12 +409,14 @@ class LocalVisionController:
                     "evidence": evidence,
                     "uncertainty": uncertainty,
                     "ephemeral_capture": True,
+                    "monitor": capture.monitor,
+                    "monitor_label": capture.monitor_label,
                 },
             )
         except Exception as exc:
             return self._failure("analizar la pantalla", exc)
 
-    async def find(self, target: str) -> ExecutionResult:
+    async def find(self, target: str, monitor: str = "all") -> ExecutionResult:
         schema = {
             "type": "object",
             "properties": {
@@ -222,8 +431,9 @@ class LocalVisionController:
             "required": ["found", "x", "y", "confidence", "element", "dangerous", "reason"],
         }
         try:
-            capture = await asyncio.to_thread(self._capture)
+            capture = await asyncio.to_thread(self._capture, monitor)
             decoded = await self._request(
+                f"Estás observando {capture.monitor_label}. "
                 "Localiza visualmente el centro del objetivo indicado. x e y deben ser coordenadas "
                 "normalizadas entre 0 y 1000. Marca dangerous si el elemento puede comprar, pagar, "
                 "transferir, borrar, cerrar sesión, cambiar seguridad o causar pérdida de datos. "
@@ -250,6 +460,8 @@ class LocalVisionController:
                 "confidence": confidence,
                 "dangerous": dangerous,
                 "ephemeral_capture": True,
+                "monitor": capture.monitor,
+                "monitor_label": capture.monitor_label,
             }
             if confidence < 0.82:
                 return ExecutionResult(
@@ -312,7 +524,13 @@ class LocalVisionController:
         elif isinstance(exc, json.JSONDecodeError):
             reason = "la respuesta visual quedó incompleta"
         elif isinstance(exc, ValueError) and str(exc).startswith(
-            ("coordenada visual", "confianza visual", "campo visual", "el modelo visual")
+            (
+                "coordenada visual",
+                "confianza visual",
+                "campo visual",
+                "el modelo visual",
+                "monitor desconocido",
+            )
         ):
             reason = str(exc)
         else:

@@ -7,6 +7,7 @@ from typing import Any
 
 class ActionName(StrEnum):
     APP_OPEN = "app.open"
+    APP_LIST = "app.list"
     BROWSER_OPEN = "browser.open"
     BROWSER_SEARCH = "browser.search"
     BROWSER_BACK = "browser.back"
@@ -43,6 +44,7 @@ class ActionName(StrEnum):
     POINTER_CLICK = "pointer.click"
     POINTER_SCROLL = "pointer.scroll"
     SCREENSHOT_TAKE = "screenshot.take"
+    SCREEN_LIST = "screen.list"
     SCREEN_DESCRIBE = "screen.describe"
     SCREEN_ASK = "screen.ask"
     SCREEN_FIND = "screen.find"
@@ -53,6 +55,7 @@ class ActionName(StrEnum):
     SYSTEM_STATUS = "system.status"
     PATH_OPEN = "path.open"
     PATH_OPEN_FOLDER = "path.open_folder"
+    DIALOG_CHOOSE = "dialog.choose"
     WORKFLOW_RUN = "workflow.run"
 
 
@@ -142,6 +145,18 @@ class PendingAction:
     action: PreparedAction | PreparedWorkflow
     created_at: float
     expires_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class PendingDialog:
+    action_id: str
+    session_id: str
+    parent_handle: int
+    dialog_handle: int
+    title: str
+    message: str
+    options: tuple[str, ...]
+    created_at: float
 
 
 @dataclass(frozen=True, slots=True)

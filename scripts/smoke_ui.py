@@ -33,6 +33,53 @@ async def verify() -> dict[str, object]:
         await page.locator("#textInput").fill("estado del sistema")
         await page.locator("#textForm button").click()
         await page.get_by_text("CPU", exact=False).last.wait_for(state="visible", timeout=15_000)
+        await page.evaluate(
+            """handleAction({
+              action_id: "dialog-smoke",
+              name: "dialog.choose",
+              risk: "medium",
+              description: "Responder al diálogo Bloc de notas",
+              requires_confirmation: true,
+              details: {dialog_options: ["Guardar", "No guardar", "Cancelar"]},
+            })"""
+        )
+        dialog_buttons = page.locator("#dialogChoiceButtons button")
+        await dialog_buttons.first.wait_for(state="visible", timeout=5_000)
+        dialog_labels = await dialog_buttons.all_text_contents()
+        regular_buttons_hidden = await page.locator("#approveActionButton").is_hidden()
+        await page.evaluate("handleAction(null)")
+        barge_in = await page.evaluate(
+            """() => {
+              const fakeAudio = {
+                paused: false,
+                pause() { this.paused = true; },
+                play() { this.paused = false; return Promise.resolve(); },
+              };
+              appState.speaking = true;
+              appState.busy = true;
+              appState.audioPlayer = fakeAudio;
+              microphone.ready = true;
+              microphone.handsFree = false;
+              microphone.manual = false;
+              microphone.capturing = false;
+              microphone.interruptionCapture = false;
+              microphone.preRoll = [];
+              microphone.preRollSamples = 0;
+              microphone.threshold = 0.016;
+              microphone.context = {sampleRate: 16000};
+              microphone.process(new Float32Array(2048).fill(0.08));
+              const result = {
+                capturing: microphone.capturing,
+                interruptionCapture: microphone.interruptionCapture,
+                playbackPaused: fakeAudio.paused,
+                statePaused: appState.interruptionPaused,
+              };
+              microphone.disableHandsFree();
+              appState.audioPlayer = null;
+              stopSpeaking();
+              return result;
+            }"""
+        )
         return {
             "ui_opened": opened.success,
             "actions_online": await page.locator("#actionsStatus").evaluate(
@@ -44,6 +91,15 @@ async def verify() -> dict[str, object]:
             "security_gate": "RIESGO MEDIO" in gate_text,
             "cancelled_without_execution": not await gate.is_visible(),
             "system_action_response": True,
+            "dialog_options_rendered": dialog_labels == ["Guardar", "No guardar", "Cancelar"],
+            "ambiguous_confirm_hidden": regular_buttons_hidden,
+            "barge_in_after_manual_mic": barge_in
+            == {
+                "capturing": True,
+                "interruptionCapture": True,
+                "playbackPaused": True,
+                "statePaused": True,
+            },
         }
     finally:
         await browser.close()

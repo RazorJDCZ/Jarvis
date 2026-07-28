@@ -1,5 +1,6 @@
 param(
     [switch]$SkipVoice,
+    [switch]$SkipKokoroModel,
     [switch]$SkipPiperModel,
     [switch]$SkipWhisperModel
 )
@@ -7,6 +8,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvPython = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+$KokoroDirectory = Join-Path $ProjectRoot 'models\kokoro'
+$KokoroModel = Join-Path $KokoroDirectory 'kokoro-v1.0.onnx'
+$KokoroVoices = Join-Path $KokoroDirectory 'voices-v1.0.bin'
+$KokoroModelPartial = "$KokoroModel.part"
+$KokoroVoicesPartial = "$KokoroVoices.part"
 $VoiceDirectory = Join-Path $ProjectRoot 'models\piper'
 $VoiceModel = Join-Path $VoiceDirectory 'es_ES-sharvard-medium.onnx'
 $VoiceConfig = Join-Path $VoiceDirectory 'es_ES-sharvard-medium.onnx.json'
@@ -34,7 +40,26 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot '.env'))) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot '.env.example') -Destination (Join-Path $ProjectRoot '.env')
 }
 
-Write-Host '[3/4] Comprobando voz Piper...' -ForegroundColor Cyan
+Write-Host '[3/4] Comprobando voces neuronales locales...' -ForegroundColor Cyan
+if (-not $SkipVoice -and -not $SkipKokoroModel) {
+    New-Item -ItemType Directory -Force -Path $KokoroDirectory | Out-Null
+    if (-not (Test-Path -LiteralPath $KokoroModel)) {
+        Write-Host 'Descargando voz Kokoro 82M (aprox. 311 MB)...'
+        Invoke-WebRequest `
+            -Uri 'https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx' `
+            -OutFile $KokoroModelPartial
+        Move-Item -LiteralPath $KokoroModelPartial -Destination $KokoroModel
+    }
+    if (-not (Test-Path -LiteralPath $KokoroVoices)) {
+        Invoke-WebRequest `
+            -Uri 'https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin' `
+            -OutFile $KokoroVoicesPartial
+        Move-Item -LiteralPath $KokoroVoicesPartial -Destination $KokoroVoices
+    }
+} elseif (-not $SkipVoice) {
+    Write-Host 'Kokoro omitido; Jarvis intentara usar Piper.' -ForegroundColor Yellow
+}
+
 if (-not $SkipVoice -and -not $SkipPiperModel) {
     New-Item -ItemType Directory -Force -Path $VoiceDirectory | Out-Null
     if (-not (Test-Path -LiteralPath $VoiceModel)) {
@@ -51,7 +76,7 @@ if (-not $SkipVoice -and -not $SkipPiperModel) {
         Move-Item -LiteralPath $VoiceConfigPartial -Destination $VoiceConfig
     }
 } else {
-    Write-Host 'Piper omitido. Jarvis usara una voz instalada en Windows.' -ForegroundColor Yellow
+    Write-Host 'Piper omitido. Jarvis usara Kokoro o una voz instalada en Windows.' -ForegroundColor Yellow
 }
 
 if (-not $SkipVoice -and -not $SkipWhisperModel -and -not (Test-Path -LiteralPath $WhisperModel)) {

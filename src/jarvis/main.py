@@ -24,10 +24,12 @@ from jarvis.schemas import (
     ChatRequest,
     ChatResponse,
     HealthResponse,
+    InterruptResponse,
     TTSRequest,
     VoiceResponse,
 )
 from jarvis.services.conversation import ConversationService
+from jarvis.services.interruptions import VoiceInterruptionMatcher
 from jarvis.services.wake import WakeGate
 from jarvis.state import StateHub
 
@@ -72,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     transcriber = WhisperTranscriber(config)
     tts = PiperTTS(config)
     wake_gate = WakeGate(config.wake_word, config.wake_window_seconds, config.max_sessions)
+    interruption_matcher = VoiceInterruptionMatcher(config.wake_word)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -134,6 +137,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             tts=await tts.status(),
             actions=await action_engine.status(),
             vision=await action_engine.vision_status(),
+            memory=conversation.memory.status(),
             wake_word=config.wake_word,
         )
 
@@ -163,6 +167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.session_id,
             request.action_id,
             request.approve,
+            request.choice,
         )
         await state_hub.set("ready", "Decisión procesada")
         return ChatResponse(
@@ -262,6 +267,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             media_type="audio/wav",
             headers={"Cache-Control": "no-store"},
         )
+
+    @app.post("/api/voice/interrupt", response_model=InterruptResponse)
+    async def interrupt_voice(
+        audio: Annotated[UploadFile, File()],
+        session_id: Annotated[str, Form()] = "default",
+    ) -> InterruptResponse:
+        if not valid_session_id(session_id):
+            raise HTTPException(status_code=400, detail="Identificador de sesion invalido")
+        audio_bytes = await audio.read(config.max_audio_bytes + 1)
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="El audio esta vacio")
+        if len(audio_bytes) > config.max_audio_bytes:
+            raise HTTPException(status_code=413, detail="El audio supera el limite permitido")
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                suffix=safe_audio_suffix(audio.filename),
+                dir=config.data_dir / "tmp",
+                delete=False,
+            ) as tmp_file:
+                tmp_file.write(audio_bytes)
+                tmp_path = Path(tmp_file.name)
+            transcript, language = await transcriber.transcribe(tmp_path)
+            return InterruptResponse(
+                transcript=transcript,
+                language=language,
+                interrupted=interruption_matcher.matches(transcript),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
     @app.websocket("/ws")
     async def state_socket(websocket: WebSocket) -> None:

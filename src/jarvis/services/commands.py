@@ -72,16 +72,22 @@ class SafeCommandRouter:
                 f"{self._MONTHS[now.month - 1]} de {now.year}."
             )
         if self._matches(command, (r"(?:que version eres|cual es tu version|version)",)):
-            return SafeCommandResult(f"Estoy ejecutando Jarvis {__version__}, etapa dos.")
+            return SafeCommandResult(f"Estoy ejecutando Jarvis {__version__}, etapa cuatro.")
         if self._matches(
             command,
             (r"(?:que puedes hacer|ayuda|muestra (?:los )?comandos|lista (?:los )?comandos)",),
         ):
             return SafeCommandResult(
-                "Puedo conversar y controlar aplicaciones, páginas web, volumen, multimedia, "
-                "ventanas y controles accesibles. También puedo describir la pantalla, localizar "
-                "elementos y encadenar hasta tres pasos explícitos. Las acciones sensibles "
-                "siempre piden confirmación."
+                "Puedo conversar, abrir las aplicaciones seguras publicadas por Windows y "
+                "controlar páginas en Chrome, Edge o Brave. También manejo volumen, multimedia, "
+                "ventanas y controles accesibles, puedo describir la pantalla y encadenar hasta "
+                "tres pasos explícitos. Tengo memoria local para tus preferencias, proyectos y "
+                "conversaciones recientes. Di ‘qué recuerdas de mí’ para consultarla o ‘recuerda "
+                "que...’ para guardar algo. Di ‘qué aplicaciones puedes abrir’ para ver el "
+                "inventario. "
+                "Las acciones sensibles "
+                "siempre piden confirmación y los diálogos emergentes esperan una opción concreta. "
+                "Si hablo demasiado, di ‘Jarvis, es suficiente’."
             )
         if self._matches(
             command,
