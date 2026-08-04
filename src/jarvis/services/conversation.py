@@ -103,7 +103,13 @@ class ConversationService:
         closing = cls._GENERIC_CLOSING.search(normalized_trimmed)
         return trimmed[: closing.start()].rstrip() if closing is not None else trimmed
 
-    async def reply(self, session_id: str, message: str) -> ConversationReply:
+    async def reply(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        remote: bool = False,
+    ) -> ConversationReply:
         safe_command = self.commands.try_handle(message)
         if safe_command is not None:
             if safe_command.reset_history:
@@ -121,7 +127,11 @@ class ConversationService:
             if memory_answer:
                 return ConversationReply(memory_answer, "local-memory")
 
-        action = await self.actions.try_handle(session_id, message)
+        action = (
+            await self.actions.try_handle(session_id, message, remote=True)
+            if remote
+            else await self.actions.try_handle(session_id, message)
+        )
         if action is not None:
             return ConversationReply(action.message, "action-engine", action)
 
@@ -183,3 +193,6 @@ class ConversationService:
     ) -> ConversationReply:
         outcome = await self.actions.decide(session_id, action_id, approve, choice)
         return ConversationReply(outcome.message, "action-engine", outcome)
+
+    def emergency_stop(self, session_id: str) -> dict[str, int]:
+        return self.actions.emergency_stop(session_id)

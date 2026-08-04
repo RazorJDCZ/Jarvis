@@ -1,18 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Jarvis">
   <defs>
     <radialGradient id="core" cx="50%" cy="42%" r="62%">
-      <stop offset="0" stop-color="#164d68" />
-      <stop offset="0.62" stop-color="#061722" />
-      <stop offset="1" stop-color="#02070d" />
+      <stop offset="0" stop-color="#5d1022" />
+      <stop offset="0.62" stop-color="#160713" />
+      <stop offset="1" stop-color="#03050d" />
     </radialGradient>
     <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
       <feGaussianBlur stdDeviation="8" result="blur" />
       <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
     </filter>
   </defs>
-  <rect width="512" height="512" rx="112" fill="#02070d" />
-  <path d="M256 38 434 138v236L256 474 78 374V138Z" fill="url(#core)" stroke="#61dbff" stroke-width="8" />
-  <circle cx="256" cy="256" r="146" fill="none" stroke="#61dbff" stroke-opacity=".25" stroke-width="3" stroke-dasharray="9 14" />
-  <circle cx="256" cy="256" r="112" fill="none" stroke="#61dbff" stroke-opacity=".5" stroke-width="4" />
-  <path d="M292 155v178c0 48-26 72-76 72-31 0-56-12-73-36l34-29c10 13 21 20 35 20 19 0 29-11 29-34V155Z" fill="#d9f8ff" filter="url(#glow)" />
+  <rect width="512" height="512" rx="112" fill="#03050d" />
+  <path d="M256 38 434 138v236L256 474 78 374V138Z" fill="url(#core)" stroke="#ff3658" stroke-width="8" />
+  <path d="M256 78V434M98 164 414 348M98 348 414 164M78 256H434" fill="none" stroke="#277eff" stroke-opacity=".28" stroke-width="4" />
+  <path d="M256 118 364 164 402 256 364 348 256 394 148 348 110 256 148 164ZM256 166 326 196 354 256 326 316 256 346 186 316 158 256 186 196Z" fill="none" stroke="#ff3658" stroke-opacity=".38" stroke-width="4" />
+  <g fill="none" stroke="#ff4968" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M218 226 160 176 105 194M207 250 143 246 92 276M211 281 150 319 113 375M228 303 188 365 180 425M294 226 352 176 407 194M305 250 369 246 420 276M301 281 362 319 399 375M284 303 324 365 332 425" />
+  </g>
+  <path d="M256 132 294 180 281 236 308 292 256 390 204 292 231 236 218 180Z" fill="#ff3658" stroke="#ffe7eb" stroke-width="6" filter="url(#glow)" />
+  <circle cx="256" cy="188" r="22" fill="#277eff" stroke="#dce8ff" stroke-width="6" />
 </svg>

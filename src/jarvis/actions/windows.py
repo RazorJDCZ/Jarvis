@@ -155,6 +155,20 @@ class WindowController:
     def _native_dialog_handles() -> tuple[tuple[int, int], ...]:
         user32 = ctypes.windll.user32
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        user32.GetClassNameW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_wchar),
+            ctypes.c_int,
+        ]
+        user32.GetClassNameW.restype = ctypes.c_int
+        user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        user32.IsWindowVisible.restype = ctypes.c_bool
+        user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.GetAncestor.restype = ctypes.c_void_p
+        user32.EnumChildWindows.argtypes = [ctypes.c_void_p, callback_type, ctypes.c_void_p]
+        user32.EnumChildWindows.restype = ctypes.c_bool
+        user32.EnumWindows.argtypes = [callback_type, ctypes.c_void_p]
+        user32.EnumWindows.restype = ctypes.c_bool
         found: set[tuple[int, int]] = set()
 
         def inspect(handle: int, _parameter: int) -> bool:

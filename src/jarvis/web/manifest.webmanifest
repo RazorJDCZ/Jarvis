@@ -1,13 +1,13 @@
 {
-  "name": "Jarvis Local Core",
+  "name": "Jarvis Private Assistant",
   "short_name": "Jarvis",
-  "description": "Asistente personal privado y local",
+  "description": "Asistente personal privado, local y accesible por tu tailnet",
   "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#02070d",
-  "theme_color": "#030a12",
+  "background_color": "#03050d",
+  "theme_color": "#100309",
   "lang": "es",
   "icons": [
     {

@@ -3,14 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#02080f" />
+    <meta name="theme-color" content="#100309" />
     <meta
       name="description"
       content="Interfaz privada del núcleo de inteligencia local Jarvis"
     />
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="manifest" href="/manifest.webmanifest?v=spider-v3" />
+    <link rel="icon" href="/static/icon.svg?v=spider-v3" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css?v=spider-v3" />
     <title>JARVIS // Neural Interface</title>
   </head>
   <body data-state="standby">
@@ -26,10 +26,14 @@
       <div class="brand-block">
         <div class="brand-mark" aria-hidden="true">
           <span class="brand-orbit"></span>
-          <strong>J</strong>
+          <svg class="spider-mark spider-mark-small" viewBox="0 0 100 100">
+            <path class="spider-legs" d="M40 38 25 25 9 30M38 46 20 43 6 52M39 55 21 64 10 77M42 62 31 78 27 92M60 38 75 25 91 30M62 46 80 43 94 52M61 55 79 64 90 77M58 62 69 78 73 92" />
+            <path class="spider-body" d="M50 19 60 31 57 45 63 58 50 81 37 58 43 45 40 31Z" />
+            <circle class="spider-node" cx="50" cy="32" r="5" />
+          </svg>
         </div>
         <div>
-          <p class="eyebrow">JUANDI // PRIVATE INTELLIGENCE SYSTEM</p>
+          <p class="eyebrow">PRIVATE INTELLIGENCE SYSTEM</p>
           <h1>JARVIS <span>NEURAL INTERFACE</span></h1>
         </div>
       </div>
@@ -37,7 +41,7 @@
       <div class="top-telemetry" aria-label="Telemetría del sistema">
         <span><i></i> LOCAL ENCLAVE</span>
         <span><i></i> VISION MATRIX</span>
-        <span><i></i> ENCRYPTED LINK</span>
+        <span id="remoteLinkChip"><i></i> LOOPBACK LINK</span>
       </div>
 
       <div class="system-clock" aria-label="Hora local">
@@ -104,6 +108,10 @@
           <span aria-hidden="true">↺</span>
           <span><strong>RESET CONTEXT</strong><small>Reiniciar conversación</small></span>
         </button>
+        <button class="ghost-button" id="mobileAccessButton" type="button">
+          <span aria-hidden="true">⌁</span>
+          <span><strong>ACCESO MÓVIL</strong><small>Passkeys y dispositivos</small></span>
+        </button>
       </aside>
 
       <section class="core-stage" aria-label="Interfaz de voz">
@@ -136,7 +144,11 @@
           <span class="orb-surface">
             <span class="orb-grid"></span>
             <span class="core-reticle"></span>
-            <span class="orb-letter">J</span>
+            <svg class="spider-mark orb-spider" viewBox="0 0 100 100" aria-hidden="true">
+              <path class="spider-legs" d="M40 38 25 25 9 30M38 46 20 43 6 52M39 55 21 64 10 77M42 62 31 78 27 92M60 38 75 25 91 30M62 46 80 43 94 52M61 55 79 64 90 77M58 62 69 78 73 92" />
+              <path class="spider-body" d="M50 19 60 31 57 45 63 58 50 81 37 58 43 45 40 31Z" />
+              <circle class="spider-node" cx="50" cy="32" r="5" />
+            </svg>
             <small>CORE // 05</small>
           </span>
           <span class="orb-pulse"></span>
@@ -217,12 +229,99 @@
     </main>
 
     <footer class="footer-bar">
-      <span><i class="online-indicator"></i> LOOPBACK // 127.0.0.1 // SECURE</span>
+      <span id="networkMode"><i class="online-indicator"></i> LOOPBACK // 127.0.0.1 // SECURE</span>
       <span id="footerHint">PULSA Y MANTÉN PARA HABLAR // ESPACIO TAMBIÉN FUNCIONA</span>
-      <span>JARVIS 0.5.0 // BUILD VISION</span>
+      <span>JARVIS 0.6.0 // MOBILE LINK</span>
     </footer>
 
+    <button class="emergency-stop" id="emergencyStopButton" type="button" hidden>
+      <span aria-hidden="true">■</span>
+      <span><strong>DETENER JARVIS</strong><small>Voz y acciones pendientes</small></span>
+    </button>
+
+    <dialog class="remote-dialog" id="mobileAccessDialog">
+      <div class="remote-dialog-shell">
+        <div class="remote-dialog-heading">
+          <div>
+            <small>SECURE TAILNET CHANNEL</small>
+            <h2>Acceso móvil</h2>
+          </div>
+          <button id="closeMobileAccessButton" type="button" aria-label="Cerrar">×</button>
+        </div>
+        <div class="remote-dialog-body">
+          <div class="remote-summary">
+            <span id="remoteAdminState">COMPROBANDO</span>
+            <p id="remoteAdminDescription">Verificando el enlace privado de Jarvis.</p>
+            <a id="remoteOriginLink" href="#" target="_blank" rel="noreferrer" hidden></a>
+          </div>
+          <button class="primary-remote-button" id="createPairingButton" type="button">
+            GENERAR CÓDIGO DE EMPAREJAMIENTO
+          </button>
+          <div class="pairing-code" id="pairingCodePanel" hidden>
+            <small>CÓDIGO DE UN SOLO USO</small>
+            <strong id="pairingCode">0000-0000</strong>
+            <span id="pairingExpiry">EXPIRA EN 05:00</span>
+          </div>
+          <section class="device-vault">
+            <div>
+              <small>DEVICE VAULT</small>
+              <strong>Dispositivos autorizados</strong>
+            </div>
+            <div id="remoteDeviceList" class="remote-device-list"></div>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
+    <section class="remote-gate" id="remoteGate" hidden aria-labelledby="remoteGateTitle">
+      <div class="remote-gate-card">
+        <span class="remote-gate-orbit" aria-hidden="true"></span>
+        <small>JARVIS // TWO-FACTOR DEVICE LINK</small>
+        <h2 id="remoteGateTitle">Verifica este dispositivo</h2>
+        <p id="remoteIdentityLabel">Conexión privada detectada.</p>
+
+        <div id="remoteAuthenticationPanel" hidden>
+          <p>Usa la passkey guardada en este teléfono para abrir la consola.</p>
+          <button class="primary-remote-button" id="authenticateRemoteButton" type="button">
+            DESBLOQUEAR CON BIOMETRÍA
+          </button>
+          <button class="text-remote-button" id="showPairingPanelButton" type="button">
+            Emparejar como dispositivo nuevo
+          </button>
+        </div>
+
+        <form id="remotePairingForm" class="remote-pairing-form">
+          <label>
+            <span>NOMBRE DEL DISPOSITIVO</span>
+            <input id="remoteDeviceLabel" maxlength="80" value="Mi teléfono" autocomplete="off" />
+          </label>
+          <label>
+            <span>CÓDIGO MOSTRADO EN EL PC</span>
+            <input
+              id="remotePairingCode"
+              inputmode="numeric"
+              maxlength="9"
+              placeholder="0000-0000"
+              autocomplete="one-time-code"
+              required
+            />
+          </label>
+          <button class="primary-remote-button" type="submit">CREAR PASSKEY Y EMPAREJAR</button>
+          <button class="text-remote-button" id="showAuthenticationPanelButton" type="button" hidden>
+            Volver a usar mi passkey
+          </button>
+        </form>
+
+        <p class="remote-gate-error" id="remoteGateError" role="alert"></p>
+        <div class="remote-security-note">
+          <i></i>
+          <span>Tailscale autentica tu red y la passkey confirma este dispositivo. Jarvis nunca recibe
+            tu huella, rostro o PIN.</span>
+        </div>
+      </div>
+    </section>
+
     <div class="toast" id="toast" role="status"></div>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=spider-v3" defer></script>
   </body>
 </html>

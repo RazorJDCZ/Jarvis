@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -28,6 +29,11 @@ async def test_describe_returns_structured_local_observation(
 ) -> None:
     controller = LocalVisionController(Settings(project_root=tmp_path))
     monkeypatch.setattr(controller, "_capture", capture)
+    monkeypatch.setattr(
+        controller,
+        "monitors",
+        lambda: (ScreenMonitor("1", r"\\.\DISPLAY1", 0, 0, 1920, 1080, True),),
+    )
 
     async def response(*_args: object) -> dict[str, object]:
         return {
@@ -46,6 +52,51 @@ async def test_describe_returns_structured_local_observation(
     assert "editor abierto" in result.message
     assert result.details["ephemeral_capture"] is True
     assert result.details["interactive_elements"] == ["Guardar", "Cerrar"]
+
+
+@pytest.mark.asyncio
+async def test_describe_all_analyzes_each_monitor_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = LocalVisionController(Settings(project_root=tmp_path))
+    captures = {
+        "1": ScreenCapture(
+            "b25l", 0, 0, 1920, 1080, "1", "Monitor 1 (principal)",
+            r"\\.\DISPLAY1", "izquierda", 1024, 576, "one",
+        ),
+        "2": ScreenCapture(
+            "dHdv", 1920, 0, 1920, 1080, "2", "Monitor 2",
+            r"\\.\DISPLAY2", "derecha", 1024, 576, "two",
+        ),
+    }
+    monitors = (
+        ScreenMonitor("1", r"\\.\DISPLAY1", 0, 0, 1920, 1080, True),
+        ScreenMonitor("2", r"\\.\DISPLAY2", 1920, 0, 1920, 1080),
+    )
+    monkeypatch.setattr(controller, "monitors", lambda: monitors)
+    monkeypatch.setattr(controller, "_capture", lambda monitor="all": captures[monitor])
+    requested: list[str] = []
+
+    async def response(_prompt, _schema, screen_capture, _max_tokens):
+        requested.append(screen_capture.monitor)
+        return {
+            "summary": f"Contenido exclusivo {screen_capture.monitor}",
+            "visible_apps": [f"Aplicación {screen_capture.monitor}"],
+            "important_text": [],
+            "interactive_elements": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(controller, "_request", response)
+
+    result = await controller.describe("all")
+
+    assert result.success is True
+    assert requested == ["1", "2"]
+    assert result.details["monitor"] == "all"
+    assert len(result.details["monitor_observations"]) == 2
+    assert "Monitor 1" in result.message and "Monitor 2" in result.message
 
 
 @pytest.mark.asyncio
@@ -152,6 +203,62 @@ async def test_status_requires_declared_vision_capability(
 
     assert result.success is True
     assert result.details == {"local": True, "vision": True}
+
+
+@pytest.mark.asyncio
+async def test_visual_model_is_reused_during_request_then_released(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_client = httpx.AsyncClient
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append((request.url.path, payload))
+        if request.url.path == "/api/chat":
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "summary": "Minecraft está visible.",
+                                "visible_apps": ["Minecraft"],
+                                "important_text": [],
+                                "interactive_elements": [],
+                                "warnings": [],
+                            }
+                        )
+                    }
+                },
+            )
+        return httpx.Response(200, json={"done": True})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "jarvis.actions.vision.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+    controller = LocalVisionController(Settings(project_root=tmp_path))
+    monkeypatch.setattr(
+        controller,
+        "_capture",
+        lambda _monitor="1": ScreenCapture(
+            "cG5n", 0, 0, 1920, 1080, "1", "Monitor 1", image_width=1024,
+            image_height=576,
+        ),
+    )
+
+    result = await controller.describe("1")
+
+    assert result.success is True
+    assert requests[0][0] == "/api/chat"
+    assert requests[0][1]["keep_alive"] == "2m"
+    assert requests[1] == (
+        "/api/generate",
+        {"model": "qwen3.5:4b", "keep_alive": 0},
+    )
 
 
 class FakeVision:

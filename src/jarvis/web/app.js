@@ -33,6 +33,30 @@ const elements = {
   dialogChoiceButtons: document.querySelector("#dialogChoiceButtons"),
   approveActionButton: document.querySelector("#approveActionButton"),
   rejectActionButton: document.querySelector("#rejectActionButton"),
+  remoteLinkChip: document.querySelector("#remoteLinkChip"),
+  networkMode: document.querySelector("#networkMode"),
+  mobileAccessButton: document.querySelector("#mobileAccessButton"),
+  mobileAccessDialog: document.querySelector("#mobileAccessDialog"),
+  closeMobileAccessButton: document.querySelector("#closeMobileAccessButton"),
+  remoteAdminState: document.querySelector("#remoteAdminState"),
+  remoteAdminDescription: document.querySelector("#remoteAdminDescription"),
+  remoteOriginLink: document.querySelector("#remoteOriginLink"),
+  createPairingButton: document.querySelector("#createPairingButton"),
+  pairingCodePanel: document.querySelector("#pairingCodePanel"),
+  pairingCode: document.querySelector("#pairingCode"),
+  pairingExpiry: document.querySelector("#pairingExpiry"),
+  remoteDeviceList: document.querySelector("#remoteDeviceList"),
+  remoteGate: document.querySelector("#remoteGate"),
+  remoteIdentityLabel: document.querySelector("#remoteIdentityLabel"),
+  remoteAuthenticationPanel: document.querySelector("#remoteAuthenticationPanel"),
+  authenticateRemoteButton: document.querySelector("#authenticateRemoteButton"),
+  showPairingPanelButton: document.querySelector("#showPairingPanelButton"),
+  showAuthenticationPanelButton: document.querySelector("#showAuthenticationPanelButton"),
+  remotePairingForm: document.querySelector("#remotePairingForm"),
+  remoteDeviceLabel: document.querySelector("#remoteDeviceLabel"),
+  remotePairingCode: document.querySelector("#remotePairingCode"),
+  remoteGateError: document.querySelector("#remoteGateError"),
+  emergencyStopButton: document.querySelector("#emergencyStopButton"),
 };
 
 const stateLabels = {
@@ -45,8 +69,21 @@ const stateLabels = {
   error: "ATENCIÓN REQUERIDA",
 };
 
+function persistentClientId() {
+  const key = "jarvis-client-session-v1";
+  try {
+    const existing = localStorage.getItem(key);
+    if (existing && /^[a-zA-Z0-9_-]{8,128}$/.test(existing)) return existing;
+    const generated = crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`;
+    localStorage.setItem(key, generated);
+    return generated;
+  } catch {
+    return crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`;
+  }
+}
+
 const appState = {
-  sessionId: crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`,
+  sessionId: persistentClientId(),
   visualState: "standby",
   handsFree: false,
   muted: false,
@@ -62,6 +99,19 @@ const appState = {
   interruptionCooldownUntil: 0,
   speechGeneration: 0,
   activityCount: 0,
+  remote: false,
+  remoteEnabled: false,
+  remoteAuthenticated: false,
+  remoteDeviceId: null,
+  remoteStatus: null,
+  socket: null,
+  reconnectTimer: null,
+  healthTimer: null,
+  initialized: false,
+  pairingTimer: null,
+  operationGeneration: 0,
+  activeControllers: new Set(),
+  ttsController: null,
 };
 
 function setVisualState(state, detail) {
@@ -76,6 +126,23 @@ function showToast(message, duration = 3600) {
   elements.toast.textContent = message;
   elements.toast.classList.add("visible");
   appState.toastTimer = window.setTimeout(() => elements.toast.classList.remove("visible"), duration);
+}
+
+function cancelActiveClientWork() {
+  appState.operationGeneration += 1;
+  for (const controller of appState.activeControllers) controller.abort();
+  appState.activeControllers.clear();
+  appState.busy = false;
+}
+
+async function cancellableFetch(input, init = {}) {
+  const controller = new AbortController();
+  appState.activeControllers.add(controller);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    appState.activeControllers.delete(controller);
+  }
 }
 
 function addMessage(role, text, label) {
@@ -96,11 +163,336 @@ function addMessage(role, text, label) {
 }
 
 async function readError(response) {
+  if (response.status === 401 && appState.remote) {
+    requireRemoteUnlock("La sesión del dispositivo expiró. Verifica nuevamente tu passkey.");
+  }
   try {
     const payload = await response.json();
     return payload.detail || `Error HTTP ${response.status}`;
   } catch {
     return `Error HTTP ${response.status}`;
+  }
+}
+
+function bytesToBase64Url(value) {
+  const bytes =
+    value instanceof ArrayBuffer
+      ? new Uint8Array(value)
+      : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function base64UrlToBytes(value) {
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function registrationOptionsFromJson(options) {
+  return {
+    ...options,
+    challenge: base64UrlToBytes(options.challenge),
+    user: { ...options.user, id: base64UrlToBytes(options.user.id) },
+    excludeCredentials: (options.excludeCredentials || []).map((credential) => ({
+      ...credential,
+      id: base64UrlToBytes(credential.id),
+    })),
+  };
+}
+
+function authenticationOptionsFromJson(options) {
+  return {
+    ...options,
+    challenge: base64UrlToBytes(options.challenge),
+    allowCredentials: (options.allowCredentials || []).map((credential) => ({
+      ...credential,
+      id: base64UrlToBytes(credential.id),
+    })),
+  };
+}
+
+function registrationCredentialToJson(credential) {
+  return {
+    id: credential.id,
+    rawId: bytesToBase64Url(credential.rawId),
+    type: credential.type,
+    authenticatorAttachment: credential.authenticatorAttachment,
+    clientExtensionResults: credential.getClientExtensionResults(),
+    response: {
+      attestationObject: bytesToBase64Url(credential.response.attestationObject),
+      clientDataJSON: bytesToBase64Url(credential.response.clientDataJSON),
+      transports: credential.response.getTransports?.() || [],
+    },
+  };
+}
+
+function authenticationCredentialToJson(credential) {
+  return {
+    id: credential.id,
+    rawId: bytesToBase64Url(credential.rawId),
+    type: credential.type,
+    authenticatorAttachment: credential.authenticatorAttachment,
+    clientExtensionResults: credential.getClientExtensionResults(),
+    response: {
+      authenticatorData: bytesToBase64Url(credential.response.authenticatorData),
+      clientDataJSON: bytesToBase64Url(credential.response.clientDataJSON),
+      signature: bytesToBase64Url(credential.response.signature),
+      userHandle: credential.response.userHandle
+        ? bytesToBase64Url(credential.response.userHandle)
+        : null,
+    },
+  };
+}
+
+async function postJson(path, payload) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return response.json();
+}
+
+function remoteDeviceStorageKey() {
+  return `jarvis-passkey-device:${location.host}`;
+}
+
+function storedRemoteDeviceId() {
+  try {
+    const deviceId = localStorage.getItem(remoteDeviceStorageKey());
+    return /^[a-f0-9]{32}$/.test(deviceId || "") ? deviceId : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeRemoteDeviceId(deviceId) {
+  try {
+    localStorage.setItem(remoteDeviceStorageKey(), deviceId);
+  } catch {
+    // La passkey sigue protegida aunque el navegador no permita persistir este identificador.
+  }
+}
+
+function clearRemoteDeviceId() {
+  try {
+    localStorage.removeItem(remoteDeviceStorageKey());
+  } catch {
+    // Sin almacenamiento persistente, la pantalla ya está en modo de emparejamiento.
+  }
+}
+
+function supportsPasskeys() {
+  return Boolean(window.PublicKeyCredential && navigator.credentials?.create && navigator.credentials?.get);
+}
+
+function setRemoteGateError(message = "") {
+  elements.remoteGateError.textContent = message;
+}
+
+function showRemotePairing() {
+  elements.remoteAuthenticationPanel.hidden = true;
+  elements.remotePairingForm.hidden = false;
+  elements.showAuthenticationPanelButton.hidden = !storedRemoteDeviceId();
+  setRemoteGateError();
+}
+
+function showRemoteAuthentication() {
+  if (!storedRemoteDeviceId()) {
+    showRemotePairing();
+    return;
+  }
+  elements.remoteAuthenticationPanel.hidden = false;
+  elements.remotePairingForm.hidden = true;
+  setRemoteGateError();
+}
+
+function requireRemoteUnlock(message = "") {
+  if (!appState.remote) return;
+  cancelActiveClientWork();
+  stopSpeaking();
+  appState.remoteAuthenticated = false;
+  appState.busy = false;
+  if (appState.socket) appState.socket.close();
+  appState.socket = null;
+  elements.remoteGate.hidden = false;
+  elements.emergencyStopButton.hidden = true;
+  if (storedRemoteDeviceId()) showRemoteAuthentication();
+  else showRemotePairing();
+  if (message) setRemoteGateError(message);
+}
+
+async function finishRemoteUnlock(device) {
+  appState.remoteAuthenticated = true;
+  appState.remoteDeviceId = device.device_id;
+  storeRemoteDeviceId(device.device_id);
+  elements.remoteGate.hidden = true;
+  elements.emergencyStopButton.hidden = false;
+  elements.networkMode.innerHTML =
+    '<i class="online-indicator"></i> TAILNET // PASSKEY // SECURE';
+  startCore();
+  await restoreRemoteSession();
+}
+
+async function pairRemoteDevice() {
+  if (!supportsPasskeys()) {
+    throw new Error("Este navegador no ofrece passkeys/WebAuthn. Usa Chrome, Edge o Safari actual.");
+  }
+  const code = elements.remotePairingCode.value.trim();
+  const label = elements.remoteDeviceLabel.value.trim();
+  const ceremony = await postJson("/api/remote/pair/options", { code, label });
+  const credential = await navigator.credentials.create({
+    publicKey: registrationOptionsFromJson(ceremony.options),
+  });
+  if (!credential) throw new Error("El emparejamiento fue cancelado.");
+  const verified = await postJson("/api/remote/pair/verify", {
+    ceremony_id: ceremony.ceremony_id,
+    credential: registrationCredentialToJson(credential),
+  });
+  await finishRemoteUnlock(verified.device);
+  showToast("Teléfono emparejado. El enlace privado está listo.");
+}
+
+async function authenticateRemoteDevice() {
+  if (!supportsPasskeys()) {
+    throw new Error("Este navegador no ofrece passkeys/WebAuthn.");
+  }
+  const deviceId = storedRemoteDeviceId();
+  if (!deviceId) {
+    showRemotePairing();
+    return;
+  }
+  try {
+    const ceremony = await postJson("/api/remote/auth/options", { device_id: deviceId });
+    const credential = await navigator.credentials.get({
+      publicKey: authenticationOptionsFromJson(ceremony.options),
+    });
+    if (!credential) throw new Error("La autenticación fue cancelada.");
+    const verified = await postJson("/api/remote/auth/verify", {
+      ceremony_id: ceremony.ceremony_id,
+      credential: authenticationCredentialToJson(credential),
+    });
+    await finishRemoteUnlock(verified.device);
+    showToast("Dispositivo verificado con passkey.");
+  } catch (error) {
+    if (/no está emparejado|no está autorizada|no está activo/i.test(error.message)) {
+      clearRemoteDeviceId();
+      showRemotePairing();
+    }
+    throw error;
+  }
+}
+
+function renderRemoteDevices(devices = []) {
+  elements.remoteDeviceList.replaceChildren();
+  if (!devices.length) {
+    const empty = document.createElement("div");
+    empty.className = "remote-device-empty";
+    empty.textContent = "Todavía no hay teléfonos emparejados.";
+    elements.remoteDeviceList.appendChild(empty);
+    return;
+  }
+  for (const device of devices) {
+    const row = document.createElement("div");
+    row.className = "remote-device";
+    const info = document.createElement("div");
+    const label = document.createElement("strong");
+    const detail = document.createElement("small");
+    const revoke = document.createElement("button");
+    label.textContent = device.label;
+    const lastSeen = new Date(device.last_seen_at * 1000).toLocaleString("es-EC");
+    detail.textContent = `${device.display_name} // último acceso ${lastSeen}`;
+    revoke.type = "button";
+    revoke.textContent = "REVOCAR";
+    revoke.addEventListener("click", async () => {
+      if (!window.confirm(`¿Revocar el acceso de “${device.label}”?`)) return;
+      const response = await fetch(`/api/remote/devices/${device.device_id}`, { method: "DELETE" });
+      if (!response.ok) {
+        showToast(await readError(response), 6000);
+        return;
+      }
+      await refreshRemoteAdmin();
+      showToast("Dispositivo revocado.");
+    });
+    info.append(label, detail);
+    row.append(info, revoke);
+    elements.remoteDeviceList.appendChild(row);
+  }
+}
+
+function configureRemoteAdmin(status) {
+  appState.remoteStatus = status;
+  appState.remoteEnabled = Boolean(status.enabled);
+  elements.createPairingButton.disabled = !status.enabled;
+  elements.remoteOriginLink.hidden = !status.remote_origin;
+  elements.remoteOriginLink.textContent = status.remote_origin || "";
+  elements.remoteOriginLink.href = status.remote_origin || "#";
+  if (status.enabled) {
+    elements.remoteAdminState.textContent = "TAILNET LINK // READY";
+    elements.remoteAdminDescription.textContent =
+      "Jarvis acepta únicamente tu identidad de Tailscale y dispositivos verificados con passkey.";
+    elements.mobileAccessButton.querySelector("small").textContent = "Enlace privado disponible";
+    elements.remoteLinkChip.innerHTML = "<i></i> TAILNET READY";
+  } else {
+    elements.remoteAdminState.textContent = "TAILNET LINK // NOT CONFIGURED";
+    elements.remoteAdminDescription.textContent =
+      "Instala Tailscale y ejecuta scripts\\setup_remote_access.ps1 para activar el enlace privado.";
+    elements.mobileAccessButton.querySelector("small").textContent = "Configurar enlace privado";
+  }
+  renderRemoteDevices(status.devices);
+}
+
+async function refreshRemoteAdmin() {
+  const response = await fetch("/api/remote/status", { cache: "no-store" });
+  if (!response.ok) throw new Error(await readError(response));
+  const status = await response.json();
+  configureRemoteAdmin(status);
+}
+
+async function restoreRemoteSession() {
+  if (!appState.remote || !appState.remoteAuthenticated) return;
+  try {
+    const payload = await postJson("/api/remote/session", { session_id: appState.sessionId });
+    if (payload.state) setVisualState(payload.state.state, payload.state.detail);
+    if (payload.action) handleAction(payload.action);
+  } catch (error) {
+    console.debug("Remote session could not be restored", error);
+  }
+}
+
+async function bootstrapApplication() {
+  try {
+    const response = await fetch("/api/remote/status", { cache: "no-store" });
+    if (!response.ok) throw new Error(await readError(response));
+    const status = await response.json();
+    appState.remoteStatus = status;
+    appState.remote = Boolean(status.remote);
+    appState.remoteEnabled = Boolean(status.enabled);
+    appState.remoteAuthenticated = Boolean(status.authenticated);
+    if (!appState.remote) {
+      configureRemoteAdmin(status);
+      startCore();
+      return;
+    }
+    document.body.classList.add("remote-client");
+    elements.remoteLinkChip.innerHTML = "<i></i> TAILNET AUTHENTICATED";
+    elements.mobileAccessButton.hidden = true;
+    elements.remoteIdentityLabel.textContent = status.identity
+      ? `${status.identity.name} // ${status.identity.login}`
+      : "Identidad privada de Tailscale detectada.";
+    if (status.authenticated && status.device) {
+      await finishRemoteUnlock(status.device);
+      return;
+    }
+    requireRemoteUnlock();
+  } catch (error) {
+    setVisualState("error", "No pude validar el canal privado");
+    setRemoteGateError(error.message);
+    elements.remoteGate.hidden = false;
   }
 }
 
@@ -177,6 +569,18 @@ function handleAction(action) {
       elements.rejectActionButton.hidden = false;
     }
     elements.actionConfirmation.hidden = false;
+    if (
+      appState.remote &&
+      document.hidden &&
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      new Notification("Jarvis necesita confirmación", {
+        body: action.description || "Hay una acción pendiente.",
+        icon: "/static/icon.svg?v=spider-v3",
+        tag: "jarvis-action-confirmation",
+      });
+    }
     return;
   }
   appState.pendingAction = null;
@@ -199,7 +603,7 @@ async function decideAction(approve, choice = null) {
   }
   setVisualState("thinking", approve ? "Ejecutando acción confirmada" : "Cancelando acción");
   try {
-    const response = await fetch("/api/actions/decision", {
+    const response = await cancellableFetch("/api/actions/decision", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -215,6 +619,7 @@ async function decideAction(approve, choice = null) {
     addMessage("jarvis", payload.response, "JARVIS // ACTION ENGINE");
     await speak(payload.response);
   } catch (error) {
+    if (error.name === "AbortError") return;
     appState.busy = false;
     setVisualState("error", "No pude procesar la confirmación");
     showToast(error.message, 6000);
@@ -228,8 +633,10 @@ async function decideAction(approve, choice = null) {
 }
 
 function connectStateSocket() {
+  if (appState.socket || (appState.remote && !appState.remoteAuthenticated)) return;
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(`${protocol}//${location.host}/ws`);
+  appState.socket = socket;
   socket.addEventListener("open", () => {
     window.clearInterval(appState.socketPing);
     appState.socketPing = window.setInterval(() => {
@@ -237,9 +644,16 @@ function connectStateSocket() {
     }, 20000);
   });
   socket.addEventListener("message", (event) => {
-    if (appState.speaking) return;
     try {
       const snapshot = JSON.parse(event.data);
+      if (snapshot.detail === "REMOTE_STOP") {
+        cancelActiveClientWork();
+        stopSpeaking();
+        handleAction(null);
+        setVisualState("standby", "Detenido desde el control remoto");
+        return;
+      }
+      if (appState.speaking) return;
       setVisualState(snapshot.state, snapshot.detail);
     } catch (error) {
       console.debug("State event ignored", error);
@@ -247,7 +661,11 @@ function connectStateSocket() {
   });
   socket.addEventListener("close", () => {
     window.clearInterval(appState.socketPing);
-    window.setTimeout(connectStateSocket, 2500);
+    appState.socket = null;
+    window.clearTimeout(appState.reconnectTimer);
+    if (!appState.remote || appState.remoteAuthenticated) {
+      appState.reconnectTimer = window.setTimeout(connectStateSocket, 2500);
+    }
   });
 }
 
@@ -274,6 +692,10 @@ function finishSpeaking() {
 
 function stopSpeaking() {
   appState.speechGeneration += 1;
+  if (appState.ttsController) {
+    appState.ttsController.abort();
+    appState.ttsController = null;
+  }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   if (appState.audioPlayer) {
     appState.audioPlayer.pause();
@@ -346,11 +768,15 @@ async function speak(text) {
 
   if (appState.ttsAvailable) {
     try {
+      const controller = new AbortController();
+      appState.ttsController = controller;
       const response = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
+        signal: controller.signal,
       });
+      appState.ttsController = null;
       if (!response.ok) throw new Error(await readError(response));
       const audioBlob = await response.blob();
       if (speechGeneration !== appState.speechGeneration) return;
@@ -371,6 +797,7 @@ async function speak(text) {
       await audio.play();
       return;
     } catch (error) {
+      appState.ttsController = null;
       if (speechGeneration !== appState.speechGeneration) return;
       console.warn("Local neural voice unavailable, falling back to browser voice", error);
       appState.ttsAvailable = false;
@@ -386,18 +813,21 @@ async function sendText(message) {
   appState.busy = true;
   addMessage("user", cleanMessage);
   setVisualState("thinking", "Consultando el núcleo local");
+  const generation = appState.operationGeneration;
   try {
-    const response = await fetch("/api/chat", {
+    const response = await cancellableFetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: cleanMessage, session_id: appState.sessionId }),
     });
     if (!response.ok) throw new Error(await readError(response));
     const payload = await response.json();
+    if (generation !== appState.operationGeneration) return;
     if (payload.action) handleAction(payload.action);
     addMessage("jarvis", payload.response, `JARVIS // ${payload.provider.toUpperCase()}`);
     await speak(payload.response);
   } catch (error) {
+    if (error.name === "AbortError") return;
     appState.busy = false;
     setVisualState("error", "No pude completar la conversación");
     addMessage("system", error.message);
@@ -668,10 +1098,15 @@ async function sendUtterance(blob, wakeMode, interruptOnly = false) {
   form.append("audio", blob, "utterance.wav");
   form.append("session_id", appState.sessionId);
   form.append("wake_mode", String(wakeMode));
+  const generation = appState.operationGeneration;
   try {
-    const response = await fetch("/api/voice/utterance", { method: "POST", body: form });
+    const response = await cancellableFetch("/api/voice/utterance", {
+      method: "POST",
+      body: form,
+    });
     if (!response.ok) throw new Error(await readError(response));
     const payload = await response.json();
+    if (generation !== appState.operationGeneration) return;
     if (!payload.transcript) {
       appState.busy = false;
       setVisualState("standby", "No detecté una frase clara");
@@ -698,6 +1133,7 @@ async function sendUtterance(blob, wakeMode, interruptOnly = false) {
       setVisualState("ready", "Solicitud recibida");
     }
   } catch (error) {
+    if (error.name === "AbortError") return;
     appState.busy = false;
     setVisualState("error", "El pipeline de voz no está disponible");
     addMessage("system", error.message);
@@ -803,6 +1239,7 @@ elements.textForm.addEventListener("submit", (event) => {
 });
 
 elements.resetButton.addEventListener("click", async () => {
+  cancelActiveClientWork();
   stopSpeaking();
   try {
     const response = await fetch(`/api/conversation/${encodeURIComponent(appState.sessionId)}`, {
@@ -823,6 +1260,110 @@ elements.resetButton.addEventListener("click", async () => {
 
 elements.approveActionButton.addEventListener("click", () => decideAction(true));
 elements.rejectActionButton.addEventListener("click", () => decideAction(false));
+
+elements.mobileAccessButton.addEventListener("click", async () => {
+  try {
+    await refreshRemoteAdmin();
+  } catch (error) {
+    showToast(error.message, 6000);
+  }
+  elements.mobileAccessDialog.showModal();
+});
+
+elements.closeMobileAccessButton.addEventListener("click", () => {
+  elements.mobileAccessDialog.close();
+});
+
+elements.mobileAccessDialog.addEventListener("click", (event) => {
+  if (event.target === elements.mobileAccessDialog) elements.mobileAccessDialog.close();
+});
+
+elements.createPairingButton.addEventListener("click", async () => {
+  elements.createPairingButton.disabled = true;
+  try {
+    const pairing = await postJson("/api/remote/pairing/start", {});
+    elements.pairingCode.textContent = pairing.code;
+    elements.pairingCodePanel.hidden = false;
+    window.clearInterval(appState.pairingTimer);
+    const updateExpiry = () => {
+      const remaining = Math.max(0, Math.ceil(pairing.expires_at - Date.now() / 1000));
+      const minutes = String(Math.floor(remaining / 60)).padStart(2, "0");
+      const seconds = String(remaining % 60).padStart(2, "0");
+      elements.pairingExpiry.textContent =
+        remaining > 0 ? `EXPIRA EN ${minutes}:${seconds}` : "CÓDIGO EXPIRADO";
+      if (remaining <= 0) {
+        window.clearInterval(appState.pairingTimer);
+        elements.createPairingButton.disabled = false;
+      }
+    };
+    updateExpiry();
+    appState.pairingTimer = window.setInterval(updateExpiry, 1000);
+  } catch (error) {
+    showToast(error.message, 6000);
+    elements.createPairingButton.disabled = !appState.remoteEnabled;
+  }
+});
+
+elements.remotePairingCode.addEventListener("input", () => {
+  const digits = elements.remotePairingCode.value.replace(/\D/g, "").slice(0, 8);
+  elements.remotePairingCode.value =
+    digits.length > 4 ? `${digits.slice(0, 4)}-${digits.slice(4)}` : digits;
+});
+
+elements.remotePairingForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = elements.remotePairingForm.querySelector('button[type="submit"]');
+  button.disabled = true;
+  setRemoteGateError();
+  try {
+    await pairRemoteDevice();
+  } catch (error) {
+    setRemoteGateError(error.name === "NotAllowedError" ? "Operación cancelada." : error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+elements.authenticateRemoteButton.addEventListener("click", async () => {
+  elements.authenticateRemoteButton.disabled = true;
+  setRemoteGateError();
+  try {
+    await authenticateRemoteDevice();
+  } catch (error) {
+    setRemoteGateError(error.name === "NotAllowedError" ? "Operación cancelada." : error.message);
+  } finally {
+    elements.authenticateRemoteButton.disabled = false;
+  }
+});
+
+elements.showPairingPanelButton.addEventListener("click", showRemotePairing);
+elements.showAuthenticationPanelButton.addEventListener("click", showRemoteAuthentication);
+
+elements.emergencyStopButton.addEventListener("click", async () => {
+  cancelActiveClientWork();
+  stopSpeaking();
+  microphone.disableHandsFree();
+  appState.handsFree = false;
+  appState.busy = false;
+  handleAction(null);
+  setVisualState("standby", "Enviando parada de emergencia");
+  elements.emergencyStopButton.disabled = true;
+  try {
+    const result = await postJson("/api/remote/stop", { session_id: appState.sessionId });
+    setVisualState("standby", "Jarvis detenido desde el celular");
+    addMessage(
+      "system",
+      `Parada remota completada. ${result.pending_actions} acción(es) pendiente(s) cancelada(s).`,
+      "EMERGENCY CONTROL",
+    );
+    showToast("Voz y acciones pendientes detenidas.");
+  } catch (error) {
+    setVisualState("error", "No pude confirmar la parada remota");
+    showToast(error.message, 6000);
+  } finally {
+    elements.emergencyStopButton.disabled = false;
+  }
+});
 
 function drawWaveform() {
   const canvas = elements.waveform;
@@ -861,11 +1402,11 @@ function drawWaveform() {
     else context.lineTo(x, y);
   }
   const gradient = context.createLinearGradient(0, 0, rect.width, 0);
-  gradient.addColorStop(0, "rgba(97, 219, 255, 0)");
-  gradient.addColorStop(0.3, "rgba(97, 219, 255, 0.65)");
-  gradient.addColorStop(0.5, "rgba(196, 245, 255, 0.95)");
-  gradient.addColorStop(0.7, "rgba(97, 219, 255, 0.65)");
-  gradient.addColorStop(1, "rgba(97, 219, 255, 0)");
+  gradient.addColorStop(0, "rgba(255, 54, 88, 0)");
+  gradient.addColorStop(0.28, "rgba(255, 54, 88, 0.72)");
+  gradient.addColorStop(0.5, "rgba(232, 239, 255, 0.96)");
+  gradient.addColorStop(0.62, "rgba(39, 126, 255, 0.7)");
+  gradient.addColorStop(1, "rgba(39, 126, 255, 0)");
   context.strokeStyle = gradient;
   context.lineWidth = 1.2;
   context.stroke();
@@ -900,19 +1441,6 @@ function startNeuralField() {
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let width = 0;
   let height = 0;
-  let particles = [];
-
-  const seedParticles = () => {
-    const count = Math.max(24, Math.min(62, Math.floor((width * height) / 28000)));
-    particles = Array.from({ length: count }, () => ({
-      x: Math.random() * width,
-      y: Math.random() * height,
-      vx: (Math.random() - 0.5) * 0.12,
-      vy: (Math.random() - 0.5) * 0.12,
-      radius: 0.55 + Math.random() * 1.05,
-      phase: Math.random() * Math.PI * 2,
-    }));
-  };
 
   const resize = () => {
     const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -923,7 +1451,6 @@ function startNeuralField() {
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    seedParticles();
   };
 
   const draw = (time = 0) => {
@@ -935,35 +1462,94 @@ function startNeuralField() {
     const active = ["listening", "thinking", "transcribing", "speaking"].includes(
       appState.visualState,
     );
-    const connectionDistance = active ? 142 : 112;
-    for (let first = 0; first < particles.length; first += 1) {
-      const particle = particles[first];
-      if (!reducedMotion) {
-        particle.x += particle.vx * (active ? 1.8 : 1);
-        particle.y += particle.vy * (active ? 1.8 : 1);
-        if (particle.x < -10) particle.x = width + 10;
-        if (particle.x > width + 10) particle.x = -10;
-        if (particle.y < -10) particle.y = height + 10;
-        if (particle.y > height + 10) particle.y = -10;
-      }
-      for (let second = first + 1; second < particles.length; second += 1) {
-        const neighbor = particles[second];
-        const distance = Math.hypot(particle.x - neighbor.x, particle.y - neighbor.y);
-        if (distance >= connectionDistance) continue;
-        const alpha = (1 - distance / connectionDistance) * (active ? 0.15 : 0.075);
-        context.beginPath();
-        context.moveTo(particle.x, particle.y);
-        context.lineTo(neighbor.x, neighbor.y);
-        context.strokeStyle = `rgba(88, 209, 255, ${alpha})`;
-        context.lineWidth = 0.55;
-        context.stroke();
-      }
-      const pulse = 0.55 + Math.sin(time / 900 + particle.phase) * 0.25;
+    const orbBounds = elements.micButton?.getBoundingClientRect();
+    const centerX = orbBounds ? orbBounds.left + orbBounds.width / 2 : width / 2;
+    const centerY = orbBounds ? orbBounds.top + orbBounds.height / 2 : height * 0.46;
+    const reach = Math.hypot(
+      Math.max(centerX, width - centerX),
+      Math.max(centerY, height - centerY),
+    ) * 1.08;
+    const spokes = width < 680 ? 12 : 16;
+    const rings = width < 680 ? 7 : 10;
+    const rotation = reducedMotion ? 0 : Math.sin(time / 9000) * 0.018;
+
+    context.save();
+    context.translate(centerX, centerY);
+    context.rotate(rotation);
+
+    for (let spoke = 0; spoke < spokes; spoke += 1) {
+      const angle = -Math.PI / 2 + (spoke / spokes) * Math.PI * 2;
+      const endpointX = Math.cos(angle) * reach;
+      const endpointY = Math.sin(angle) * reach;
+      const gradient = context.createLinearGradient(0, 0, endpointX, endpointY);
+      const secondary = spoke % 4 === 2;
+      gradient.addColorStop(0, secondary ? "rgba(39, 126, 255, 0.28)" : "rgba(255, 54, 88, 0.3)");
+      gradient.addColorStop(0.35, secondary ? "rgba(39, 126, 255, 0.12)" : "rgba(255, 54, 88, 0.13)");
+      gradient.addColorStop(1, "rgba(255, 54, 88, 0)");
       context.beginPath();
-      context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
-      context.fillStyle = `rgba(116, 229, 255, ${active ? pulse : pulse * 0.55})`;
+      context.moveTo(0, 0);
+      context.lineTo(endpointX, endpointY);
+      context.strokeStyle = gradient;
+      context.lineWidth = secondary ? 0.8 : 0.65;
+      context.stroke();
+    }
+
+    for (let ring = 1; ring <= rings; ring += 1) {
+      const radius = (ring / rings) * reach;
+      const ringOffset = (ring % 2 ? 0.013 : -0.009) * Math.sin(time / 2600 + ring);
+      context.beginPath();
+      for (let spoke = 0; spoke <= spokes; spoke += 1) {
+        const normalizedSpoke = spoke % spokes;
+        const angle = -Math.PI / 2 + (normalizedSpoke / spokes) * Math.PI * 2 + ringOffset;
+        const angularTension = 1 + Math.sin(normalizedSpoke * 2.7 + ring * 1.9) * 0.025;
+        const x = Math.cos(angle) * radius * angularTension;
+        const y = Math.sin(angle) * radius * angularTension;
+        if (spoke === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      }
+      context.closePath();
+      context.strokeStyle = ring % 3 === 0
+        ? `rgba(39, 126, 255, ${active ? 0.14 : 0.075})`
+        : `rgba(255, 54, 88, ${active ? 0.16 : 0.085})`;
+      context.lineWidth = ring % 3 === 0 ? 0.8 : 0.55;
+      context.stroke();
+    }
+
+    const signals = active ? 12 : 7;
+    for (let index = 0; index < signals; index += 1) {
+      const spoke = (index * 5 + 1) % spokes;
+      const angle = -Math.PI / 2 + (spoke / spokes) * Math.PI * 2;
+      const travel = reducedMotion ? (index + 2) / (signals + 3) : ((time / 2600 + index * 0.137) % 1);
+      const signalRadius = reach * (0.12 + travel * 0.84);
+      const x = Math.cos(angle) * signalRadius;
+      const y = Math.sin(angle) * signalRadius;
+      const isSecondary = index % 4 === 3;
+      context.beginPath();
+      context.arc(x, y, active ? 1.55 : 1.05, 0, Math.PI * 2);
+      context.fillStyle = isSecondary
+        ? `rgba(86, 151, 255, ${active ? 0.86 : 0.48})`
+        : `rgba(255, 76, 108, ${active ? 0.9 : 0.5})`;
+      context.shadowBlur = active ? 9 : 5;
+      context.shadowColor = isSecondary ? "#277eff" : "#ff3658";
       context.fill();
     }
+
+    context.shadowBlur = 0;
+    for (let ring = 2; ring <= Math.min(rings, 7); ring += 2) {
+      const radius = (ring / rings) * reach;
+      for (let spoke = 0; spoke < spokes; spoke += 4) {
+        const angle = -Math.PI / 2 + (spoke / spokes) * Math.PI * 2;
+        const x = Math.cos(angle) * radius;
+        const y = Math.sin(angle) * radius;
+        context.beginPath();
+        context.moveTo(x - 4, y);
+        context.lineTo(x + 4, y);
+        context.strokeStyle = "rgba(255, 231, 235, 0.16)";
+        context.lineWidth = 0.7;
+        context.stroke();
+      }
+    }
+    context.restore();
     if (!reducedMotion) window.requestAnimationFrame(draw);
   };
 
@@ -973,13 +1559,25 @@ function startNeuralField() {
 }
 
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => navigator.serviceWorker.register("/service-worker.js"));
+  window.addEventListener("load", () =>
+    navigator.serviceWorker.register("/service-worker.js", { updateViaCache: "none" }),
+  );
+}
+
+function startCore() {
+  if (appState.initialized) {
+    connectStateSocket();
+    refreshHealth();
+    return;
+  }
+  appState.initialized = true;
+  refreshHealth();
+  appState.healthTimer = window.setInterval(refreshHealth, 30000);
+  connectStateSocket();
+  drawWaveform();
 }
 
 updateClock();
 window.setInterval(updateClock, 1000);
-refreshHealth();
-window.setInterval(refreshHealth, 30000);
-connectStateSocket();
-drawWaveform();
 startNeuralField();
+bootstrapApplication();

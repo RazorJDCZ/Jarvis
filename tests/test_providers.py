@@ -75,9 +75,72 @@ async def test_ollama_chat_sends_non_streaming_request(monkeypatch: pytest.Monke
     answer = await OllamaBrain(Settings()).chat([{"role": "user", "content": "hola"}])
 
     assert answer == "Todo listo."
+    assert len(received) == 1
     assert received[0]["stream"] is False
     assert received[0]["think"] is False
+    assert received[0]["keep_alive"] == "0s"
     assert received[0]["options"]["temperature"] == pytest.approx(0.45)
+
+
+@pytest.mark.asyncio
+async def test_ollama_warmup_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        return httpx.Response(200, json={"response": "LISTO"})
+
+    mock_httpx(monkeypatch, handler)
+    brain = OllamaBrain(
+        Settings(
+            ollama_warmup_enabled=True,
+            ollama_warmup_min_free_gb=0,
+            ollama_keep_alive="30m",
+        )
+    )
+
+    assert await brain.warmup() is True
+    assert await brain.warmup() is True
+    assert requests == ["/api/generate"]
+
+
+@pytest.mark.asyncio
+async def test_ollama_warmup_skips_when_memory_is_low(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No debe contactar Ollama con memoria insuficiente")
+
+    mock_httpx(monkeypatch, handler)
+    brain = OllamaBrain(
+        Settings(ollama_warmup_enabled=True, ollama_warmup_min_free_gb=6)
+    )
+    monkeypatch.setattr(brain, "_available_memory_gb", lambda: 1.5)
+
+    assert await brain.warmup() is False
+
+
+@pytest.mark.asyncio
+async def test_ollama_release_only_unloads_a_resident_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, payload))
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": [{"name": "qwen3.5:4b"}]})
+        return httpx.Response(200, json={"done": True})
+
+    mock_httpx(monkeypatch, handler)
+    brain = OllamaBrain(Settings())
+
+    assert await brain.release() is True
+    assert requests == [
+        ("GET", "/api/ps", None),
+        ("POST", "/api/generate", {"model": "qwen3.5:4b", "keep_alive": 0}),
+    ]
 
 
 @pytest.mark.asyncio

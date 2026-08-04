@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -36,11 +37,22 @@ class Settings:
     project_root: Path = PROJECT_ROOT
     host: str = os.getenv("JARVIS_HOST", "127.0.0.1")
     port: int = _env_int("JARVIS_PORT", 8765)
+    remote_access_enabled: bool = _env_bool("JARVIS_REMOTE_ACCESS_ENABLED", False)
+    remote_origin: str = os.getenv("JARVIS_REMOTE_ORIGIN", "").rstrip("/")
+    remote_allowed_login: str = os.getenv("JARVIS_REMOTE_ALLOWED_LOGIN", "").strip()
+    remote_pairing_seconds: int = _env_int("JARVIS_REMOTE_PAIRING_SECONDS", 300)
+    remote_session_hours: int = _env_int("JARVIS_REMOTE_SESSION_HOURS", 12)
 
     brain_mode: str = os.getenv("JARVIS_BRAIN_MODE", "auto").lower()
     ollama_url: str = os.getenv("JARVIS_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
     ollama_model: str = os.getenv("JARVIS_OLLAMA_MODEL", "qwen3.5:4b")
     ollama_timeout: float = _env_float("JARVIS_OLLAMA_TIMEOUT", 180.0)
+    ollama_keep_alive: str = os.getenv("JARVIS_OLLAMA_KEEP_ALIVE", "0s").strip() or "0s"
+    ollama_warmup_enabled: bool = _env_bool("JARVIS_OLLAMA_WARMUP_ENABLED", False)
+    ollama_warmup_min_free_gb: float = _env_float(
+        "JARVIS_OLLAMA_WARMUP_MIN_FREE_GB",
+        6.0,
+    )
 
     stt_model: str = os.getenv("JARVIS_STT_MODEL", "small")
     stt_device: str = os.getenv("JARVIS_STT_DEVICE", "cpu")
@@ -56,6 +68,8 @@ class Settings:
     action_confirmation_seconds: int = _env_int("JARVIS_ACTION_CONFIRMATION_SECONDS", 90)
     vision_actions_enabled: bool = _env_bool("JARVIS_VISION_ACTIONS_ENABLED", True)
     vision_timeout: float = _env_float("JARVIS_VISION_TIMEOUT", 180.0)
+    vision_keep_alive: str = os.getenv("JARVIS_VISION_KEEP_ALIVE", "2m").strip() or "2m"
+    vision_release_after_use: bool = _env_bool("JARVIS_VISION_RELEASE_AFTER_USE", True)
     browser_search_url: str = os.getenv(
         "JARVIS_BROWSER_SEARCH_URL",
         "https://www.google.com/search?q={query}",
@@ -83,8 +97,35 @@ class Settings:
     def __post_init__(self) -> None:
         if self.host not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError(
-                "Las etapas 1 y 2 solo pueden escuchar en loopback (127.0.0.1, localhost o ::1)"
+                "Jarvis solo puede escuchar en loopback (127.0.0.1, localhost o ::1)"
             )
+        if self.remote_access_enabled:
+            try:
+                parsed = urlsplit(self.remote_origin)
+            except ValueError as exc:
+                raise ValueError("JARVIS_REMOTE_ORIGIN no es una URL válida") from exc
+            local_http = parsed.scheme == "http" and parsed.hostname in {
+                "127.0.0.1",
+                "localhost",
+                "::1",
+            }
+            if (
+                not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or parsed.path not in {"", "/"}
+                or (parsed.scheme != "https" and not local_http)
+            ):
+                raise ValueError(
+                    "El acceso remoto requiere un origen HTTPS sin ruta; "
+                    "HTTP solo se admite en loopback para pruebas"
+                )
+        if not 60 <= self.remote_pairing_seconds <= 900:
+            raise ValueError("El emparejamiento remoto debe durar entre 60 y 900 segundos")
+        if not 1 <= self.remote_session_hours <= 72:
+            raise ValueError("La sesión remota debe durar entre 1 y 72 horas")
 
     @property
     def data_dir(self) -> Path:
@@ -144,6 +185,19 @@ class Settings:
     def memory_path(self) -> Path:
         configured = Path(os.getenv("JARVIS_MEMORY_PATH", ".data/memory.sqlite3"))
         return configured if configured.is_absolute() else self.project_root / configured
+
+    @property
+    def remote_database_path(self) -> Path:
+        configured = Path(os.getenv("JARVIS_REMOTE_DATABASE", ".data/remote-access.sqlite3"))
+        return configured if configured.is_absolute() else self.project_root / configured
+
+    @property
+    def remote_rp_id(self) -> str:
+        return urlsplit(self.remote_origin).hostname or ""
+
+    @property
+    def remote_cookie_secure(self) -> bool:
+        return urlsplit(self.remote_origin).scheme == "https"
 
 
 BASE_SYSTEM_PROMPT = """\

@@ -3,9 +3,9 @@
 Asistente de voz privado y local para Windows. El proyecto está dividido en cinco etapas:
 
 1. MVP de voz — completado.
-2. Motor de acciones — completado en esta versión (`0.2.0`).
-3. Acceso móvil.
-4. Memoria y personalidad — implementada en esta versión.
+2. Motor de acciones — completado.
+3. Acceso móvil — implementado en esta versión (`0.6.0`).
+4. Memoria y personalidad — implementada.
 5. Visión y proactividad — la percepción visual multimonitor y contextual ya está implementada;
    la proactividad sigue pendiente.
 
@@ -34,8 +34,8 @@ Asistente de voz privado y local para Windows. El proyecto está dividido en cin
 - Aprende selectivamente preferencias, relaciones, estudios, proyectos y objetivos en una base
   SQLite local. Recupera solo los recuerdos relevantes y conserva una ventana limitada de diálogo
   reciente para continuar después de reiniciar.
-- Funciona como PWA, aunque durante las etapas 1 y 2 el servidor escucha únicamente en
-  `127.0.0.1`.
+- Funciona como PWA tanto en la PC como en el teléfono. El servidor siempre permanece limitado a
+  `127.0.0.1`; Tailscale Serve proporciona el único enlace HTTPS privado hacia el celular.
 
 El modo manos libres detecta la frase de activación después de transcribir localmente cada
 intervención. Una etapa posterior podrá incorporar openWakeWord para reducir el consumo continuo.
@@ -63,6 +63,26 @@ start.cmd
 Se abrirá `http://127.0.0.1:8765`. La primera transcripción puede tardar mientras Whisper termina de
 cargar el modelo.
 
+### Acceso móvil privado
+
+El teléfono no se conecta mediante un puerto público. Jarvis combina dos barreras: la identidad
+privada de Tailscale y una passkey propia del dispositivo, protegida por la biometría o PIN del
+teléfono.
+
+1. Instala Tailscale en la PC y en el teléfono e inicia sesión con la misma cuenta.
+2. En la PC ejecuta `scripts\setup_remote_access.cmd`.
+3. Reinicia Jarvis con `start.cmd`.
+4. En la interfaz local abre **ACCESO MÓVIL** y genera un código de un solo uso.
+5. Abre en el teléfono la URL privada que muestra Jarvis, escribe el código y crea la passkey.
+6. En el navegador móvil usa **Añadir a pantalla de inicio** para instalar la PWA.
+
+En el celular, toda acción que cambie el equipo pide confirmación aunque normalmente fuese de
+riesgo bajo. Las consultas de estado y lectura conservan ejecución directa. El botón rojo
+**DETENER JARVIS** corta la voz y cancela acciones o diálogos pendientes. Desde la PC puedes
+revocar teléfonos en cualquier momento; `scripts\disable_remote_access.cmd` elimina la publicación
+privada completa. La guía operativa y el modelo de seguridad están en
+[docs/mobile-access.md](docs/mobile-access.md).
+
 ### Modelo conversacional
 
 La interfaz arranca sin Ollama usando un núcleo limitado. Para instalar la edición portátil dentro
@@ -73,7 +93,18 @@ scripts\install_ollama.cmd
 ```
 
 Jarvis iniciará ese Ollama automáticamente y lo apagará al cerrar `start.cmd`. También puede usar
-una instalación que ya responda en `http://127.0.0.1:11434`.
+una instalación que ya responda en `http://127.0.0.1:11434`. En equipos de 16 GB, Qwen se carga
+solo cuando una conversación o una acción visual realmente lo necesita y se descarga al terminar;
+los comandos deterministas no lo cargan. Esta política evita competir por memoria con Whisper,
+Kokoro, juegos y navegadores. Se controla mediante `JARVIS_OLLAMA_KEEP_ALIVE=0s` y
+`JARVIS_OLLAMA_WARMUP_ENABLED=false`. La precarga puede habilitarse manualmente, pero Jarvis la
+omite si la memoria libre está por debajo de `JARVIS_OLLAMA_WARMUP_MIN_FREE_GB`.
+
+Durante una consulta visual multimonitor, Qwen permanece cargado únicamente entre las capturas de
+esa consulta (`JARVIS_VISION_KEEP_ALIVE`) y se libera inmediatamente al finalizar. Antes de cada
+transcripción, Jarvis también solicita la descarga de cualquier Qwen residente para que Whisper
+tenga prioridad. Al cerrar `start.cmd`, se detienen de forma validada el servidor portátil y todos
+sus runners; el siguiente arranque elimina runners huérfanos de la carpeta del proyecto.
 
 ## Uso
 
@@ -171,7 +202,9 @@ la conversación realmente la amerita.
 
 ### Audio, multimedia y escritorio
 
-- “Pon el volumen al 42 por ciento”, “súbele el volumen”, “silencia el sonido”, “dime el volumen”.
+- “Pon el volumen al 42 por ciento”, “súbele el volumen”, “silencia el sonido”, “dime el volumen
+  actual” o “¿en cuánto está el volumen del sistema?”. Las consultas leen Windows directamente y
+  nunca permiten que el modelo conversacional invente el valor.
 - “Pausa”, “siguiente canción”, “pista anterior”, “detén la música”.
 - “Muestra los controles”, “haz clic en el control Guardar”.
 - `escribe "Texto con acentos"`, “guarda”, “deshaz”, “presiona intro”.
@@ -182,6 +215,9 @@ la conversación realmente la amerita.
 ### Pantalla y flujos encadenados
 
 - “¿Qué monitores están conectados?” enumera las pantallas activas y señala la principal.
+- “¿Qué hay en cada monitor?” captura y analiza cada pantalla por separado; la respuesta identifica
+  `Monitor 1`/`Monitor 2`, dispositivo `DISPLAY`, posición física, resolución y evidencia de una
+  captura nueva. Jarvis no comprime ambos escritorios dentro de una sola imagen panorámica.
 - Puedes decir “describe el monitor 2”, “mira la pantalla principal”, “¿qué hay en el monitor de la
   derecha?” o “encuentra Aceptar en la pantalla de la izquierda”.
 - “Describe lo que ves”, “¿qué aparece en la pantalla?” y “encuentra el botón Continuar” usan
@@ -238,6 +274,10 @@ La referencia completa de acciones, riesgos y límites está en
   intérpretes o accesos modificados después de la confirmación.
 - La apertura de archivos usa una lista positiva de extensiones; ejecutables, scripts, macros y
   páginas activas quedan fuera.
+- El acceso móvil usa exclusivamente Tailscale Serve privado; no activa Funnel. Además de la
+  identidad del tailnet exige una passkey con verificación biométrica o PIN.
+- Una orden remota que pueda modificar el equipo se eleva como mínimo a riesgo medio y se confirma
+  en el teléfono. Las sesiones y confirmaciones se aíslan por dispositivo.
 - El servidor acepta únicamente loopback, rechaza orígenes ajenos y aplica CSP, Permissions Policy
   y límites de tamaño.
 - Los audios temporales se eliminan al terminar la transcripción. `.env`, modelos, temporales,
@@ -257,6 +297,8 @@ JARVIS_STT_MODEL=small
 JARVIS_STT_DEVICE=cpu
 JARVIS_STT_COMPUTE_TYPE=int8
 JARVIS_WAKE_WORD=jarvis
+JARVIS_REMOTE_ACCESS_ENABLED=false
+JARVIS_REMOTE_SESSION_HOURS=12
 JARVIS_SAFE_ACTIONS_ENABLED=true
 JARVIS_ACTION_MODEL_PLANNING=true
 JARVIS_ACTION_CONFIRMATION_SECONDS=90
@@ -280,8 +322,9 @@ node --check src\jarvis\web\app.js
 
 La suite cubre parser, catálogo, niveles de riesgo, confirmaciones, aislamiento por sesión,
 auditoría, flujos encadenados, visión, controlador de Windows, navegador personal, verificación de
-información, perfil privado, API, voz y regresiones de la etapa 1. El esquema
-OpenAPI está disponible localmente en `http://127.0.0.1:8765/api/openapi.json`.
+información, perfil privado, API, voz y regresiones de la etapa 1. El smoke test remoto crea y
+verifica una passkey WebAuthn real mediante un autenticador virtual de Chrome. El esquema OpenAPI
+está disponible localmente en `http://127.0.0.1:8765/api/openapi.json`.
 
 ## Solución rápida de problemas
 
@@ -303,3 +346,7 @@ OpenAPI está disponible localmente en `http://127.0.0.1:8765/api/openapi.json`.
   inmediato.
 - **Un aviso no aparece en Jarvis:** algunos diálogos protegidos, incluido el escritorio seguro de
   UAC, no exponen controles accesibles y permanecen deliberadamente fuera del motor.
+- **La URL móvil no abre:** confirma que Tailscale esté conectado en la PC y el teléfono, reinicia
+  Jarvis y revisa `scripts\setup_remote_access.cmd`.
+- **La passkey dejó de funcionar:** revoca el teléfono desde **ACCESO MÓVIL** y empareja uno nuevo
+  con otro código de un solo uso.

@@ -50,6 +50,19 @@ class ActionEngine:
         }
     )
     _VISUAL_CONTEXT_SECONDS = 300
+    _REMOTE_DIRECT_ACTIONS = frozenset(
+        {
+            ActionName.APP_LIST,
+            ActionName.BROWSER_LIST_TABS,
+            ActionName.BROWSER_READ,
+            ActionName.SCREEN_LIST,
+            ActionName.SYSTEM_STATUS,
+            ActionName.UI_INSPECT,
+            ActionName.VOLUME_GET,
+            ActionName.WINDOW_CURRENT,
+            ActionName.WINDOW_LIST,
+        }
+    )
     _CONFIRMATIONS = frozenset(
         {
             "adelante",
@@ -151,7 +164,13 @@ class ActionEngine:
     def _blocked(message: str) -> ActionOutcome:
         return ActionOutcome(status=ActionStatus.BLOCKED, message=message, risk=ActionRisk.BLOCKED)
 
-    async def try_handle(self, session_id: str, text: str) -> ActionOutcome | None:
+    async def try_handle(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        remote: bool = False,
+    ) -> ActionOutcome | None:
         self._prune_pending()
         command = normalize_request(text)
         decision = re.sub(r"[,;.!?]+", " ", command)
@@ -207,9 +226,36 @@ class ActionEngine:
                 message=f"No pude preparar la acción de forma segura: {type(exc).__name__}.",
             )
 
+        prepared = self._apply_remote_policy(prepared, remote)
         if prepared.risk in {ActionRisk.MEDIUM, ActionRisk.HIGH}:
             return self._request_confirmation(session_id, prepared)
         return await self._execute(session_id, prepared)
+
+    def _apply_remote_policy(
+        self,
+        action: PreparedAction | PreparedWorkflow,
+        remote: bool,
+    ) -> PreparedAction | PreparedWorkflow:
+        if not remote:
+            return action
+        if isinstance(action, PreparedWorkflow):
+            changes_state = any(
+                step.name not in self._REMOTE_DIRECT_ACTIONS for step in action.steps
+            )
+            if changes_state and action.risk is ActionRisk.LOW:
+                return replace(
+                    action,
+                    risk=ActionRisk.MEDIUM,
+                    description=f"Autorizar desde el celular: {action.description}",
+                )
+            return action
+        if action.risk is ActionRisk.LOW and action.name not in self._REMOTE_DIRECT_ACTIONS:
+            return replace(
+                action,
+                risk=ActionRisk.MEDIUM,
+                description=f"Autorizar desde el celular: {action.description}",
+            )
+        return action
 
     async def _expand_explicit_workflow(
         self,
@@ -770,6 +816,32 @@ class ActionEngine:
         self._pending.pop(session_id, None)
         self._dialogs.pop(session_id, None)
         self._visual_contexts.pop(session_id, None)
+
+    def emergency_stop(self, session_id: str) -> dict[str, int]:
+        cancelled_actions = int(self._pending.pop(session_id, None) is not None)
+        cancelled_dialogs = int(self._dialogs.pop(session_id, None) is not None)
+        return {
+            "pending_actions": cancelled_actions,
+            "pending_dialogs": cancelled_dialogs,
+        }
+
+    def pending_for(self, session_id: str) -> ActionOutcome | None:
+        self._prune_pending()
+        dialog = self._dialogs.get(session_id)
+        if dialog is not None:
+            return self._dialog_outcome(dialog, prefix="Hay un diálogo esperando tu decisión.")
+        pending = self._pending.get(session_id)
+        if pending is None:
+            return None
+        return ActionOutcome(
+            status=ActionStatus.PENDING,
+            message=f"Sigue pendiente: {pending.action.description}.",
+            action_id=pending.action_id,
+            name=pending.action.name,
+            risk=pending.action.risk,
+            description=pending.action.description,
+            requires_confirmation=True,
+        )
 
     def recent_audit(self, limit: int = 30):
         return self.audit.recent(limit)

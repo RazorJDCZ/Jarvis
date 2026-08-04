@@ -1,10 +1,10 @@
-const CACHE_NAME = "jarvis-vision-pro-v1";
+const CACHE_NAME = "jarvis-spider-interface-v3";
 const STATIC_ASSETS = [
   "/",
-  "/static/styles.css",
-  "/static/app.js",
-  "/static/icon.svg",
-  "/manifest.webmanifest",
+  "/static/styles.css?v=spider-v3",
+  "/static/app.js?v=spider-v3",
+  "/static/icon.svg?v=spider-v3",
+  "/manifest.webmanifest?v=spider-v3",
 ];
 
 self.addEventListener("install", (event) => {

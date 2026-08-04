@@ -249,6 +249,13 @@ class DeterministicActionParser:
         references = (
             (r"(?:(?:en|de)\s+)?todas las pantallas", "all"),
             (r"(?:(?:en|de)\s+)?todos los monitores", "all"),
+            (r"(?:(?:en|de)\s+)?ambos monitores", "all"),
+            (r"(?:(?:en|de)\s+)?las dos pantallas", "all"),
+            (
+                r"(?:(?:en|de)\s+)?cada (?:uno de )?(?:los |mis )?"
+                r"(?:monitores|pantallas)",
+                "all",
+            ),
             (
                 r"(?:(?:en|de)\s+)?(?:el|la)?\s*(?:monitor|pantalla)\s+principal",
                 "primary",
@@ -483,6 +490,13 @@ class DeterministicActionParser:
                 "Esa operación está bloqueada porque puede causar pérdida de datos o dinero."
             )
 
+        if command in {
+            "cual es el monitor 1 y cual es el monitor 2",
+            "dime cual es el monitor 1 y cual es el monitor 2",
+            "como estan definidos el monitor 1 y el monitor 2",
+        }:
+            return self._plan(ActionName.SCREEN_LIST)
+
         natural_search = self._natural_search(text)
         if natural_search is not None:
             query, browser = natural_search
@@ -601,12 +615,44 @@ class DeterministicActionParser:
             "lista las pantallas",
             "muestra los monitores",
             "muestra las pantallas",
+            "define los monitores",
+            "define las pantallas",
+            "identifica los monitores",
+            "identifica las pantallas",
+            "como estan definidos los monitores",
+            "cual es el monitor 1 y cual es el monitor 2",
             "que monitores hay",
             "que monitores estan conectados",
             "que pantallas hay",
             "cuantos monitores hay",
         }:
             return self._plan(ActionName.SCREEN_LIST)
+
+        if re.fullmatch(
+            r"(?:que|cual|cuanto|dime|indica|consulta|revisa|verifica|"
+            r"a cuanto|en cuanto|como esta) "
+            r"(?:(?:esta|es|tengo|hay|se encuentra) )?"
+            r"(?:el )?(?:volumen|nivel de (?:volumen|audio|sonido))"
+            r"(?: (?:actual|actualmente|del sistema|de la computadora|de mi pc))?",
+            command,
+        ):
+            return self._plan(ActionName.VOLUME_GET)
+
+        if command in {
+            "que hay en cada monitor",
+            "que hay en cada pantalla",
+            "que ves en cada monitor",
+            "que ves en cada pantalla",
+            "que aparece en cada monitor",
+            "que aparece en cada pantalla",
+            "describe cada monitor",
+            "describe cada pantalla",
+            "describe ambos monitores",
+            "describe las dos pantallas",
+            "dime que hay en cada monitor",
+            "dime que hay en cada pantalla",
+        }:
+            return self._plan(ActionName.SCREEN_DESCRIBE, monitor="all")
 
         monitor, screen_command = self._extract_monitor(command)
         if screen_command in {
@@ -624,6 +670,8 @@ class DeterministicActionParser:
             "que aparece",
             "describe",
             "dime que ves",
+            "dime que hay",
+            "dime que aparece",
             "mira",
         }:
             return self._plan(
@@ -817,9 +865,6 @@ class DeterministicActionParser:
             command,
         ):
             return self._plan(ActionName.VOLUME_MUTE, muted=False)
-        if command in {"que volumen hay", "cual es el volumen", "dime el volumen"}:
-            return self._plan(ActionName.VOLUME_GET)
-
         if command in {"reproduce o pausa", "reproduce", "pausa", "play pause"}:
             return self._plan(ActionName.MEDIA_PLAY_PAUSE)
         if command in {"siguiente cancion", "siguiente pista", "pon la siguiente"}:
@@ -836,7 +881,15 @@ class DeterministicActionParser:
             "que ventanas estan abiertas",
         }:
             return self._plan(ActionName.WINDOW_LIST)
-        if command in {"que ventana esta activa", "cual es la ventana actual"}:
+        if command in {
+            "que ventana esta activa",
+            "cual es la ventana actual",
+            "que ventana tengo activa",
+            "que aplicacion esta activa",
+            "que aplicacion tengo abierta",
+            "que tengo abierto en primer plano",
+            "dime la ventana activa",
+        }:
             return self._plan(ActionName.WINDOW_CURRENT)
         window_focus = re.fullmatch(
             r"(?:cambia a|enfoca|activa|trae al frente) (?:la ventana de |la ventana )?(.+)",
@@ -892,7 +945,19 @@ class DeterministicActionParser:
             return self._plan(ActionName.SCREENSHOT_TAKE)
         if command in {"muestra el escritorio", "ve al escritorio"}:
             return self._plan(ActionName.DESKTOP_SHOW)
-        if command in {"estado del sistema", "como esta la computadora", "uso del sistema"}:
+        if command in {
+            "estado del sistema",
+            "estado actual del sistema",
+            "como esta la computadora",
+            "como esta mi computadora",
+            "como esta mi pc",
+            "dime el estado del sistema",
+            "revisa el estado del sistema",
+            "uso del sistema",
+            "uso actual del sistema",
+            "uso de cpu y memoria",
+            "cuanto cpu y memoria estoy usando",
+        }:
             return self._plan(ActionName.SYSTEM_STATUS)
         if command in {"lee el portapapeles", "que hay en el portapapeles"}:
             return self._plan(ActionName.CLIPBOARD_READ)

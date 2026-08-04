@@ -56,6 +56,36 @@ class ActionDecisionRequest(BaseModel):
     choice: str | None = Field(default=None, min_length=1, max_length=120)
 
 
+class RemoteRegistrationRequest(BaseModel):
+    code: str = Field(min_length=8, max_length=12)
+    label: str = Field(min_length=2, max_length=80)
+
+    @field_validator("code", "label")
+    @classmethod
+    def remote_text_must_have_content(cls, value: str) -> str:
+        clean_value = value.strip()
+        if not clean_value:
+            raise ValueError("El valor no puede estar vacío")
+        return clean_value
+
+
+class RemoteAuthenticationRequest(BaseModel):
+    device_id: str = Field(min_length=32, max_length=64, pattern=r"^[a-f0-9]+$")
+
+
+class RemoteCredentialRequest(BaseModel):
+    ceremony_id: str = Field(min_length=32, max_length=64, pattern=r"^[a-f0-9]+$")
+    credential: dict[str, object]
+
+
+class RemoteStopRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+
+
+class RemoteSessionRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+
+
 class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2_000)
 

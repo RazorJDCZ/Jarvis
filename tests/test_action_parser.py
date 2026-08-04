@@ -95,6 +95,8 @@ from jarvis.actions.parser import DeterministicActionParser, normalize_request
         ("silencia el sonido", ActionName.VOLUME_MUTE, {"muted": True}),
         ("quita el silencio", ActionName.VOLUME_MUTE, {"muted": False}),
         ("dime el volumen", ActionName.VOLUME_GET, {}),
+        ("Jarvis, dime el volumen actual", ActionName.VOLUME_GET, {}),
+        ("¿En cuánto está el volumen del sistema?", ActionName.VOLUME_GET, {}),
         ("siguiente canción", ActionName.MEDIA_NEXT, {}),
         ("pausa", ActionName.MEDIA_PLAY_PAUSE, {}),
         ("lista las ventanas", ActionName.WINDOW_LIST, {}),
@@ -355,6 +357,16 @@ def test_dangerous_step_blocks_entire_workflow() -> None:
     ("phrase", "name", "arguments"),
     [
         ("qué monitores están conectados", ActionName.SCREEN_LIST, {}),
+        (
+            "dime cuál es el monitor 1 y cuál es el monitor 2",
+            ActionName.SCREEN_LIST,
+            {},
+        ),
+        (
+            "dime qué hay en cada uno de mis monitores",
+            ActionName.SCREEN_DESCRIBE,
+            {"monitor": "all"},
+        ),
         ("qué ves en el monitor 2", ActionName.SCREEN_DESCRIBE, {"monitor": "2"}),
         ("describe el segundo monitor", ActionName.SCREEN_DESCRIBE, {"monitor": "2"}),
         (

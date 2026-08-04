@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import ctypes
+import hashlib
 import io
 import json
 import math
 import re
 import unicodedata
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -27,6 +29,11 @@ class ScreenCapture:
     height: int
     monitor: str = "all"
     monitor_label: str = "Todas las pantallas"
+    device: str = ""
+    position: str = ""
+    image_width: int = 0
+    image_height: int = 0
+    fingerprint: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +51,7 @@ class ScreenMonitor:
         suffix = " (principal)" if self.primary else ""
         return f"Monitor {self.key}{suffix}"
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self, position: str = "") -> dict[str, Any]:
         return {
             "key": self.key,
             "label": self.label,
@@ -54,6 +61,7 @@ class ScreenMonitor:
             "width": self.width,
             "height": self.height,
             "primary": self.primary,
+            "position": position,
         }
 
 
@@ -62,6 +70,21 @@ class LocalVisionController:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._model_lock = asyncio.Lock()
+        self._model_used = False
+
+    @staticmethod
+    def _enable_dpi_awareness() -> None:
+        """Keep Win32 monitor coordinates aligned with Pillow screen captures."""
+
+        try:
+            user32 = ctypes.windll.user32
+            user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            user32.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+            user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        except (AttributeError, OSError, TypeError, ValueError):
+            with suppress(AttributeError, OSError):
+                ctypes.windll.user32.SetProcessDPIAware()
 
     def _local_endpoint(self) -> bool:
         try:
@@ -103,6 +126,8 @@ class LocalVisionController:
     def monitors() -> tuple[ScreenMonitor, ...]:
         """Return active monitors in Windows virtual-desktop coordinates."""
 
+        LocalVisionController._enable_dpi_awareness()
+
         class Rect(ctypes.Structure):
             _fields_ = [
                 ("left", ctypes.c_long),
@@ -128,6 +153,15 @@ class LocalVisionController:
             ctypes.POINTER(Rect),
             ctypes.c_void_p,
         )
+        user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(MonitorInfoEx)]
+        user32.GetMonitorInfoW.restype = ctypes.c_bool
+        user32.EnumDisplayMonitors.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            callback_type,
+            ctypes.c_void_p,
+        ]
+        user32.EnumDisplayMonitors.restype = ctypes.c_bool
         detected: list[ScreenMonitor] = []
 
         def callback(
@@ -231,18 +265,37 @@ class LocalVisionController:
         choices = ", ".join(monitor.label for monitor in monitors)
         raise ValueError(f"monitor desconocido; detecté: {choices}")
 
+    @staticmethod
+    def _positions(monitors: tuple[ScreenMonitor, ...]) -> dict[str, str]:
+        ordered = sorted(monitors, key=lambda item: (item.left, item.top))
+        if len(ordered) == 1:
+            return {ordered[0].key: "único"}
+        positions: dict[str, str] = {}
+        for index, monitor in enumerate(ordered):
+            if index == 0:
+                positions[monitor.key] = "izquierda"
+            elif index == len(ordered) - 1:
+                positions[monitor.key] = "derecha"
+            else:
+                positions[monitor.key] = f"centro {index}"
+        return positions
+
     def list_monitors(self) -> ExecutionResult:
         try:
             monitors = self.monitors()
+            positions = self._positions(monitors)
             descriptions = [
-                f"{monitor.label}, {monitor.width} por {monitor.height}"
+                f"{monitor.label} es {monitor.device}, está a la "
+                f"{positions[monitor.key]} y mide {monitor.width} por {monitor.height}"
                 for monitor in monitors
             ]
             return ExecutionResult(
                 True,
-                f"Detecté {len(monitors)}: " + "; ".join(descriptions) + ".",
+                f"Detecté {len(monitors)}. Para Jarvis, " + "; ".join(descriptions) + ".",
                 {
-                    "monitors": [monitor.as_dict() for monitor in monitors],
+                    "monitors": [
+                        monitor.as_dict(positions[monitor.key]) for monitor in monitors
+                    ],
                     "monitor": "all",
                     "monitor_label": "Todas las pantallas",
                 },
@@ -253,6 +306,7 @@ class LocalVisionController:
     def _capture(self, monitor: str = "all") -> ScreenCapture:
         from PIL import ImageGrab
 
+        self._enable_dpi_awareness()
         selected = self.resolve_monitor(monitor)
         if selected is None:
             image = ImageGrab.grab(all_screens=True)
@@ -263,6 +317,8 @@ class LocalVisionController:
             height = int(user32.GetSystemMetrics(79)) or image.height
             monitor_key = "all"
             monitor_label = "Todas las pantallas"
+            device = "virtual-desktop"
+            position = "combinadas"
         else:
             left = selected.left
             top = selected.top
@@ -274,18 +330,58 @@ class LocalVisionController:
             )
             monitor_key = selected.key
             monitor_label = selected.label
-        image.thumbnail((1_600, 1_600))
+            device = selected.device
+            position = self._positions(self.monitors()).get(selected.key, "")
+        # Vision token cost grows quickly with pixel count. 1024 px preserves readable desktop
+        # structure while keeping two-monitor questions practical on a CPU-only local model.
+        image.thumbnail((1_024, 768))
+        image_width, image_height = image.size
         buffer = io.BytesIO()
         image.save(buffer, format="PNG", optimize=True)
+        png = buffer.getvalue()
         return ScreenCapture(
-            encoded_png=base64.b64encode(buffer.getvalue()).decode("ascii"),
+            encoded_png=base64.b64encode(png).decode("ascii"),
             left=left,
             top=top,
             width=width,
             height=height,
             monitor=monitor_key,
             monitor_label=monitor_label,
+            device=device,
+            position=position,
+            image_width=image_width,
+            image_height=image_height,
+            fingerprint=hashlib.sha256(png).hexdigest()[:12],
         )
+
+    async def _captures(self, monitor: str) -> list[ScreenCapture]:
+        """Capture monitors separately so ultrawide stitched images never lose detail."""
+
+        normalized = self._normalize_selector(monitor or "all")
+        if normalized not in {
+            "all",
+            "ambos",
+            "todas",
+            "todos",
+            "todas las pantallas",
+            "todos los monitores",
+        }:
+            return [await asyncio.to_thread(self._capture, monitor)]
+        monitors = await asyncio.to_thread(self.monitors)
+        return [await asyncio.to_thread(self._capture, item.key) for item in monitors]
+
+    @staticmethod
+    def _capture_details(capture: ScreenCapture) -> dict[str, Any]:
+        return {
+            "monitor": capture.monitor,
+            "monitor_label": capture.monitor_label,
+            "device": capture.device,
+            "position": capture.position,
+            "source_resolution": [capture.width, capture.height],
+            "analyzed_resolution": [capture.image_width, capture.image_height],
+            "capture_fingerprint": capture.fingerprint,
+            "ephemeral_capture": True,
+        }
 
     async def _request(
         self,
@@ -314,6 +410,7 @@ class LocalVisionController:
             ],
             "stream": False,
             "think": False,
+            "keep_alive": self.settings.vision_keep_alive,
             "format": schema,
             "options": {
                 "temperature": 0,
@@ -321,6 +418,7 @@ class LocalVisionController:
                 "num_predict": max_tokens,
             },
         }
+        self._model_used = True
         async with httpx.AsyncClient(timeout=max(15, self.settings.vision_timeout)) as client:
             response = await client.post(f"{self.settings.ollama_url}/api/chat", json=payload)
             response.raise_for_status()
@@ -331,14 +429,38 @@ class LocalVisionController:
         return decoded
 
     async def describe(self, monitor: str = "all") -> ExecutionResult:
+        async with self._model_lock:
+            self._model_used = False
+            try:
+                return await self._describe(monitor)
+            finally:
+                await self._release_model_unlocked()
+
+    async def _describe(self, monitor: str = "all") -> ExecutionResult:
         schema = {
             "type": "object",
             "properties": {
-                "summary": {"type": "string"},
-                "visible_apps": {"type": "array", "items": {"type": "string"}},
-                "important_text": {"type": "array", "items": {"type": "string"}},
-                "interactive_elements": {"type": "array", "items": {"type": "string"}},
-                "warnings": {"type": "array", "items": {"type": "string"}},
+                "summary": {"type": "string", "maxLength": 360},
+                "visible_apps": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 80},
+                    "maxItems": 6,
+                },
+                "important_text": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 120},
+                    "maxItems": 6,
+                },
+                "interactive_elements": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 100},
+                    "maxItems": 6,
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 120},
+                    "maxItems": 4,
+                },
             },
             "required": [
                 "summary",
@@ -349,36 +471,102 @@ class LocalVisionController:
             ],
         }
         try:
-            capture = await asyncio.to_thread(self._capture, monitor)
-            decoded = await self._request(
-                f"Estás observando {capture.monitor_label}. Describe en español lo que está "
-                "visible y los controles relevantes. Sé conciso.",
-                schema,
-                capture,
-                180,
-            )
-            summary = self._text(decoded, "summary", 1_000)
-            elements = self._string_list(decoded.get("interactive_elements"), 12)
+            captures = await self._captures(monitor)
+            observations: list[dict[str, Any]] = []
+            for capture in captures:
+                decoded = await self._request(
+                    f"Esta imagen corresponde exclusivamente a {capture.monitor_label}, "
+                    f"dispositivo {capture.device}, posición {capture.position}, resolución "
+                    f"{capture.width} por {capture.height}. Describe por separado las aplicaciones "
+                    "y ventanas realmente visibles, el contenido central, texto importante y "
+                    "diálogos o errores. No deduzcas contenido oculto, no atribuyas a este monitor "
+                    "nada que no aparezca en la imagen y expresa cualquier duda en warnings. "
+                    "El resumen debe tener máximo 45 palabras y cada lista máximo 6 elementos.",
+                    schema,
+                    capture,
+                    300,
+                )
+                observations.append(
+                    {
+                        **self._capture_details(capture),
+                        "summary": self._text(decoded, "summary", 1_000),
+                        "visible_apps": self._string_list(decoded.get("visible_apps"), 8),
+                        "important_text": self._string_list(decoded.get("important_text"), 12),
+                        "interactive_elements": self._string_list(
+                            decoded.get("interactive_elements"), 12
+                        ),
+                        "warnings": self._string_list(decoded.get("warnings"), 8),
+                    }
+                )
+            if not observations:
+                raise RuntimeError("Windows no devolvió capturas activas")
+            elements = list(
+                dict.fromkeys(
+                    element
+                    for observation in observations
+                    for element in observation["interactive_elements"]
+                )
+            )[:20]
+            summaries = [
+                f"{observation['monitor_label']} ({observation['position']}): "
+                f"{observation['summary']}"
+                for observation in observations
+            ]
+            single = len(observations) == 1
             details = {
-                "summary": summary,
-                "visible_apps": self._string_list(decoded.get("visible_apps"), 8),
-                "important_text": self._string_list(decoded.get("important_text"), 12),
+                "summary": observations[0]["summary"] if single else " ".join(summaries),
+                "visible_apps": list(
+                    dict.fromkeys(
+                        app
+                        for observation in observations
+                        for app in observation["visible_apps"]
+                    )
+                )[:16],
+                "important_text": [
+                    text
+                    for observation in observations
+                    for text in observation["important_text"]
+                ][:20],
                 "interactive_elements": elements,
-                "warnings": self._string_list(decoded.get("warnings"), 8),
+                "warnings": [
+                    warning
+                    for observation in observations
+                    for warning in observation["warnings"]
+                ][:16],
                 "ephemeral_capture": True,
-                "monitor": capture.monitor,
-                "monitor_label": capture.monitor_label,
+                "monitor": observations[0]["monitor"] if single else "all",
+                "monitor_label": (
+                    observations[0]["monitor_label"] if single else "Cada monitor por separado"
+                ),
+                "monitor_observations": observations,
             }
-            suffix = f" Controles relevantes: {'; '.join(elements[:6])}." if elements else ""
+            suffix = (
+                f" Controles relevantes: {'; '.join(elements[:6])}."
+                if single and elements
+                else ""
+            )
+            spoken = (
+                f"En {observations[0]['monitor_label']}: {observations[0]['summary']}"
+                if single
+                else " Analicé cada monitor por separado. " + " ".join(summaries)
+            )
             return ExecutionResult(
                 True,
-                f"En {capture.monitor_label}: {summary}{suffix}",
+                f"{spoken}{suffix}".strip(),
                 details,
             )
         except Exception as exc:
             return self._failure("describir la pantalla", exc)
 
     async def ask(self, question: str, monitor: str = "all") -> ExecutionResult:
+        async with self._model_lock:
+            self._model_used = False
+            try:
+                return await self._ask(question, monitor)
+            finally:
+                await self._release_model_unlocked()
+
+    async def _ask(self, question: str, monitor: str = "all") -> ExecutionResult:
         schema = {
             "type": "object",
             "properties": {
@@ -389,18 +577,48 @@ class LocalVisionController:
             "required": ["answer", "evidence", "uncertainty"],
         }
         try:
-            capture = await asyncio.to_thread(self._capture, monitor)
-            decoded = await self._request(
-                f"Estás observando {capture.monitor_label}. "
-                "Responde en español usando solo la captura actual. "
-                f"Pregunta: <pregunta>{question}</pregunta>",
-                schema,
-                capture,
-                180,
+            captures = await self._captures(monitor)
+            observations: list[dict[str, Any]] = []
+            for capture in captures:
+                decoded = await self._request(
+                    f"Esta imagen corresponde exclusivamente a {capture.monitor_label}, "
+                    f"dispositivo {capture.device}, posición {capture.position}. Responde en "
+                    "español usando únicamente evidencia visible en esta captura actual. Si la "
+                    "respuesta no puede leerse o comprobarse, dilo explícitamente; no adivines ni "
+                    f"uses conocimiento previo. Pregunta: <pregunta>{question}</pregunta>",
+                    schema,
+                    capture,
+                    220,
+                )
+                observations.append(
+                    {
+                        **self._capture_details(capture),
+                        "answer": self._text(decoded, "answer", 1_200),
+                        "evidence": self._string_list(decoded.get("evidence"), 10),
+                        "uncertainty": self._text(
+                            decoded, "uncertainty", 300, required=False
+                        ),
+                    }
+                )
+            if not observations:
+                raise RuntimeError("Windows no devolvió capturas activas")
+            single = len(observations) == 1
+            answer = (
+                observations[0]["answer"]
+                if single
+                else " ".join(
+                    f"{item['monitor_label']} ({item['position']}): {item['answer']}"
+                    for item in observations
+                )
             )
-            answer = self._text(decoded, "answer", 1_200)
-            evidence = self._string_list(decoded.get("evidence"), 10)
-            uncertainty = self._text(decoded, "uncertainty", 300, required=False)
+            evidence = [
+                item
+                for observation in observations
+                for item in observation["evidence"]
+            ][:20]
+            uncertainty = " ".join(
+                item["uncertainty"] for item in observations if item["uncertainty"]
+            )[:600]
             return ExecutionResult(
                 True,
                 answer,
@@ -409,14 +627,27 @@ class LocalVisionController:
                     "evidence": evidence,
                     "uncertainty": uncertainty,
                     "ephemeral_capture": True,
-                    "monitor": capture.monitor,
-                    "monitor_label": capture.monitor_label,
+                    "monitor": observations[0]["monitor"] if single else "all",
+                    "monitor_label": (
+                        observations[0]["monitor_label"]
+                        if single
+                        else "Cada monitor por separado"
+                    ),
+                    "monitor_observations": observations,
                 },
             )
         except Exception as exc:
             return self._failure("analizar la pantalla", exc)
 
     async def find(self, target: str, monitor: str = "all") -> ExecutionResult:
+        async with self._model_lock:
+            self._model_used = False
+            try:
+                return await self._find(target, monitor)
+            finally:
+                await self._release_model_unlocked()
+
+    async def _find(self, target: str, monitor: str = "all") -> ExecutionResult:
         schema = {
             "type": "object",
             "properties": {
@@ -477,6 +708,21 @@ class LocalVisionController:
             )
         except Exception as exc:
             return self._failure("localizar el elemento", exc)
+
+    async def _release_model_unlocked(self) -> None:
+        if not self._model_used or not self.settings.vision_release_after_use:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self.settings.ollama_url}/api/generate",
+                    json={"model": self.settings.ollama_model, "keep_alive": 0},
+                )
+                response.raise_for_status()
+        except httpx.HTTPError:
+            pass
+        finally:
+            self._model_used = False
 
     @staticmethod
     def _coordinate(value: Any) -> int:

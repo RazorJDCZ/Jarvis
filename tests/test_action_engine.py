@@ -101,6 +101,37 @@ async def test_low_risk_exact_action_executes_immediately(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_remote_state_change_is_escalated_before_execution(tmp_path: Path) -> None:
+    engine, action_catalog = build_engine(tmp_path)
+
+    pending = await engine.try_handle(
+        "remote-device",
+        "abre la calculadora",
+        remote=True,
+    )
+
+    assert pending.status is ActionStatus.PENDING
+    assert pending.risk is ActionRisk.MEDIUM
+    assert pending.description == "Autorizar desde el celular: Abrir una aplicación permitida"
+    assert action_catalog.executed == []
+
+
+@pytest.mark.asyncio
+async def test_remote_read_only_action_stays_direct(tmp_path: Path) -> None:
+    engine, action_catalog = build_engine(tmp_path)
+
+    result = await engine.try_handle(
+        "remote-device",
+        "dime el volumen",
+        remote=True,
+    )
+
+    assert result.status is ActionStatus.COMPLETED
+    assert result.name is ActionName.VOLUME_GET
+    assert len(action_catalog.executed) == 1
+
+
+@pytest.mark.asyncio
 async def test_explicit_browser_reaches_catalog_as_typed_action(tmp_path: Path) -> None:
     engine, action_catalog = build_engine(tmp_path)
 

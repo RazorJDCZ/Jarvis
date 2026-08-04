@@ -26,6 +26,17 @@ class WakeGate:
     max_sessions: int = 64
     _armed_until: dict[str, float] = field(default_factory=dict)
 
+    def _wake_pattern(self) -> str:
+        normalized = _normalize(self.wake_word)
+        variants = {normalized}
+        if normalized == "jarvis":
+            # Faster Whisper commonly maps the Spanish /x/ onset in "Jarvis" to one of
+            # these rare spellings. Keep the list explicit so ordinary near-matches such as
+            # "Carlos" or the name "Travis" never activate the assistant.
+            variants.update({"carvis", "garvis", "harvis", "yarvis"})
+        alternatives = sorted(variants, key=len, reverse=True)
+        return "(?:" + "|".join(re.escape(item) for item in alternatives) + ")"
+
     def evaluate(
         self,
         session_id: str,
@@ -51,8 +62,7 @@ class WakeGate:
             return WakeDecision(accepted=True, command=text)
 
         normalized_text = _normalize(text)
-        normalized_wake = re.escape(_normalize(self.wake_word))
-        match = re.search(rf"\b{normalized_wake}\b", normalized_text)
+        match = re.search(rf"\b{self._wake_pattern()}\b", normalized_text)
         if match is None:
             return WakeDecision(accepted=False)
 
@@ -73,3 +83,6 @@ class WakeGate:
             activated=True,
             command=command,
         )
+
+    def reset(self, session_id: str) -> None:
+        self._armed_until.pop(session_id, None)

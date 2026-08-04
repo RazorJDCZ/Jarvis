@@ -40,6 +40,7 @@ def test_health_and_ui_are_available() -> None:
     assert "JARVIS // Neural Interface" in index.text
     assert 'id="neuralField"' in index.text
     assert 'id="monitorFocus"' in index.text
+    assert "spider-v3" in index.text
     assert manifest.status_code == 200
     assert service_worker.status_code == 200
     assert "javascript" in service_worker.headers["content-type"]
@@ -51,6 +52,7 @@ def test_health_and_ui_are_available() -> None:
     assert openapi.status_code == 200
     assert openapi.json()["info"]["title"] == "Jarvis Local Core"
     assert index.headers["x-content-type-options"] == "nosniff"
+    assert index.headers["cache-control"] == "no-cache, no-store, must-revalidate"
     assert "frame-ancestors 'none'" in index.headers["content-security-policy"]
 
 
@@ -155,6 +157,32 @@ def test_low_risk_action_returns_verified_metadata(tmp_path: Path) -> None:
     assert payload["provider"] == "action-engine"
     assert payload["action"]["status"] == "completed"
     assert payload["action"]["details"]["verified"] is True
+
+
+def test_volume_question_never_reaches_conversational_brain(tmp_path: Path) -> None:
+    app = create_app(
+        Settings(
+            project_root=tmp_path,
+            brain_mode="fallback",
+            action_model_planning=False,
+            memory_enabled=False,
+        )
+    )
+    app.state.action_engine.catalog.execute = AsyncMock(
+        return_value=ExecutionResult(True, "El volumen actual es 42 por ciento.")
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat",
+            json={"message": "Jarvis, dime el volumen actual", "session_id": "volume-test"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["provider"] == "action-engine"
+    assert payload["action"]["name"] == "volume.get"
+    assert payload["response"] == "El volumen actual es 42 por ciento."
 
 
 def test_sensitive_action_requires_and_accepts_confirmation(tmp_path: Path) -> None:
@@ -333,6 +361,7 @@ def test_empty_and_oversized_audio_are_rejected(tmp_path: Path) -> None:
 
 def test_voice_pipeline_cleans_temporary_audio(tmp_path: Path) -> None:
     app = create_app(fallback_settings(project_root=tmp_path))
+    app.state.brain.release = AsyncMock(return_value=True)
     app.state.transcriber.transcribe = AsyncMock(return_value=("dime la hora", "es"))
 
     with TestClient(app) as client:
@@ -341,6 +370,7 @@ def test_voice_pipeline_cleans_temporary_audio(tmp_path: Path) -> None:
             data={"session_id": "voice", "wake_mode": "false"},
             files={"audio": ("voice.wav", b"not-real-but-mocked", "audio/wav")},
         )
+        app.state.brain.release.assert_awaited_once()
 
     assert response.status_code == 200
     assert response.json()["accepted"] is True

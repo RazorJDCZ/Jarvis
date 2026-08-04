@@ -80,6 +80,18 @@ async def verify() -> dict[str, object]:
               return result;
             }"""
         )
+        await page.locator("#mobileAccessButton").click()
+        await page.locator("#mobileAccessDialog").wait_for(state="visible")
+        remote_enabled = await page.evaluate(
+            "fetch('/api/remote/status').then(response => response.json())"
+            ".then(data => data.enabled)"
+        )
+        pairing_disabled = await page.locator("#createPairingButton").is_disabled()
+        mobile_admin_ready = (
+            "TAILNET LINK" in await page.locator("#remoteAdminState").inner_text()
+            and pairing_disabled != remote_enabled
+        )
+        await page.locator("#closeMobileAccessButton").click()
         return {
             "ui_opened": opened.success,
             "actions_online": await page.locator("#actionsStatus").evaluate(
@@ -100,6 +112,7 @@ async def verify() -> dict[str, object]:
                 "playbackPaused": True,
                 "statePaused": True,
             },
+            "mobile_access_admin_ready": mobile_admin_ready,
         }
     finally:
         await browser.close()

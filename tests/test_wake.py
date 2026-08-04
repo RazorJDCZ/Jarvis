@@ -67,6 +67,27 @@ def test_wake_word_is_case_and_accent_insensitive() -> None:
     assert result.command == "abre la calculadora"
 
 
+def test_known_spanish_whisper_wake_variants_are_accepted() -> None:
+    gate = WakeGate("jarvis")
+
+    for transcript in (
+        "Carvis, cuéntame una historia",
+        "Harvis dime la hora",
+        "Garvis abre la calculadora",
+        "Yarvis, ¿qué ves?",
+    ):
+        result = gate.evaluate(transcript, transcript, True, now=100)
+        assert result.accepted is True
+        assert result.activated is True
+
+
+def test_unrelated_near_matches_do_not_activate_jarvis() -> None:
+    gate = WakeGate("jarvis")
+
+    for transcript in ("Carlos dime la hora", "Travis abre Chrome", "avisa mañana"):
+        assert gate.evaluate(transcript, transcript, True, now=100).accepted is False
+
+
 def test_empty_transcript_is_ignored_in_every_mode() -> None:
     gate = WakeGate("jarvis")
 

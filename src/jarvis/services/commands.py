@@ -72,7 +72,9 @@ class SafeCommandRouter:
                 f"{self._MONTHS[now.month - 1]} de {now.year}."
             )
         if self._matches(command, (r"(?:que version eres|cual es tu version|version)",)):
-            return SafeCommandResult(f"Estoy ejecutando Jarvis {__version__}, etapa cuatro.")
+            return SafeCommandResult(
+                f"Estoy ejecutando Jarvis {__version__}, con enlace móvil privado."
+            )
         if self._matches(
             command,
             (r"(?:que puedes hacer|ayuda|muestra (?:los )?comandos|lista (?:los )?comandos)",),
