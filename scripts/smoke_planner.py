@@ -5,17 +5,20 @@ import json
 
 from jarvis.actions.catalog import ActionCatalog
 from jarvis.actions.engine import ActionEngine
-from jarvis.actions.models import ActionPlan, ActionWorkflowPlan
+from jarvis.actions.models import ActionPlan, ActionWorkflowPlan, ClarificationNeeded
 from jarvis.actions.planner import LocalActionPlanner
 from jarvis.config import Settings
 
 
-def summarize(result: ActionPlan | ActionWorkflowPlan | None) -> object:
+def summarize(
+    result: ActionPlan | ActionWorkflowPlan | ClarificationNeeded | None,
+) -> object:
     if isinstance(result, ActionWorkflowPlan):
         return {
             "kind": "workflow",
             "steps": [step.name.value for step in result.steps],
             "confidence": result.confidence,
+            "continue_goal": result.continue_goal,
         }
     if isinstance(result, ActionPlan):
         return {
@@ -23,6 +26,13 @@ def summarize(result: ActionPlan | ActionWorkflowPlan | None) -> object:
             "name": result.name.value,
             "confidence": result.confidence,
             "arguments": result.arguments,
+            "continue_goal": result.continue_goal,
+        }
+    if isinstance(result, ClarificationNeeded):
+        return {
+            "kind": "clarification",
+            "question": result.question,
+            "confidence": result.confidence,
         }
     return None
 
@@ -33,6 +43,9 @@ async def verify() -> dict[str, object]:
     planner = LocalActionPlanner(settings, catalog.action_names)
     single = await planner.plan("deja el sonido aproximadamente a la mitad")
     app = await planner.plan("quiero tener el bloc de notas abierto")
+    adaptive = await planner.plan(
+        "necesito que compares tres cursos gratuitos de Python y abras el mejor"
+    )
     engine = ActionEngine(settings, catalog=catalog, planner=planner)
     workflow_outcome = await engine.try_handle(
         "planner-smoke",
@@ -47,6 +60,7 @@ async def verify() -> dict[str, object]:
     return {
         "single": summarize(single),
         "app": summarize(app),
+        "adaptive": summarize(adaptive),
         "workflow": {
             "status": workflow_outcome.status.value if workflow_outcome else None,
             "name": workflow_outcome.name.value

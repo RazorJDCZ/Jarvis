@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 
 import httpx
 import pytest
+from PIL import Image
 
 from jarvis.actions.catalog import ActionCatalog
 from jarvis.actions.models import ActionName, ActionPlan, ExecutionResult
@@ -20,6 +22,47 @@ def capture(_monitor: str = "all") -> ScreenCapture:
         width=2_000,
         height=1_000,
     )
+
+
+@pytest.mark.asyncio
+async def test_explicit_image_analysis_uses_supplied_bytes_without_opening_a_camera(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = LocalVisionController(Settings(project_root=tmp_path))
+    image = BytesIO()
+    Image.new("RGB", (64, 64), color=(180, 20, 40)).save(image, format="PNG")
+    requested: list[ScreenCapture] = []
+
+    async def response(_prompt, _schema, supplied, _max_tokens):
+        requested.append(supplied)
+        return {
+            "answer": "Una superficie roja.",
+            "confidence": 0.95,
+            "evidence": ["Color rojo uniforme"],
+            "uncertainty": "",
+        }
+
+    monkeypatch.setattr(controller, "_request", response)
+    monkeypatch.setattr(
+        controller,
+        "_capture",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("No debe capturar monitores ni abrir una cámara")
+        ),
+    )
+
+    result = await controller.analyze_image_bytes(
+        image.getvalue(),
+        "¿Qué color ves?",
+        source_label="captura explícita",
+    )
+
+    assert result.success is True
+    assert result.message == "Una superficie roja."
+    assert requested[0].device == "explicit-upload"
+    assert requested[0].width == 64 and requested[0].height == 64
+    assert result.details["ephemeral_capture"] is True
 
 
 @pytest.mark.asyncio
@@ -62,12 +105,32 @@ async def test_describe_all_analyzes_each_monitor_separately(
     controller = LocalVisionController(Settings(project_root=tmp_path))
     captures = {
         "1": ScreenCapture(
-            "b25l", 0, 0, 1920, 1080, "1", "Monitor 1 (principal)",
-            r"\\.\DISPLAY1", "izquierda", 1024, 576, "one",
+            "b25l",
+            0,
+            0,
+            1920,
+            1080,
+            "1",
+            "Monitor 1 (principal)",
+            r"\\.\DISPLAY1",
+            "izquierda",
+            1024,
+            576,
+            "one",
         ),
         "2": ScreenCapture(
-            "dHdv", 1920, 0, 1920, 1080, "2", "Monitor 2",
-            r"\\.\DISPLAY2", "derecha", 1024, 576, "two",
+            "dHdv",
+            1920,
+            0,
+            1920,
+            1080,
+            "2",
+            "Monitor 2",
+            r"\\.\DISPLAY2",
+            "derecha",
+            1024,
+            576,
+            "two",
         ),
     }
     monitors = (
@@ -100,6 +163,65 @@ async def test_describe_all_analyzes_each_monitor_separately(
 
 
 @pytest.mark.asyncio
+async def test_describe_discards_low_confidence_visual_claims(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = LocalVisionController(Settings(project_root=tmp_path))
+    monkeypatch.setattr(controller, "_capture", capture)
+
+    async def response(*_args: object) -> dict[str, object]:
+        return {
+            "summary": "Creo que hay una terminal con una ruta secreta.",
+            "summary_confidence": 0.4,
+            "visible_apps": [
+                {"text": "Terminal", "confidence": 0.9},
+                {"text": "Aplicación dudosa", "confidence": 0.2},
+            ],
+            "important_text": [
+                {"text": "ruta inventada", "confidence": 0.5},
+                {"text": "ERROR 42", "confidence": 0.92},
+            ],
+            "interactive_elements": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(controller, "_request", response)
+
+    result = await controller.describe("1")
+
+    assert "suficiente confianza" in result.message
+    assert result.details["visible_apps"] == ["Terminal"]
+    assert result.details["important_text"] == ["ERROR 42"]
+    assert "ruta inventada" not in str(result.details)
+
+
+@pytest.mark.asyncio
+async def test_screen_question_refuses_a_low_confidence_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = LocalVisionController(Settings(project_root=tmp_path))
+    monkeypatch.setattr(controller, "_capture", capture)
+
+    async def response(*_args: object) -> dict[str, object]:
+        return {
+            "answer": "El mensaje dice que se completó correctamente.",
+            "confidence": 0.3,
+            "evidence": [{"text": "texto borroso", "confidence": 0.2}],
+            "uncertainty": "El texto es demasiado pequeño.",
+        }
+
+    monkeypatch.setattr(controller, "_request", response)
+
+    result = await controller.ask("¿Qué dice el mensaje?", "1")
+
+    assert result.success is True
+    assert "No puedo comprobar" in result.message
+    assert result.details["evidence"] == []
+
+
+@pytest.mark.asyncio
 async def test_find_maps_normalized_coordinates_to_virtual_desktop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -120,7 +242,7 @@ async def test_find_maps_normalized_coordinates_to_virtual_desktop(
 
     monkeypatch.setattr(controller, "_request", response)
 
-    result = await controller.find("Aceptar")
+    result = await controller.find("Aceptar", "1")
 
     assert result.success is True
     assert result.details["x"] == 900
@@ -165,9 +287,55 @@ async def test_find_rejects_low_confidence_or_invalid_coordinates(
 
     monkeypatch.setattr(controller, "_request", model_response)
 
-    result = await controller.find("objetivo")
+    result = await controller.find("objetivo", "1")
 
     assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_find_all_checks_monitors_separately_and_maps_the_matching_display(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = LocalVisionController(Settings(project_root=tmp_path))
+    captures = [
+        ScreenCapture("one", 0, 0, 1000, 800, "1", "Monitor 1"),
+        ScreenCapture("two", 1000, 0, 1000, 800, "2", "Monitor 2"),
+    ]
+
+    async def captures_for(_monitor: str) -> list[ScreenCapture]:
+        return captures
+
+    async def response(_prompt, _schema, screen_capture, _max_tokens):
+        if screen_capture.monitor == "1":
+            return {
+                "found": False,
+                "x": 0,
+                "y": 0,
+                "confidence": 0,
+                "element": "",
+                "dangerous": False,
+                "reason": "No aparece.",
+            }
+        return {
+            "found": True,
+            "x": 500,
+            "y": 250,
+            "confidence": 0.94,
+            "element": "Botón azul",
+            "dangerous": False,
+            "reason": "Coincidencia clara.",
+        }
+
+    monkeypatch.setattr(controller, "_captures", captures_for)
+    monkeypatch.setattr(controller, "_request", response)
+
+    result = await controller.find("Botón azul", "all")
+
+    assert result.success is True
+    assert result.details["monitor"] == "2"
+    assert result.details["x"] == 1500
+    assert result.details["y"] == 200
 
 
 @pytest.mark.asyncio
@@ -245,7 +413,14 @@ async def test_visual_model_is_reused_during_request_then_released(
         controller,
         "_capture",
         lambda _monitor="1": ScreenCapture(
-            "cG5n", 0, 0, 1920, 1080, "1", "Monitor 1", image_width=1024,
+            "cG5n",
+            0,
+            0,
+            1920,
+            1080,
+            "1",
+            "Monitor 1",
+            image_width=1024,
             image_height=576,
         ),
     )

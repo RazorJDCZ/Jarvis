@@ -214,9 +214,7 @@ class MemoryExtractor:
         ):
             match = pattern.fullmatch(clean)
             if match is not None:
-                value = _third_person_possessive(
-                    _clean_text(match.group(1), 300).rstrip(".")
-                )
+                value = _third_person_possessive(_clean_text(match.group(1), 300).rstrip("."))
                 key = f"preference:{prefix}:{cls._digest(value)}"
                 return MemoryCandidate(key, template.format(value=value), category)
 
@@ -233,9 +231,7 @@ class MemoryExtractor:
 
         project = cls._PROJECT.fullmatch(clean)
         if project is not None:
-            value = _third_person_possessive(
-                _clean_text(project.group(1), 300).rstrip(".")
-            )
+            value = _third_person_possessive(_clean_text(project.group(1), 300).rstrip("."))
             return MemoryCandidate(
                 f"project:{cls._digest(value)}",
                 f"Está trabajando en {value}.",
@@ -248,17 +244,30 @@ class MemoryStore:
     _STOP_WORDS = frozenset(
         {
             "algo",
+            "analisis",
+            "analiza",
+            "analizar",
             "como",
             "con",
+            "cuentame",
             "cual",
             "cuando",
+            "describe",
+            "descripcion",
+            "dime",
             "donde",
             "ella",
             "este",
             "esta",
             "esto",
+            "hablemos",
+            "opina",
+            "opinas",
             "para",
+            "personalidad",
             "pero",
+            "piensa",
+            "piensas",
             "porque",
             "que",
             "quien",
@@ -644,8 +653,6 @@ class MemoryService:
         "dime que recuerdas de mi",
         "cuentame que recuerdas de mi",
         "que cosas recuerdas de mi",
-        "que sabes de mi",
-        "que sabes sobre mi",
         "muestra tus recuerdos",
         "lista tus recuerdos",
         "que tienes en tu memoria",
@@ -769,9 +776,7 @@ class MemoryService:
 
         if MemoryExtractor.is_explicit_request(message):
             if MemoryExtractor.contains_sensitive_data(message):
-                return (
-                    "No guardaré contraseñas, códigos, tokens ni datos bancarios en mi memoria."
-                )
+                return "No guardaré contraseñas, códigos, tokens ni datos bancarios en mi memoria."
             candidate = MemoryExtractor.explicit_candidate(message)
             if candidate is None:
                 return "No pude identificar con precisión qué dato quieres que recuerde."
@@ -849,17 +854,37 @@ class MemoryService:
             used += len(line)
         return "\n".join(lines)
 
-    def recent_context(self, session_id: str, limit: int = 3) -> str:
-        turns = self.store.recent_turns(exclude_session=session_id, limit=limit)
+    def recent_context(self, session_id: str, query: str, limit: int = 3) -> str:
+        query_tokens = self.store._tokens(query)
+        if not query_tokens:
+            return ""
+        # Read a wider recent window before ranking. Filtering only the last three turns
+        # allowed an unrelated conversation to contaminate a new model session.
+        turns = self.store.recent_turns(
+            exclude_session=session_id,
+            limit=max(20, limit * 6),
+        )
+        ranked: list[tuple[int, int, str, str]] = []
+        for position, (user_text, assistant_text) in enumerate(turns):
+            if normalize_memory_text(user_text) == normalize_memory_text(query):
+                continue
+            # Rank only what Juan Diego actually said. Reusing an older model answer here
+            # can promote one hallucination into apparent long-term personal context.
+            turn_tokens = self.store._tokens(user_text)
+            overlap = query_tokens & turn_tokens
+            if overlap:
+                ranked.append((len(overlap), position, user_text, assistant_text))
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        selected_turns = sorted(ranked[: max(1, min(limit, 10))], key=lambda item: item[1])
         selected: list[str] = []
         used = 0
-        for user_text, assistant_text in reversed(turns):
-            block = f"Juandi: {user_text[:500]}\nJARVIS: {assistant_text[:700]}"
+        for _, _, user_text, _ in selected_turns:
+            block = f"Juan Diego comentó anteriormente: {user_text[:700]}"
             if used + len(block) > 2_400:
                 break
             selected.append(block)
             used += len(block)
-        return "\n\n".join(reversed(selected))
+        return "\n\n".join(selected)
 
     def remember_exchange(self, session_id: str, user_text: str, assistant_text: str) -> bool:
         return self.store.add_turn(session_id, user_text, assistant_text)

@@ -8,9 +8,9 @@
       name="description"
       content="Interfaz privada del núcleo de inteligencia local Jarvis"
     />
-    <link rel="manifest" href="/manifest.webmanifest?v=spider-v3" />
-    <link rel="icon" href="/static/icon.svg?v=spider-v3" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=spider-v3" />
+    <link rel="manifest" href="/manifest.webmanifest?v=agent-v8" />
+    <link rel="icon" href="/static/icon.svg?v=agent-v8" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css?v=agent-v8" />
     <title>JARVIS // Neural Interface</title>
   </head>
   <body data-state="standby">
@@ -112,6 +112,10 @@
           <span aria-hidden="true">⌁</span>
           <span><strong>ACCESO MÓVIL</strong><small>Passkeys y dispositivos</small></span>
         </button>
+        <button class="ghost-button" id="controlDeckButton" type="button">
+          <span aria-hidden="true">⌘</span>
+          <span><strong>CONTROL DECK</strong><small>Actividad, agenda y recursos</small></span>
+        </button>
       </aside>
 
       <section class="core-stage" aria-label="Interfaz de voz">
@@ -185,7 +189,12 @@
         <span class="panel-corner panel-corner-b" aria-hidden="true"></span>
         <div class="panel-heading">
           <div><small>02</small><span>NEURAL DIALOGUE</span></div>
-          <span class="live-chip"><i></i> STREAM LIVE</span>
+          <div class="panel-heading-tools">
+            <button class="deck-open-button" id="controlDeckCompactButton" type="button">
+              CONTROL DECK
+            </button>
+            <span class="live-chip"><i></i> STREAM LIVE</span>
+          </div>
         </div>
 
         <div class="conversation-meta" aria-hidden="true">
@@ -200,7 +209,15 @@
           </article>
         </div>
 
-        <section class="action-confirmation" id="actionConfirmation" hidden>
+        <section
+          class="action-confirmation"
+          id="actionConfirmation"
+          role="region"
+          aria-live="assertive"
+          aria-labelledby="actionDescription"
+          aria-describedby="actionRisk"
+          hidden
+        >
           <div>
             <span>SECURITY GATE // AUTH REQUIRED</span>
             <strong id="actionDescription">Acción pendiente</strong>
@@ -210,12 +227,45 @@
             <div class="dialog-choice-buttons" id="dialogChoiceButtons" hidden></div>
             <button id="rejectActionButton" type="button">CANCELAR</button>
             <button id="approveActionButton" type="button">CONFIRMAR</button>
+            <button
+              id="rememberActionButton"
+              type="button"
+              title="Confirmar ahora y recordar este permiso durante 30 días en este contexto"
+              hidden
+            >CONFIRMAR 30 DÍAS</button>
           </div>
         </section>
+
+        <div class="attachment-tray" id="attachmentTray" hidden aria-label="Archivos adjuntos"></div>
 
         <form class="text-console" id="textForm">
           <label class="sr-only" for="textInput">Escribe un mensaje</label>
           <span class="prompt">J:</span>
+          <button
+            class="composer-tool"
+            id="attachmentButton"
+            type="button"
+            aria-label="Adjuntar un archivo"
+            title="Adjuntar archivo"
+          >
+            <span aria-hidden="true">＋</span>
+          </button>
+          <button
+            class="composer-tool"
+            id="cameraButton"
+            type="button"
+            aria-label="Abrir la cámara"
+            title="Abrir cámara"
+          >
+            <span class="camera-glyph" aria-hidden="true"></span>
+          </button>
+          <input
+            id="attachmentInput"
+            type="file"
+            multiple
+            hidden
+            accept=".pdf,.txt,.md,.csv,.json,.xml,.png,.jpg,.jpeg,.webp"
+          />
           <input
             id="textInput"
             name="message"
@@ -231,7 +281,7 @@
     <footer class="footer-bar">
       <span id="networkMode"><i class="online-indicator"></i> LOOPBACK // 127.0.0.1 // SECURE</span>
       <span id="footerHint">PULSA Y MANTÉN PARA HABLAR // ESPACIO TAMBIÉN FUNCIONA</span>
-      <span>JARVIS 0.6.0 // MOBILE LINK</span>
+      <span id="interfaceVersion">JARVIS // AGENT CORE</span>
     </footer>
 
     <button class="emergency-stop" id="emergencyStopButton" type="button" hidden>
@@ -273,12 +323,223 @@
       </div>
     </dialog>
 
+    <dialog class="remote-dialog control-deck-dialog" id="controlDeckDialog">
+      <div class="remote-dialog-shell control-deck-shell">
+        <div class="remote-dialog-heading control-deck-heading">
+          <div>
+            <small>PRIVATE OPERATIONS CONSOLE</small>
+            <h2>Control Deck</h2>
+          </div>
+          <div class="control-deck-heading-status">
+            <span id="controlDeckSummary">SINCRONIZANDO</span>
+            <button id="closeControlDeckButton" type="button" aria-label="Cerrar">×</button>
+          </div>
+        </div>
+
+        <nav class="deck-tabs" role="tablist" aria-label="Módulos de Control Deck">
+          <button
+            class="deck-tab active"
+            id="deckTabActivity"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="deckActivity"
+            data-deck-tab="activity"
+          >
+            ACTIVIDAD
+          </button>
+          <button
+            class="deck-tab"
+            id="deckTabAgenda"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="deckAgenda"
+            data-deck-tab="agenda"
+          >
+            AGENDA
+          </button>
+          <button
+            class="deck-tab"
+            id="deckTabFiles"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="deckFiles"
+            data-deck-tab="files"
+          >
+            ARCHIVOS
+          </button>
+          <button
+            class="deck-tab"
+            id="deckTabSystem"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="deckSystem"
+            data-deck-tab="system"
+          >
+            SISTEMA
+          </button>
+        </nav>
+
+        <div class="control-deck-body">
+          <section
+            class="deck-panel"
+            id="deckActivity"
+            role="tabpanel"
+            aria-labelledby="deckTabActivity"
+            data-deck-panel="activity"
+          >
+            <div class="deck-section-heading">
+              <div><small>TRACE VAULT</small><strong>Actividad reciente</strong></div>
+              <button class="deck-refresh-button" type="button" data-deck-refresh="activity">ACTUALIZAR</button>
+            </div>
+            <div class="deck-module" id="traceList" aria-live="polite"></div>
+          </section>
+
+          <section
+            class="deck-panel"
+            id="deckAgenda"
+            role="tabpanel"
+            aria-labelledby="deckTabAgenda"
+            data-deck-panel="agenda"
+            hidden
+          >
+            <div class="deck-section-heading">
+              <div><small>PERSONAL OPERATIONS</small><strong>Agenda y Appa</strong></div>
+              <button class="deck-refresh-button" type="button" data-deck-refresh="agenda">ACTUALIZAR</button>
+            </div>
+            <form class="reminder-form" id="reminderForm">
+              <label>
+                <span>RECORDATORIO</span>
+                <input id="reminderTitle" maxlength="240" placeholder="¿Qué debo recordarte?" required />
+              </label>
+              <label>
+                <span>FECHA Y HORA</span>
+                <input id="reminderDue" type="datetime-local" required />
+              </label>
+              <label>
+                <span>REPETICIÓN</span>
+                <select id="reminderRecurrence">
+                  <option value="">UNA VEZ</option>
+                  <option value="daily">DIARIO</option>
+                  <option value="weekly">SEMANAL</option>
+                  <option value="monthly">MENSUAL</option>
+                </select>
+              </label>
+              <button class="deck-primary-button" type="submit">CREAR RECORDATORIO</button>
+            </form>
+            <div class="deck-split-grid">
+              <section class="deck-card-group">
+                <div class="deck-subheading"><span>AGENDA LOCAL</span><small id="reminderCount">—</small></div>
+                <div class="deck-module" id="reminderList" aria-live="polite"></div>
+              </section>
+              <section class="deck-card-group">
+                <div class="deck-subheading"><span>CONECTORES</span><small>APPA + SERVICES</small></div>
+                <div class="deck-module" id="connectorList"></div>
+              </section>
+            </div>
+          </section>
+
+          <section
+            class="deck-panel"
+            id="deckFiles"
+            role="tabpanel"
+            aria-labelledby="deckTabFiles"
+            data-deck-panel="files"
+            hidden
+          >
+            <div class="deck-section-heading">
+              <div><small>LOCAL KNOWLEDGE</small><strong>Archivos y percepción</strong></div>
+              <div class="deck-heading-actions">
+                <button class="deck-refresh-button" id="deckAttachButton" type="button">ADJUNTAR</button>
+                <button class="deck-refresh-button" id="deckCameraButton" type="button">CÁMARA</button>
+                <button class="deck-refresh-button" type="button" data-deck-refresh="files">ACTUALIZAR</button>
+              </div>
+            </div>
+
+            <section class="camera-panel" id="cameraPanel" hidden>
+              <div class="camera-live-chip"><i></i> CAPTURA EXPLÍCITA // NO SE GUARDA AUTOMÁTICAMENTE</div>
+              <div class="camera-viewport">
+                <video id="cameraPreview" autoplay muted playsinline></video>
+                <canvas id="cameraCanvas" hidden></canvas>
+                <div class="camera-placeholder" id="cameraPlaceholder">Preparando cámara segura…</div>
+              </div>
+              <p class="camera-status" id="cameraStatus" role="status"></p>
+              <div class="camera-actions">
+                <button class="deck-primary-button" id="captureCameraButton" type="button">CAPTURAR Y ADJUNTAR</button>
+                <button class="deck-secondary-button" id="stopCameraButton" type="button">CERRAR CÁMARA</button>
+              </div>
+            </section>
+
+            <div class="deck-three-grid">
+              <section class="deck-card-group">
+                <div class="deck-subheading"><span>ADJUNTOS ACTIVOS</span><small>EPHEMERAL</small></div>
+                <div class="deck-module" id="deckAttachmentList"></div>
+              </section>
+              <section class="deck-card-group">
+                <div class="deck-subheading"><span>BIBLIOTECA</span><small>KNOWLEDGE SOURCES</small></div>
+                <div class="deck-module" id="knowledgeSourceList"></div>
+              </section>
+              <section class="deck-card-group">
+                <div class="deck-subheading"><span>WORKSPACES</span><small>AUTHORIZED ONLY</small></div>
+                <div class="deck-module" id="workspaceList"></div>
+              </section>
+            </div>
+          </section>
+
+          <section
+            class="deck-panel"
+            id="deckSystem"
+            role="tabpanel"
+            aria-labelledby="deckTabSystem"
+            data-deck-panel="system"
+            hidden
+          >
+            <div class="deck-section-heading">
+              <div><small>CORE TELEMETRY</small><strong>Sistema, skills y permisos</strong></div>
+              <button class="deck-refresh-button" type="button" data-deck-refresh="system">ACTUALIZAR</button>
+            </div>
+            <div class="metric-grid" id="systemMetrics" aria-live="polite"></div>
+            <div class="deck-three-grid system-deck-grid">
+              <section class="deck-card-group">
+                <div class="deck-subheading"><span>SKILLS</span><small>TRUSTED RECIPES</small></div>
+                <div class="deck-module" id="skillList"></div>
+              </section>
+              <section class="deck-card-group">
+                <div class="deck-subheading"><span>PERMISOS</span><small>READ ONLY VIEW</small></div>
+                <div class="deck-module" id="permissionList"></div>
+              </section>
+              <section class="deck-card-group">
+                <div class="deck-subheading"><span>ENLACES</span><small>LOCAL CONNECTORS</small></div>
+                <div class="deck-module" id="systemConnectorList"></div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
     <section class="remote-gate" id="remoteGate" hidden aria-labelledby="remoteGateTitle">
       <div class="remote-gate-card">
         <span class="remote-gate-orbit" aria-hidden="true"></span>
-        <small>JARVIS // TWO-FACTOR DEVICE LINK</small>
+        <small id="remoteGateEyebrow">JARVIS // TWO-FACTOR DEVICE LINK</small>
         <h2 id="remoteGateTitle">Verifica este dispositivo</h2>
         <p id="remoteIdentityLabel">Conexión privada detectada.</p>
+
+        <div class="remote-offline-panel" id="remoteOfflinePanel" hidden>
+          <div class="remote-offline-state">
+            <i aria-hidden="true"></i>
+            <span>NÚCLEO SIN RESPUESTA</span>
+          </div>
+          <p id="remoteOfflineDescription">
+            La interfaz está disponible, pero no puede comunicarse con Jarvis.
+          </p>
+          <button class="primary-remote-button" id="retryCoreButton" type="button">
+            REINTENTAR CONEXIÓN
+          </button>
+        </div>
 
         <div id="remoteAuthenticationPanel" hidden>
           <p>Usa la passkey guardada en este teléfono para abrir la consola.</p>
@@ -313,15 +574,15 @@
         </form>
 
         <p class="remote-gate-error" id="remoteGateError" role="alert"></p>
-        <div class="remote-security-note">
+        <div class="remote-security-note" id="remoteSecurityNote">
           <i></i>
-          <span>Tailscale autentica tu red y la passkey confirma este dispositivo. Jarvis nunca recibe
+          <span id="remoteSecurityNoteText">Tailscale autentica tu red y la passkey confirma este dispositivo. Jarvis nunca recibe
             tu huella, rostro o PIN.</span>
         </div>
       </div>
     </section>
 
     <div class="toast" id="toast" role="status"></div>
-    <script src="/static/app.js?v=spider-v3" defer></script>
+    <script src="/static/app.js?v=agent-v8" defer></script>
   </body>
 </html>

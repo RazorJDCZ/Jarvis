@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from jarvis import __version__
 from jarvis.actions.engine import ActionEngine
 from jarvis.actions.models import ActionOutcome
+from jarvis.capabilities.api import create_capability_router
 from jarvis.config import Settings
 from jarvis.providers.brain import build_brain
 from jarvis.providers.stt import WhisperTranscriber
@@ -108,6 +109,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         (config.data_dir / "tmp").mkdir(parents=True, exist_ok=True)
+        await action_engine.start()
         warmup_task = (
             asyncio.create_task(warm_brain(), name="jarvis-ollama-warmup")
             if config.ollama_warmup_enabled
@@ -189,6 +191,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:24]
         return f"remote:{device.device_id[:16]}:{digest}"
 
+    if action_engine.capabilities is not None:
+        app.include_router(
+            create_capability_router(
+                action_engine.capabilities,
+                effective_session_id=effective_session_id,
+                require_local_console=require_local_console,
+                rememberable_actions=action_engine.rememberable_actions,
+            )
+        )
+
     def record_remote_result(
         request: Request,
         provider: str,
@@ -199,9 +211,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
         status = outcome.status.value if outcome is not None else "completed"
         summary = (
-            outcome.name.value
-            if outcome is not None and outcome.name is not None
-            else provider
+            outcome.name.value if outcome is not None and outcome.name is not None else provider
         )
         remote_access.record_event(device.device_id, "command", status, summary)
 
@@ -259,12 +269,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; "
+            "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; "
             "media-src 'self' blob:; object-src 'none'; base-uri 'none'; "
             "frame-ancestors 'none'; form-action 'self'"
         )
         response.headers["Permissions-Policy"] = (
-            "camera=(), geolocation=(), microphone=(self), payment=(), usb=()"
+            "camera=(self), geolocation=(), microphone=(self), payment=(), usb=()"
         )
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -449,6 +459,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session_id,
                 request.message,
                 remote=remote_device(http_request) is not None,
+                attachment_ids=tuple(request.attachment_ids),
             )
         except Exception as exc:
             await state_hub.set("error", "No pude generar una respuesta")
@@ -459,6 +470,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response=answer.text,
             provider=answer.provider,
             action=action_info(answer.action),
+            trace_id=answer.trace_id,
         )
 
     @app.post("/api/actions/decision", response_model=ChatResponse)
@@ -470,6 +482,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.action_id,
             request.approve,
             request.choice,
+            request.remember,
         )
         await state_hub.set("ready", "Decisión procesada")
         record_remote_result(http_request, answer.provider, answer.action)
@@ -477,6 +490,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response=answer.text,
             provider=answer.provider,
             action=action_info(answer.action),
+            trace_id=answer.trace_id,
         )
 
     @app.get("/api/actions/audit")

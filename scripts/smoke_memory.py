@@ -25,7 +25,7 @@ def verify() -> dict[str, object]:
 
         restarted = MemoryService(settings)
         context = restarted.context("Hablemos del ukelele")
-        recent = restarted.recent_context("new")
+        recent = restarted.recent_context("new", "Jarvis y el ukelele")
         clear_request = restarted.handle("new", "Borra toda tu memoria")
         clear_result = restarted.handle("new", "confirmo borrar toda mi memoria")
         with closing(sqlite3.connect(settings.memory_path)) as connection:

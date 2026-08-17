@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ from jarvis.actions.windows import (
     SystemInfoController,
     WindowController,
 )
+from jarvis.capabilities.suite import CapabilitySuite
 from jarvis.config import Settings
 
 
@@ -41,6 +44,7 @@ class ActionSpec:
 
 
 class ActionCatalog:
+    session_aware = True
     _DIALOG_MONITORED = frozenset(
         {
             ActionName.APP_OPEN,
@@ -188,9 +192,76 @@ class ActionCatalog:
             ActionRisk.MEDIUM,
             "Copiar texto al portapapeles",
         ),
+        ActionName.CLIPBOARD_ANALYZE: ActionSpec(
+            ActionRisk.MEDIUM,
+            "Analizar de forma ef\u00edmera el texto del portapapeles",
+        ),
         ActionName.SYSTEM_STATUS: ActionSpec(ActionRisk.LOW, "Consultar recursos del sistema"),
         ActionName.PATH_OPEN: ActionSpec(ActionRisk.MEDIUM, "Abrir un archivo no ejecutable"),
         ActionName.PATH_OPEN_FOLDER: ActionSpec(ActionRisk.LOW, "Abrir una carpeta existente"),
+        ActionName.SKILL_LIST: ActionSpec(ActionRisk.LOW, "Listar recetas seguras disponibles"),
+        ActionName.SKILL_RUN: ActionSpec(ActionRisk.MEDIUM, "Ejecutar una receta declarativa"),
+        ActionName.TASK_LIST: ActionSpec(
+            ActionRisk.LOW, "Listar tareas de Appa o del almac\u00e9n local"
+        ),
+        ActionName.TASK_CREATE: ActionSpec(
+            ActionRisk.MEDIUM, "Crear una tarea sin enviarla a terceros"
+        ),
+        ActionName.TASK_COMPLETE: ActionSpec(ActionRisk.MEDIUM, "Marcar una tarea como completada"),
+        ActionName.PROJECT_LIST: ActionSpec(ActionRisk.LOW, "Listar proyectos de Appa"),
+        ActionName.PROJECT_CREATE: ActionSpec(
+            ActionRisk.MEDIUM, "Crear un proyecto en Appa"
+        ),
+        ActionName.CALENDAR_LIST: ActionSpec(ActionRisk.LOW, "Consultar la agenda de Appa"),
+        ActionName.CALENDAR_CREATE: ActionSpec(
+            ActionRisk.MEDIUM, "Crear un evento en el calendario de Appa"
+        ),
+        ActionName.INBOX_LIST: ActionSpec(ActionRisk.LOW, "Listar capturas del inbox de Appa"),
+        ActionName.INBOX_CAPTURE: ActionSpec(
+            ActionRisk.MEDIUM, "Guardar una captura en el inbox de Appa"
+        ),
+        ActionName.FOCUS_STATUS: ActionSpec(
+            ActionRisk.LOW, "Consultar la sesi\u00f3n focus de Appa"
+        ),
+        ActionName.FOCUS_START: ActionSpec(
+            ActionRisk.MEDIUM, "Iniciar una sesi\u00f3n focus en Appa"
+        ),
+        ActionName.REMINDER_LIST: ActionSpec(ActionRisk.LOW, "Listar recordatorios activos"),
+        ActionName.REMINDER_CREATE: ActionSpec(
+            ActionRisk.MEDIUM, "Programar un recordatorio local"
+        ),
+        ActionName.REMINDER_CANCEL: ActionSpec(ActionRisk.MEDIUM, "Cancelar un recordatorio local"),
+        ActionName.KNOWLEDGE_LIST: ActionSpec(
+            ActionRisk.LOW, "Listar fuentes de la biblioteca local"
+        ),
+        ActionName.KNOWLEDGE_SEARCH: ActionSpec(
+            ActionRisk.LOW, "Buscar con citas en la biblioteca local"
+        ),
+        ActionName.KNOWLEDGE_ADD_ATTACHMENT: ActionSpec(
+            ActionRisk.MEDIUM,
+            "Indexar un adjunto autorizado en la biblioteca local",
+        ),
+        ActionName.ATTACHMENT_LIST: ActionSpec(
+            ActionRisk.LOW, "Listar adjuntos privados de la sesi\u00f3n"
+        ),
+        ActionName.PERMISSION_LIST: ActionSpec(ActionRisk.LOW, "Listar permisos recordados"),
+        ActionName.PERMISSION_FORGET: ActionSpec(ActionRisk.MEDIUM, "Olvidar un permiso recordado"),
+        ActionName.DEV_LIST: ActionSpec(
+            ActionRisk.LOW, "Listar espacios de desarrollo autorizados"
+        ),
+        ActionName.DEV_INSPECT: ActionSpec(
+            ActionRisk.LOW, "Inspeccionar un archivo de un workspace autorizado"
+        ),
+        ActionName.DEV_SEARCH: ActionSpec(
+            ActionRisk.LOW, "Buscar texto en un workspace autorizado"
+        ),
+        ActionName.DEV_TEST: ActionSpec(
+            ActionRisk.HIGH, "Ejecutar pruebas permitidas en un workspace autorizado"
+        ),
+        ActionName.GAME_LIST: ActionSpec(
+            ActionRisk.LOW, "Listar juegos detectados en bibliotecas autorizadas"
+        ),
+        ActionName.GAME_LAUNCH: ActionSpec(ActionRisk.MEDIUM, "Abrir un juego instalado"),
     }
     _MODEL_READ_ONLY = frozenset(
         {
@@ -206,6 +277,21 @@ class ActionCatalog:
             ActionName.SCREEN_DESCRIBE,
             ActionName.SCREEN_ASK,
             ActionName.SCREEN_FIND,
+            ActionName.SKILL_LIST,
+            ActionName.TASK_LIST,
+            ActionName.PROJECT_LIST,
+            ActionName.CALENDAR_LIST,
+            ActionName.INBOX_LIST,
+            ActionName.FOCUS_STATUS,
+            ActionName.REMINDER_LIST,
+            ActionName.KNOWLEDGE_LIST,
+            ActionName.KNOWLEDGE_SEARCH,
+            ActionName.ATTACHMENT_LIST,
+            ActionName.PERMISSION_LIST,
+            ActionName.DEV_LIST,
+            ActionName.DEV_INSPECT,
+            ActionName.DEV_SEARCH,
+            ActionName.GAME_LIST,
         }
     )
 
@@ -214,6 +300,7 @@ class ActionCatalog:
         data_dir: Path,
         search_url: str,
         settings: Settings | None = None,
+        capabilities: CapabilitySuite | None = None,
     ) -> None:
         self.windows = WindowController()
         self.apps = AppController(self.windows)
@@ -229,6 +316,11 @@ class ActionCatalog:
             windows=self.windows,
         )
         self.vision = LocalVisionController(settings) if settings is not None else None
+        self.capabilities = capabilities or (
+            CapabilitySuite(settings, vision=self.vision)
+            if settings is not None and settings.capabilities_enabled
+            else None
+        )
         self.screenshot_dir = data_dir / "screenshots" / "actions"
 
     @property
@@ -243,6 +335,49 @@ class ActionCatalog:
         value = value.strip()
         if len(value) > maximum:
             raise ActionSecurityError(f"El valor {key} supera el límite permitido.")
+        return value
+
+    @staticmethod
+    def _optional_string(
+        arguments: dict[str, Any],
+        key: str,
+        maximum: int,
+        *,
+        allow_newlines: bool = False,
+    ) -> str | None:
+        value = arguments.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ActionSecurityError(f"El valor {key} no es válido.")
+        value = value.strip()
+        if not value:
+            return None
+        allowed = {"\n", "\t"} if allow_newlines else set()
+        if len(value) > maximum or any(
+            unicodedata.category(character) == "Cc" and character not in allowed
+            for character in value
+        ):
+            raise ActionSecurityError(f"El valor {key} no es válido.")
+        return value
+
+    @classmethod
+    def _required_safe_string(
+        cls,
+        arguments: dict[str, Any],
+        key: str,
+        maximum: int,
+        *,
+        allow_newlines: bool = False,
+    ) -> str:
+        value = cls._optional_string(
+            arguments,
+            key,
+            maximum,
+            allow_newlines=allow_newlines,
+        )
+        if value is None:
+            raise ActionSecurityError(f"Falta un valor válido para {key}.")
         return value
 
     @staticmethod
@@ -450,6 +585,16 @@ class ActionCatalog:
             args = {"path": self._string(args, "path", 1_024)}
         elif plan.name is ActionName.CLIPBOARD_WRITE:
             args = {"text": self._string(args, "text", 2_000)}
+        elif plan.name is ActionName.CLIPBOARD_ANALYZE:
+            operation = self._string(args, "operation", 40).casefold()
+            if operation not in {"summarize", "explain", "correct", "translate"}:
+                raise ActionSecurityError(
+                    "El portapapeles solo puede resumirse, explicarse, corregirse o traducirse."
+                )
+            language = args.get("language")
+            args = {"operation": operation}
+            if isinstance(language, str) and language.strip():
+                args["language"] = language.strip()[:40]
         elif plan.name is ActionName.SCREEN_DESCRIBE:
             args = self._monitor_argument(args)
             description = f"{description} en {args['monitor']}"
@@ -465,6 +610,132 @@ class ActionCatalog:
                 **self._monitor_argument(args),
             }
             description = f"{description} en {args['monitor']}"
+        elif plan.name is ActionName.SKILL_RUN:
+            skill = self._string(args, "skill", 80).casefold()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,79}", skill):
+                raise ActionSecurityError("El identificador de la receta no es v\u00e1lido.")
+            raw_parameters = args.get("parameters", {})
+            if not isinstance(raw_parameters, dict) or len(raw_parameters) > 12:
+                raise ActionSecurityError("Los par\u00e1metros de la receta no son v\u00e1lidos.")
+            args = {"skill": skill, "parameters": raw_parameters}
+        elif plan.name is ActionName.TASK_CREATE:
+            args = {
+                "title": self._required_safe_string(args, "title", 300),
+                "notes": self._optional_string(
+                    args, "notes", 4_000, allow_newlines=True
+                )
+                or "",
+            }
+            due = self._optional_string(plan.arguments, "due", 120)
+            if due is not None:
+                args["due"] = due
+            priority = self._optional_string(plan.arguments, "priority", 20)
+            priority_aliases = {
+                "low": "baja",
+                "bajo": "baja",
+                "normal": "media",
+                "medium": "media",
+                "high": "alta",
+                "alto": "alta",
+            }
+            if priority is not None:
+                priority = priority_aliases.get(priority.casefold(), priority.casefold())
+                if priority not in {"baja", "media", "alta"}:
+                    raise ActionSecurityError("La prioridad de la tarea no es válida.")
+                args["priority"] = priority
+            category = self._optional_string(plan.arguments, "category", 30)
+            if category is not None:
+                category = category.casefold()
+                if category not in {
+                    "universidad",
+                    "personal",
+                    "trabajo",
+                    "finanzas",
+                    "salud",
+                    "otros",
+                }:
+                    raise ActionSecurityError("La categoría de la tarea no es válida.")
+                args["category"] = category
+            for key, maximum in (("reminder_at", 120), ("project_id", 128)):
+                value = self._optional_string(plan.arguments, key, maximum)
+                if value is not None:
+                    args[key] = value
+        elif plan.name is ActionName.TASK_COMPLETE:
+            args = {"task": self._required_safe_string(args, "task", 300)}
+        elif plan.name is ActionName.PROJECT_CREATE:
+            args = {
+                "name": self._required_safe_string(args, "name", 300),
+                "description": self._optional_string(
+                    args, "description", 4_000, allow_newlines=True
+                )
+                or "",
+            }
+            target_date = self._optional_string(plan.arguments, "target_date", 120)
+            if target_date is not None:
+                args["target_date"] = target_date
+        elif plan.name is ActionName.CALENDAR_CREATE:
+            args = {
+                "title": self._required_safe_string(args, "title", 300),
+                "start_at": self._required_safe_string(args, "start_at", 120),
+                "description": self._optional_string(
+                    args, "description", 4_000, allow_newlines=True
+                )
+                or "",
+            }
+            end_at = self._optional_string(plan.arguments, "end_at", 120)
+            if end_at is not None:
+                args["end_at"] = end_at
+        elif plan.name is ActionName.INBOX_CAPTURE:
+            args = {
+                "text": self._required_safe_string(
+                    args, "text", 4_000, allow_newlines=True
+                ),
+            }
+        elif plan.name is ActionName.FOCUS_START:
+            args = {"duration_minutes": self._integer(args, "duration_minutes", 5, 180)}
+            for key, maximum in (("task_id", 128), ("task_title", 300)):
+                value = self._optional_string(plan.arguments, key, maximum)
+                if value is not None:
+                    args[key] = value
+        elif plan.name is ActionName.REMINDER_CREATE:
+            recurrence = str(args.get("recurrence", "none")).strip().casefold()
+            recurrence_aliases = {
+                "ninguna": "none",
+                "una vez": "none",
+                "diario": "daily",
+                "diaria": "daily",
+                "cada dia": "daily",
+                "semanal": "weekly",
+                "cada semana": "weekly",
+                "mensual": "monthly",
+                "cada mes": "monthly",
+            }
+            recurrence = recurrence_aliases.get(recurrence, recurrence)
+            if recurrence not in {"none", "daily", "weekly", "monthly"}:
+                raise ActionSecurityError("La recurrencia del recordatorio no es v\u00e1lida.")
+            args = {
+                "title": self._string(args, "title", 300),
+                "due": self._string(args, "due", 120),
+                "recurrence": recurrence,
+            }
+        elif plan.name in {ActionName.REMINDER_CANCEL, ActionName.PERMISSION_FORGET}:
+            key = "reminder" if plan.name is ActionName.REMINDER_CANCEL else "action"
+            args = {key: self._string(args, key, 300)}
+        elif plan.name is ActionName.KNOWLEDGE_SEARCH:
+            args = {"query": self._string(args, "query", 500)}
+        elif plan.name is ActionName.KNOWLEDGE_ADD_ATTACHMENT:
+            args = {"attachment_id": self._string(args, "attachment_id", 64)}
+            title = plan.arguments.get("title")
+            if isinstance(title, str) and title.strip():
+                args["title"] = title.strip()[:200]
+        elif plan.name in {ActionName.DEV_INSPECT, ActionName.DEV_SEARCH, ActionName.DEV_TEST}:
+            args = {"workspace": self._string(args, "workspace", 100).casefold()}
+            if plan.name is ActionName.DEV_INSPECT:
+                args["path"] = self._string(plan.arguments, "path", 500)
+            elif plan.name is ActionName.DEV_SEARCH:
+                args["query"] = self._string(plan.arguments, "query", 300)
+        elif plan.name is ActionName.GAME_LAUNCH:
+            args = {"game": self._string(args, "game", 200)}
         else:
             args = {}
 
@@ -493,13 +764,24 @@ class ActionCatalog:
             source=plan.source,
         )
 
-    async def execute(self, action: PreparedAction | PreparedWorkflow) -> ExecutionResult:
+    async def execute(
+        self,
+        action: PreparedAction | PreparedWorkflow,
+        session_id: str = "local",
+    ) -> ExecutionResult:
         if isinstance(action, PreparedWorkflow):
             step_details: list[dict[str, Any]] = []
+            last_message = ""
             for index, step in enumerate(action.steps, start=1):
-                result = await self.execute(step)
+                result = await self.execute(step, session_id=session_id)
+                last_message = result.message.strip()[:1_500]
                 step_details.append(
-                    {"step": index, "action": step.name.value, "success": result.success}
+                    {
+                        "step": index,
+                        "action": step.name.value,
+                        "success": result.success,
+                        "message": last_message,
+                    }
                 )
                 if result.details.get("dialog_confirmation_required") is True:
                     return ExecutionResult(
@@ -520,15 +802,24 @@ class ActionCatalog:
                     )
             return ExecutionResult(
                 True,
-                f"Completé y verifiqué los {len(action.steps)} pasos solicitados.",
-                {"steps": step_details, "completed_steps": len(action.steps)},
+                (
+                    f"Completé y verifiqué los {len(action.steps)} pasos solicitados. "
+                    f"Resultado final: {last_message}"
+                    if last_message
+                    else f"Completé y verifiqué los {len(action.steps)} pasos solicitados."
+                ),
+                {
+                    "steps": step_details,
+                    "completed_steps": len(action.steps),
+                    "final_result": last_message,
+                },
             )
         baseline = (
             await asyncio.to_thread(self.windows.dialog_handles)
             if action.name in self._DIALOG_MONITORED
             else frozenset()
         )
-        result = await self._execute_single(action)
+        result = await self._execute_single(action, session_id=session_id)
         if action.name not in self._DIALOG_MONITORED or not result.success:
             return result
         dialog = await asyncio.to_thread(self.windows.wait_for_new_dialog, baseline)
@@ -549,7 +840,11 @@ class ActionCatalog:
             },
         )
 
-    async def _execute_single(self, action: PreparedAction) -> ExecutionResult:
+    async def _execute_single(
+        self,
+        action: PreparedAction,
+        session_id: str = "local",
+    ) -> ExecutionResult:
         name = action.name
         args = action.arguments
         if name is ActionName.APP_OPEN:
@@ -710,11 +1005,61 @@ class ActionCatalog:
         if name is ActionName.CLIPBOARD_WRITE:
             return await asyncio.to_thread(self.clipboard.write, args["text"])
         if name is ActionName.SYSTEM_STATUS:
+            if self.capabilities is not None:
+                return await self.capabilities.execute(
+                    session_id,
+                    name,
+                    args,
+                    clipboard=self.clipboard,
+                    catalog=self,
+                )
             return await asyncio.to_thread(self.system.status)
         if name is ActionName.PATH_OPEN:
             return await asyncio.to_thread(self.paths.open_file, args["path"])
         if name is ActionName.PATH_OPEN_FOLDER:
             return await asyncio.to_thread(self.paths.open_folder, args["path"])
+        if name in {
+            ActionName.CLIPBOARD_ANALYZE,
+            ActionName.SKILL_LIST,
+            ActionName.SKILL_RUN,
+            ActionName.TASK_LIST,
+            ActionName.TASK_CREATE,
+            ActionName.TASK_COMPLETE,
+            ActionName.PROJECT_LIST,
+            ActionName.PROJECT_CREATE,
+            ActionName.CALENDAR_LIST,
+            ActionName.CALENDAR_CREATE,
+            ActionName.INBOX_LIST,
+            ActionName.INBOX_CAPTURE,
+            ActionName.FOCUS_STATUS,
+            ActionName.FOCUS_START,
+            ActionName.REMINDER_LIST,
+            ActionName.REMINDER_CREATE,
+            ActionName.REMINDER_CANCEL,
+            ActionName.KNOWLEDGE_LIST,
+            ActionName.KNOWLEDGE_SEARCH,
+            ActionName.KNOWLEDGE_ADD_ATTACHMENT,
+            ActionName.ATTACHMENT_LIST,
+            ActionName.PERMISSION_LIST,
+            ActionName.PERMISSION_FORGET,
+            ActionName.DEV_LIST,
+            ActionName.DEV_INSPECT,
+            ActionName.DEV_SEARCH,
+            ActionName.DEV_TEST,
+            ActionName.GAME_LIST,
+            ActionName.GAME_LAUNCH,
+        }:
+            if self.capabilities is None:
+                return ExecutionResult(
+                    False, "Las capacidades ampliadas no est\u00e1n configuradas."
+                )
+            return await self.capabilities.execute(
+                session_id,
+                name,
+                args,
+                clipboard=self.clipboard,
+                catalog=self,
+            )
         return ExecutionResult(False, "La acción no tiene un ejecutor disponible.")
 
     async def choose_dialog_option(
@@ -753,4 +1098,6 @@ class ActionCatalog:
         )
 
     async def close(self) -> None:
+        if self.capabilities is not None:
+            await self.capabilities.close()
         await self.browser.close()

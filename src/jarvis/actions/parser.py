@@ -12,11 +12,61 @@ def normalize_request(text: str) -> str:
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
     normalized = re.sub(r"\s+", " ", normalized)
     normalized = re.sub(r"^[\W_]+|[\W_]+$", "", normalized)
-    return re.sub(r"^(?:(?:oye|hey)\s+)?jarvis[,:;.!?\s]+", "", normalized)
+    normalized = re.sub(
+        r"^(?:(?:oye|hey)\s+)?jarvis(?:\b|[,:;.!?])(?:[,:;.!?\s]+)?",
+        "",
+        normalized,
+    )
+    # Typed requests commonly contain an inverted question/exclamation mark after the
+    # wake word ("Jarvis, ¿qué ves?"). Strip edges again after removing the wake word;
+    # Whisper transcripts normally do not expose this case, which made the mobile chat
+    # behave differently from voice.
+    return re.sub(r"^[\W_]+|[\W_]+$", "", normalized).strip()
 
 
 class DeterministicActionParser:
     LAST_VISUAL_TARGET = "__last_visual_target__"
+    _SPANISH_NUMBERS = {
+        "cero": 0,
+        "uno": 1,
+        "un": 1,
+        "dos": 2,
+        "tres": 3,
+        "cuatro": 4,
+        "cinco": 5,
+        "seis": 6,
+        "siete": 7,
+        "ocho": 8,
+        "nueve": 9,
+        "diez": 10,
+        "once": 11,
+        "doce": 12,
+        "trece": 13,
+        "catorce": 14,
+        "quince": 15,
+        "dieciseis": 16,
+        "diecisiete": 17,
+        "dieciocho": 18,
+        "diecinueve": 19,
+        "veinte": 20,
+        "veintiuno": 21,
+        "veintidos": 22,
+        "veintitres": 23,
+        "veinticuatro": 24,
+        "veinticinco": 25,
+        "veintiseis": 26,
+        "veintisiete": 27,
+        "veintiocho": 28,
+        "veintinueve": 29,
+        "treinta": 30,
+        "cuarenta": 40,
+        "cincuenta": 50,
+        "sesenta": 60,
+        "setenta": 70,
+        "ochenta": 80,
+        "noventa": 90,
+        "cien": 100,
+    }
     _COURTESY_PREFIX = re.compile(
         r"^(?:por favor,?\s+)?(?:podrias|puedes|quiero que|quisiera que|necesito que|"
         r"te pido que|me ayudas a|me puedes|serias tan amable de|hazme el favor de)\s+"
@@ -33,6 +83,12 @@ class DeterministicActionParser:
         "abrirme": "abre",
         "iniciar": "inicia",
         "lanzar": "lanza",
+        "buscar": "busca",
+        "investigar": "busca",
+        "visitar": "visita",
+        "navegar": "navega",
+        "entrar": "entra",
+        "poner": "pon",
         "subir": "sube",
         "bajar": "baja",
         "silenciar": "silencia",
@@ -40,9 +96,41 @@ class DeterministicActionParser:
         "maximizar": "maximiza",
         "minimizar": "minimiza",
         "restaurar": "restaura",
+        "revisar": "revisa",
+        "verificar": "verifica",
+        "analizar": "analiza",
+        "observar": "observa",
+        "ver": "mira",
+        "mirar": "mira",
+        "leer": "lee",
+        "encontrar": "encuentra",
+        "localizar": "localiza",
+        "organizar": "organiza",
+        "acomodar": "acomoda",
+        "ajustar": "ajusta",
+        "comparar": "compara",
+        "seleccionar": "selecciona",
+        "presionar": "presiona",
         "escribir": "escribe",
+        "crear": "crea",
+        "agregar": "agrega",
+        "anotar": "anota",
+        "recordar": "recuerda",
+        "recordarme": "recuerdame",
+        "completar": "completa",
+        "cancelar": "cancela",
+        "resumir": "resume",
+        "corregir": "corrige",
+        "traducir": "traduce",
+        "indexar": "indexa",
+        "programar": "programa",
+        "agendar": "agenda",
         "mostrar": "muestra",
+        "mostrarme": "muestra",
+        "ensenar": "muestra",
+        "ensenarme": "muestra",
         "capturar": "captura",
+        "guardar": "guarda",
         "apagar": "apaga",
         "reiniciar": "reinicia",
         "borrar": "borra",
@@ -73,15 +161,88 @@ class DeterministicActionParser:
         "escribas": "escribe",
         "muestres": "muestra",
         "captures": "captura",
+        "guardes": "guarda",
+        "revises": "revisa",
+        "verifiques": "verifica",
+        "observes": "observa",
+        "mires": "mira",
+        "leas": "lee",
+        "encuentres": "encuentra",
+        "localices": "localiza",
+        "organices": "organiza",
+        "acomodes": "acomoda",
+        "gestiones": "gestiona",
+        "ajustes": "ajusta",
+        "compares": "compara",
+        "configures": "configura",
+        "selecciones": "selecciona",
+        "presiones": "presiona",
+        "digas": "dime",
+        "crees": "crea",
+        "agregues": "agrega",
+        "anotes": "anota",
+        "recuerdes": "recuerdame",
+        "completes": "completa",
+        "canceles": "cancela",
+        "resumas": "resume",
+        "corrijas": "corrige",
+        "traduzcas": "traduce",
+        "indexes": "indexa",
+        "programes": "programa",
+        "agendes": "agenda",
     }
     _META_PREFIXES = (
-        "como ",
         "explica ",
         "por que ",
         "que pasaria ",
         "si te digo ",
         "cuando diga ",
         "no ",
+    )
+    _COMPUTER_DOMAINS = re.compile(
+        r"\b(?:computadora|ordenador|pc|sistema|escritorio|monitor(?:es)?|pantalla(?:s)?|"
+        r"display(?:s)?|ventana(?:s)?|aplicacion(?:es)?|apps?|programa(?:s)?|navegador|"
+        r"chrome|edge|brave|pestana(?:s)?|pagina|sitio|web|internet|google|archivo(?:s)?|"
+        r"carpeta(?:s)?|portapapeles|volumen|audio|sonido|microfono|teclado|cursor|boton|"
+        r"control(?:es)?|dialogo|mensaje|error|recordatorio(?:s)?|agenda|calendario|"
+        r"tarea(?:s)?|inbox|bandeja de entrada|focus|"
+        r"appa|biblioteca|conocimiento|adjunto(?:s)?|receta(?:s)?|skill(?:s)?|permiso(?:s)?|"
+        r"workspace|proyecto|codigo|pruebas?|juego(?:s)?|steam|epic|camara)\b"
+    )
+    _REQUEST_SIGNALS = re.compile(
+        r"\b(?:puedes|podrias|quiero|quisiera|necesito|haz|hazme|ayudame|ayudas|"
+        r"gustaria|agradeceria|importaria|dime|muestrame|cuentame|revisa|verifica|"
+        r"analiza|analices|averigua|comprueba|"
+        r"observa|mira|encuentra|localiza|abre|cierra|busca|escribe|lee|sube|baja|"
+        r"cambia|pon|quita|organiza|acomoda|deja|llevame|entra|ve|visita|navega|"
+        r"selecciona|presiona|pulsa|clic|captura|describe|organiza|organices|ordenar|"
+        r"ordena|ordenes|acomoda|acomodes|gestiona|gestiones|ajusta|ajustes|prepara|"
+        r"prepares|configura|configures|crea|agrega|anota|recuerdame|completa|cancela|"
+        r"resume|explica|corrige|traduce|indexa|programa|agenda|ejecuta|guarda)\b"
+    )
+    _NATURAL_GOAL = re.compile(
+        r"^(?:me gustaria|quisiera|preferiria|te agradeceria|seria genial si|"
+        r"me vendria bien|ayudame a|me ayudas a)\b.*\b(?:"
+        r"abrir|usar|tener|dejar|poner|escuchar|reproducir|buscar|investigar|"
+        r"visitar|revisar|verificar|mirar|ver|leer|escribir|organizar|acomodar|"
+        r"ajustar|configurar|comparar|cerrar|cambiar|seleccionar|encontrar|localizar"
+        r")\b"
+    )
+    _VISUAL_REFERENCE = re.compile(
+        r"\b(?:monitor(?:es)?|pantalla(?:s)?|display(?:s)?|lo que (?:ves|aparece)|"
+        r"contexto visual|imagen de (?:la )?pantalla)\b"
+    )
+    _VISUAL_OBSERVATION = re.compile(
+        r"\b(?:ves|viendo|ver|observa|observar|mira|mirar|describe|describir|aparece|"
+        r"muestra|mostrando|hay|tengo abierto|se ve|lee|leer|revisa|revisar|"
+        r"echa(?:le)? (?:un )?vistazo|fijate|analiza|analizar|analices)\b"
+    )
+    _IMPLICIT_VISUAL = re.compile(
+        r"^(?:(?:puedes|podrias)\s+)?(?:"
+        r"que (?:estas viendo|ves|tengo abierto|aparece ahi|hay ahi)|"
+        r"mira(?: esto| ahi)?|observa(?: esto| ahi)?|fijate(?: en esto| ahi)?|"
+        r"echale (?:un )?vistazo(?: a esto)?|puedes ver (?:esto|lo que tengo abierto)"
+        r")(?:\b|$)"
     )
     _ACTION_PREFIXES = (
         "abre",
@@ -103,6 +264,17 @@ class DeterministicActionParser:
         "reduce",
         "pon el volumen",
         "configura",
+        "compara",
+        "organiza",
+        "acomoda",
+        "ajusta",
+        "revisa",
+        "verifica",
+        "analiza",
+        "observa",
+        "lee",
+        "selecciona",
+        "localiza",
         "silencia",
         "quita el silencio",
         "reproduce",
@@ -117,6 +289,18 @@ class DeterministicActionParser:
         "muestra",
         "toma una captura",
         "captura la pantalla",
+        "crea",
+        "agrega",
+        "anota",
+        "recuerdame",
+        "programa",
+        "agenda",
+        "completa",
+        "cancela",
+        "resume",
+        "corrige",
+        "traduce",
+        "indexa",
         "desplaza",
         "presiona",
         "muestra el escritorio",
@@ -159,10 +343,37 @@ class DeterministicActionParser:
         "minimices",
         "restaurar",
         "restaures",
+        "crear",
+        "crees",
+        "agregar",
+        "agregues",
+        "anotar",
+        "anotes",
+        "recordar",
+        "recordarme",
+        "recuerdes",
+        "completar",
+        "completes",
+        "cancelar",
+        "canceles",
+        "resumir",
+        "resumas",
+        "corregir",
+        "corrijas",
+        "traducir",
+        "traduzcas",
+        "indexar",
+        "indexes",
+        "programar",
+        "programes",
+        "agendar",
+        "agendes",
         "mostrar",
         "muestres",
         "capturar",
         "captures",
+        "guardar",
+        "guardes",
         "visitar",
         "navegar",
         "entrar",
@@ -241,54 +452,119 @@ class DeterministicActionParser:
     }
 
     @staticmethod
-    def _plan(name: ActionName, **arguments: Any) -> ActionPlan:
-        return ActionPlan(name=name, arguments=arguments)
+    def _plan(action: ActionName, **arguments: Any) -> ActionPlan:
+        return ActionPlan(name=action, arguments=arguments)
+
+    @staticmethod
+    def _task_arguments(value: str) -> dict[str, Any] | None:
+        """Extract bounded Appa metadata without treating arbitrary prose as a date."""
+
+        title = value.strip(" ,.;")
+        arguments: dict[str, Any] = {}
+        priority = re.search(
+            r"(?:[,;]?\s+)(?:con\s+)?prioridad\s+(baja|media|alta)\b",
+            title,
+        )
+        if priority is not None:
+            arguments["priority"] = priority.group(1)
+            title = (title[: priority.start()] + title[priority.end() :]).strip(" ,.;")
+        category = re.search(
+            r"(?:[,;]?\s+)(?:en\s+)?categor(?:ia|izada como)\s+"
+            r"(universidad|personal|trabajo|finanzas|salud|otros)\b",
+            title,
+        )
+        if category is not None:
+            arguments["category"] = category.group(1)
+            title = (title[: category.start()] + title[category.end() :]).strip(" ,.;")
+
+        temporal = (
+            r"(?:hoy|manana)(?:\s+a\s+las?\s+\d{1,2}(?::\d{2})?)?|"
+            r"en\s+\d{1,5}\s+(?:minutos?|horas?|dias?)|"
+            r"el\s+\d{1,2}(?:\s+de\s+[a-z]+)?"
+            r"(?:\s+a\s+las?\s+\d{1,2}(?::\d{2})?)?|"
+            r"\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?(?:z|[+-]\d{2}:\d{2})?)?"
+        )
+        reminder = re.search(
+            rf"(?:[,;]?\s+)(?:con\s+)?recordatorio(?:\s+para)?\s+(?P<when>{temporal})$",
+            title,
+        )
+        if reminder is not None:
+            arguments["reminder_at"] = reminder.group("when")
+            title = title[: reminder.start()].strip(" ,.;")
+        due = re.search(
+            rf"(?:[,;]?\s+)(?:para|vence(?:\s+el)?|con\s+fecha(?:\s+para)?)\s+"
+            rf"(?P<when>{temporal})$",
+            title,
+        )
+        if due is None:
+            due = re.search(rf"(?:[,;]?\s+)(?P<when>{temporal})$", title)
+        if due is not None:
+            arguments["due"] = due.group("when")
+            title = title[: due.start()].strip(" ,.;")
+        title = re.sub(r"\s+", " ", title)
+        if not title:
+            return None
+        return {"title": title, **arguments}
 
     @staticmethod
     def _extract_monitor(command: str) -> tuple[str | None, str]:
+        display = r"(?:monitor|pantalla|display)"
+        displays = r"(?:monitores|pantallas|displays)"
+        number = (
+            r"(?:primer|primero|primera|segundo|segunda|tercer|tercero|tercera|"
+            r"cuarto|cuarta|quinto|quinta|uno|una|dos|tres|cuatro|cinco|\d{1,2})"
+        )
         references = (
-            (r"(?:(?:en|de)\s+)?todas las pantallas", "all"),
-            (r"(?:(?:en|de)\s+)?todos los monitores", "all"),
-            (r"(?:(?:en|de)\s+)?ambos monitores", "all"),
-            (r"(?:(?:en|de)\s+)?las dos pantallas", "all"),
+            (rf"(?<!\w)(?:(?:en|de|a)\s+)?(?:todas|todos) (?:mis |los |las )?{displays}", "all"),
+            (rf"(?<!\w)(?:(?:en|de|a)\s+)?amb[oa]s? {displays}", "all"),
+            (rf"(?<!\w)(?:(?:en|de|a)\s+)?(?:mis |los |las )?dos {displays}", "all"),
             (
-                r"(?:(?:en|de)\s+)?cada (?:uno de )?(?:los |mis )?"
-                r"(?:monitores|pantallas)",
+                rf"(?<!\w)(?:(?:en|de|a)\s+)?cada (?:uno de )?(?:los |mis )?{displays}",
                 "all",
             ),
             (
-                r"(?:(?:en|de)\s+)?(?:el|la)?\s*(?:monitor|pantalla)\s+principal",
+                rf"(?<!\w)(?:(?:en|de|a)\s+)?(?:el|la|mi)?\s*{display}\s+principal",
                 "primary",
             ),
             (
-                r"(?:(?:en|de)\s+)?(?:el|la)?\s*(?:monitor|pantalla)\s+"
+                rf"(?<!\w)(?:(?:en|de|a)\s+)?(?:el|la|mi)?\s*{display}\s+"
                 r"(?:de la\s+)?izquierda",
                 "left",
             ),
             (
-                r"(?:(?:en|de)\s+)?(?:el|la)?\s*(?:monitor|pantalla)\s+"
+                rf"(?<!\w)(?:(?:en|de|a)\s+)?(?:el|la|mi)?\s*{display}\s+"
                 r"(?:de la\s+)?derecha",
                 "right",
             ),
             (
-                r"(?:(?:en|de)\s+)?(?:el|la)?\s*(?:monitor|pantalla)\s+"
-                r"(?:numero\s+)?(primer|primero|segundo|tercer|tercero|cuarto|\d{1,2})",
+                rf"(?<!\w)(?:(?:en|de|a)\s+)?(?:el|la|mi)?\s*{display}\s+"
+                rf"(?:numero\s+)?({number})",
                 None,
             ),
             (
-                r"(?:(?:en|de)\s+)?(?:el|la)?\s*"
-                r"(primer|primero|segundo|tercer|tercero|cuarto|\d{1,2})\s+"
-                r"(?:monitor|pantalla)",
+                rf"(?<!\w)(?:(?:en|de|a)\s+)?(?:el|la|mi)?\s*({number})\s+{display}",
                 None,
             ),
         )
         ordinals = {
             "primer": "1",
             "primero": "1",
+            "primera": "1",
+            "uno": "1",
+            "una": "1",
             "segundo": "2",
+            "segunda": "2",
+            "dos": "2",
             "tercer": "3",
             "tercero": "3",
+            "tercera": "3",
+            "tres": "3",
             "cuarto": "4",
+            "cuarta": "4",
+            "cuatro": "4",
+            "quinto": "5",
+            "quinta": "5",
+            "cinco": "5",
         }
         for pattern, fixed in references:
             match = re.search(pattern, command)
@@ -314,7 +590,7 @@ class DeterministicActionParser:
                 quoted = False
             if not quoted:
                 connector = re.match(
-                    r"\s+(?:(?:y\s+)?(?:luego|después|despues)|y)\s+",
+                    r"\s+(?:(?:y\s+)?(?:luego|después|despues|además|ademas)|y)\s+",
                     text[index:],
                     flags=re.IGNORECASE,
                 )
@@ -327,24 +603,94 @@ class DeterministicActionParser:
         parts.append(text[start:].strip())
         return [part for part in parts if part]
 
-    def looks_action_like(self, text: str) -> bool:
-        command = self._canonical_command(text)
-        if command.startswith(self._META_PREFIXES):
-            return False
+    @classmethod
+    def _is_meta_request(cls, command: str) -> bool:
+        """Distinguish an immediate goal from explanations, hypotheticals and negations."""
+        if command.startswith(cls._META_PREFIXES):
+            return True
+        if re.match(
+            r"^(?:explicame|cuentame (?:como|por que)|ensename (?:como|a))\b",
+            command,
+        ):
+            return True
+        if re.match(
+            r"^(?:explica(?:me)?|cuenta(?:me)?|ensena(?:me)?|muestra(?:me)?|dime) como\b",
+            command,
+        ):
+            return True
+        if re.match(
+            r"^como (?:puedo|podria|se puede|debo|deberia|haria|hago|hacer|abrir|cerrar|"
+            r"buscar|usar|configurar|cambiar|subir|bajar|eliminar|instalar)\b",
+            command,
+        ):
+            return True
+        if re.match(
+            r"^(?:quiero|quisiera|me gustaria) "
+            r"(?:(?:hablar|conversar|charlar) (?:sobre|de)|"
+            r"(?:saber|entender|aprender) como)\b",
+            command,
+        ):
+            return True
         return bool(
-            command.startswith(self._ACTION_PREFIXES)
-            or self._embedded_direct_command(text)
-            or self._natural_search(text)
+            re.search(
+                r"\b(?:no quiero|no necesito|no hace falta|sin que|algun dia|"
+                r"si pudieras|seria genial si|en teoria|hipoteticamente)\b",
+                command,
+            )
+        )
+
+    def has_agent_intent(self, text: str) -> bool:
+        """Broad, local gate for requests that deserve semantic tool planning.
+
+        This is deliberately domain based instead of phrase based. The model still has to
+        return a typed allow-listed plan, so admitting a candidate here cannot execute an
+        arbitrary instruction.
+        """
+        command = self._canonical_command(text)
+        if not command or self._is_meta_request(command):
+            return False
+        if command.startswith(self._ACTION_PREFIXES):
+            return True
+        if self._NATURAL_GOAL.search(command):
+            return True
+        if self._embedded_direct_command(text) or self._natural_search(text):
+            return True
+        if self._IMPLICIT_VISUAL.search(command):
+            return True
+        if self._VISUAL_REFERENCE.search(command) and (
+            self._VISUAL_OBSERVATION.search(command)
+            or re.match(r"^(?:que|cual|donde|cuanto|dime|puedes|podrias)\b", command)
+        ):
+            return True
+        return bool(
+            self._COMPUTER_DOMAINS.search(command)
+            and (
+                self._REQUEST_SIGNALS.search(command)
+                or re.match(r"^(?:que|cual|donde|cuanto|como esta|en cuanto)\b", command)
+            )
+        )
+
+    def looks_action_like(self, text: str) -> bool:
+        """Backward-compatible alias for the semantic agent-intent gate."""
+        return self.has_agent_intent(text)
+
+    def looks_visual(self, text: str) -> bool:
+        command = self._canonical_command(text)
+        return bool(
+            command
+            and not self._is_meta_request(command)
+            and (self._VISUAL_REFERENCE.search(command) or self._IMPLICIT_VISUAL.search(command))
+            and (
+                self._VISUAL_OBSERVATION.search(command)
+                or re.match(r"^(?:que|cual|donde|cuanto|dime|puedes|podrias)\b", command)
+            )
         )
 
     @classmethod
     def _embedded_direct_command(cls, text: str) -> str:
         """Extract a direct computer request that follows conversational context."""
         normalized = normalize_request(text)
-        if normalized.startswith(cls._META_PREFIXES) or re.search(
-            r"\b(?:no quiero|no necesito|no hace falta|sin) que\b",
-            normalized,
-        ):
+        if cls._is_meta_request(normalized):
             return ""
         verbs = "|".join(cls._EMBEDDED_ACTION_VERBS)
         request = re.search(
@@ -368,7 +714,8 @@ class DeterministicActionParser:
                 r"(?:[,;.!][\s¿¡]*|\by\s+)(?P<request>(?:"
                 r"abre|me abres|inicia|lanza|busca|investiga|visita|navega|entra|ve a|"
                 r"llevame a|sube|baja|silencia|maximiza|minimiza|restaura|cierra|"
-                r"muestra|captura"
+                r"muestra|captura|pon|reproduce|revisa|verifica|analiza|observa|mira|"
+                r"lee|organiza|acomoda|ajusta|configura|selecciona|presiona"
                 r")\b.+)$",
                 normalized,
             )
@@ -378,8 +725,10 @@ class DeterministicActionParser:
     def _natural_search(cls, text: str) -> tuple[str, str] | None:
         """Recognize goal-oriented web searches embedded in natural Spanish."""
         normalized = normalize_request(text)
-        if normalized.startswith(cls._META_PREFIXES) or re.search(
-            r"\b(?:no quiero|no necesito|no hace falta|sin) que\b",
+        if cls._is_meta_request(normalized):
+            return None
+        if re.search(r"\b(?:visualmente|pantalla|monitor|display)\b", normalized) and re.search(
+            r"\b(?:boton|icono|control|elemento|enlace|mensaje|error)\b",
             normalized,
         ):
             return None
@@ -447,12 +796,19 @@ class DeterministicActionParser:
     @classmethod
     def _canonical_command(cls, text: str) -> str:
         command = normalize_request(text)
-        if command.startswith(cls._META_PREFIXES):
+        if cls._is_meta_request(command):
             return command
         command = re.sub(r"[,;:]?\s+por favor$", "", command).strip()
+        command = re.sub(r"^por favor[,;:]?\s+", "", command).strip()
+        # Whisper occasionally joins a short command with its article ("dime el" ->
+        # "dimel"). Correct only bounded imperative prefixes so free conversation remains
+        # untouched.
+        command = re.sub(r"^dimel\s+", "dime el ", command)
         command = cls._COURTESY_PREFIX.sub("", command)
         colloquial_prefixes = (
             (r"^me abres\s+", "abre "),
+            (r"^me dejes abiert[oa]\s+(?:la |el )?", "abre "),
+            (r"^me dejes (?:la |el )?(.+?) abiert[oa]$", r"abre \1"),
             (r"^buscame\s+", "busca "),
             (r"^ponme\s+", "pon "),
             (r"^llevame a\s+", "ve a "),
@@ -470,9 +826,26 @@ class DeterministicActionParser:
                 return imperative + command[len(source_verb) :]
         return command
 
-    def parse(self, text: str) -> ActionPlan | BlockedIntent | None:
+    @classmethod
+    def _number_value(cls, value: str) -> int | None:
+        normalized = normalize_request(value)
+        if normalized.isdigit():
+            return int(normalized)
+        direct = cls._SPANISH_NUMBERS.get(normalized)
+        if direct is not None:
+            return direct
+        tens, separator, units = normalized.partition(" y ")
+        if not separator:
+            return None
+        tens_value = cls._SPANISH_NUMBERS.get(tens)
+        units_value = cls._SPANISH_NUMBERS.get(units)
+        if tens_value not in {30, 40, 50, 60, 70, 80, 90} or units_value is None:
+            return None
+        return tens_value + units_value
+
+    def parse(self, text: str) -> ActionPlan | ActionWorkflowPlan | BlockedIntent | None:
         command = self._canonical_command(text)
-        if not command or command.startswith(self._META_PREFIXES):
+        if not command or self._is_meta_request(command):
             return None
 
         if re.fullmatch(
@@ -489,6 +862,275 @@ class DeterministicActionParser:
             return BlockedIntent(
                 "Esa operación está bloqueada porque puede causar pérdida de datos o dinero."
             )
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime|cuales son|que) (?:mis |las )?(?:recetas|skills)"
+            r"(?: disponibles)?",
+            command,
+        ):
+            return self._plan(ActionName.SKILL_LIST)
+        skill_run = re.fullmatch(
+            r"(?:ejecuta|inicia|usa|corre) (?:la )?(?:receta|skill) (.+)",
+            command,
+        )
+        if skill_run:
+            return self._plan(
+                ActionName.SKILL_RUN,
+                skill=re.sub(r"\s+", "_", skill_run.group(1).strip()),
+                parameters={},
+            )
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime|cuales son|que) (?:mis |las )?"
+            r"(?:tareas|pendientes)(?: (?:de|en) appa)?",
+            command,
+        ):
+            return self._plan(ActionName.TASK_LIST)
+        task_create = re.fullmatch(
+            r"(?:crea|agrega|anota) (?:una )?tarea(?: en appa)?(?: para)? (.+)",
+            command,
+        )
+        if task_create:
+            task_arguments = self._task_arguments(task_create.group(1))
+            if task_arguments is not None:
+                return self._plan(ActionName.TASK_CREATE, **task_arguments)
+        task_complete = re.fullmatch(
+            r"(?:completa|termina|marca como completada) (?:la )?tarea (.+)",
+            command,
+        )
+        if task_complete:
+            return self._plan(ActionName.TASK_COMPLETE, task=task_complete.group(1))
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime|cuales son|que) (?:mis |los )?proyectos de appa",
+            command,
+        ):
+            return self._plan(ActionName.PROJECT_LIST)
+        project_create = re.fullmatch(
+            r"(?:crea|agrega) (?:un )?proyecto(?: en appa)?(?: llamado)? (.+)",
+            command,
+        )
+        if project_create:
+            return self._plan(ActionName.PROJECT_CREATE, name=project_create.group(1))
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime|que tengo en) (?:mi |la )?"
+            r"(?:agenda|calendario)(?: de appa)?(?: hoy)?",
+            command,
+        ):
+            return self._plan(ActionName.CALENDAR_LIST)
+        calendar_create = re.fullmatch(
+            r"(?:crea|agrega|programa|agenda) (?:un |una )?(?:evento|cita|reunion) "
+            r"(?P<title>.+?) (?P<start>"
+            r"en \d+ (?:minutos?|horas?|dias?)|"
+            r"(?:hoy|manana) a las? \d{1,2}(?::\d{2})?|"
+            r"el \d{1,2}(?: de [a-z]+)? a las? \d{1,2}(?::\d{2})?|"
+            r"a las? \d{1,2}(?::\d{2})?)",
+            command,
+        )
+        if calendar_create:
+            return self._plan(
+                ActionName.CALENDAR_CREATE,
+                title=calendar_create.group("title"),
+                start_at=calendar_create.group("start"),
+            )
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime|que hay en) (?:mi |el )?"
+            r"(?:inbox|bandeja de entrada)(?: de appa)?",
+            command,
+        ):
+            return self._plan(ActionName.INBOX_LIST)
+        inbox_capture = re.fullmatch(
+            r"(?:guarda|captura|anota) (?:en )?(?:mi |el )?"
+            r"(?:inbox|bandeja de entrada)(?: de appa)?(?: que)? (.+)|"
+            r"(?:guarda|captura|anota) (.+) en (?:mi |el )?"
+            r"(?:inbox|bandeja de entrada)(?: de appa)?",
+            command,
+        )
+        if inbox_capture:
+            text = next(group for group in inbox_capture.groups() if group)
+            return self._plan(ActionName.INBOX_CAPTURE, text=text)
+
+        if re.fullmatch(
+            r"(?:estado de|como va|dime) (?:mi |la )?(?:sesion )?focus(?: de appa)?",
+            command,
+        ):
+            return self._plan(ActionName.FOCUS_STATUS)
+        focus_start = re.fullmatch(
+            r"(?:inicia|empieza|comienza) (?:una )?(?:sesion de )?focus"
+            r"(?: en appa)?(?: de)? (\d{1,3}) minutos?"
+            r"(?: (?:para|con la tarea) (.+))?",
+            command,
+        )
+        if focus_start:
+            arguments: dict[str, Any] = {
+                "duration_minutes": int(focus_start.group(1))
+            }
+            if focus_start.group(2):
+                arguments["task_title"] = focus_start.group(2)
+            return self._plan(ActionName.FOCUS_START, **arguments)
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime|cuales son|que) (?:mis |los )?recordatorios"
+            r"(?: activos)?",
+            command,
+        ):
+            return self._plan(ActionName.REMINDER_LIST)
+        # Match recurrence before a one-shot clock time. Otherwise a phrase such as
+        # "recuérdame revisar la agenda cada mes a las 9" is greedily interpreted as
+        # a non-recurring reminder whose title happens to contain "cada mes".
+        recurring_reminder = re.fullmatch(
+            r"recuerdame(?: que)? (.+?) (cada dia|cada semana|cada mes)"
+            r"(?: a las? (\d{1,2}(?::\d{2})?))?",
+            command,
+        )
+        if recurring_reminder:
+            recurrence = {
+                "cada dia": "daily",
+                "cada semana": "weekly",
+                "cada mes": "monthly",
+            }[recurring_reminder.group(2)]
+            hour = recurring_reminder.group(3) or "09:00"
+            return self._plan(
+                ActionName.REMINDER_CREATE,
+                title=recurring_reminder.group(1),
+                due=f"hoy a las {hour}",
+                recurrence=recurrence,
+            )
+        reminder_create = re.fullmatch(
+            r"recuerdame(?: que)? (?P<title>.+?) (?P<due>"
+            r"en \d+ (?:minutos?|horas?|dias?)|"
+            r"(?:hoy|manana)(?: a las? \d{1,2}(?::\d{2})?)?|"
+            r"el \d{1,2}(?: de [a-z]+)?(?: a las? \d{1,2}(?::\d{2})?)?|"
+            r"a las? \d{1,2}(?::\d{2})?)",
+            command,
+        )
+        if reminder_create is None:
+            reminder_create = re.fullmatch(
+                r"recuerdame (?P<due>en \d+ (?:minutos?|horas?|dias?)|"
+                r"(?:hoy|manana)(?: a las? \d{1,2}(?::\d{2})?)?) "
+                r"(?:que )?(?P<title>.+)",
+                command,
+            )
+        if reminder_create:
+            return self._plan(
+                ActionName.REMINDER_CREATE,
+                title=reminder_create.group("title"),
+                due=reminder_create.group("due"),
+                recurrence="none",
+            )
+        reminder_cancel = re.fullmatch(
+            r"(?:cancela|elimina|borra) (?:el )?recordatorio (.+)",
+            command,
+        )
+        if reminder_cancel:
+            return self._plan(ActionName.REMINDER_CANCEL, reminder=reminder_cancel.group(1))
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime) (?:las )?(?:fuentes|documentos) "
+            r"(?:de|en) (?:mi )?biblioteca",
+            command,
+        ):
+            return self._plan(ActionName.KNOWLEDGE_LIST)
+        knowledge_search = re.fullmatch(
+            r"(?:busca|consulta|investiga) (?:en )?(?:mi )?biblioteca(?: sobre)? (.+)|"
+            r"(?:busca|consulta) (.+) en (?:mi )?biblioteca",
+            command,
+        )
+        if knowledge_search:
+            return self._plan(
+                ActionName.KNOWLEDGE_SEARCH,
+                query=next(group for group in knowledge_search.groups() if group),
+            )
+        if command in {
+            "guarda este adjunto en mi biblioteca",
+            "indexa este adjunto",
+            "agrega este documento a mi biblioteca",
+        }:
+            return self._plan(ActionName.KNOWLEDGE_ADD_ATTACHMENT, attachment_id="latest")
+        if re.fullmatch(
+            r"(?:lista|muestra|dime|que) (?:mis |los )?adjuntos(?: tengo)?",
+            command,
+        ):
+            return self._plan(ActionName.ATTACHMENT_LIST)
+
+        clipboard_analysis = re.fullmatch(
+            r"(resume|explica|corrige|traduce) (?:lo que (?:copie|esta copiado)|"
+            r"el contenido de )?\s*(?:en )?(?:mi )?portapapeles(?: al ([a-z]+))?",
+            command,
+        )
+        if clipboard_analysis:
+            operation = {
+                "resume": "summarize",
+                "explica": "explain",
+                "corrige": "correct",
+                "traduce": "translate",
+            }[clipboard_analysis.group(1)]
+            arguments: dict[str, Any] = {"operation": operation}
+            if clipboard_analysis.group(2):
+                arguments["language"] = clipboard_analysis.group(2)
+            return self._plan(ActionName.CLIPBOARD_ANALYZE, **arguments)
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime) (?:los )?(?:permisos|permisos recordados)",
+            command,
+        ):
+            return self._plan(ActionName.PERMISSION_LIST)
+        forget_permission = re.fullmatch(
+            r"(?:olvida|borra|elimina) (?:el )?permiso (.+)",
+            command,
+        )
+        if forget_permission:
+            return self._plan(ActionName.PERMISSION_FORGET, action=forget_permission.group(1))
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime) (?:los )?(?:workspaces|proyectos autorizados)",
+            command,
+        ):
+            return self._plan(ActionName.DEV_LIST)
+        dev_inspect = re.fullmatch(
+            r"(?:lee|revisa|inspecciona) (?:el archivo )?(.+?) "
+            r"(?:del|en el) (?:proyecto|workspace) (.+)",
+            command,
+        )
+        if dev_inspect:
+            return self._plan(
+                ActionName.DEV_INSPECT,
+                path=dev_inspect.group(1),
+                workspace=dev_inspect.group(2),
+            )
+        dev_search = re.fullmatch(
+            r"busca (.+?) (?:en|dentro de) (?:el )?(?:proyecto|workspace) (.+)",
+            command,
+        )
+        if dev_search:
+            return self._plan(
+                ActionName.DEV_SEARCH,
+                query=dev_search.group(1),
+                workspace=dev_search.group(2),
+            )
+        dev_test = re.fullmatch(
+            r"(?:ejecuta|corre) (?:las )?pruebas (?:del|en el) "
+            r"(?:proyecto|workspace) (.+)",
+            command,
+        )
+        if dev_test:
+            return self._plan(ActionName.DEV_TEST, workspace=dev_test.group(1))
+
+        if re.fullmatch(
+            r"(?:lista|muestra|dime) (?:mis |los )?(?:juegos|juegos instalados)",
+            command,
+        ):
+            return self._plan(ActionName.GAME_LIST)
+        game_launch = re.fullmatch(
+            r"(?:abre|inicia|lanza|juega) (?:el juego )?(.+)",
+            command,
+        )
+        if game_launch and any(
+            marker in command for marker in ("el juego", "juega ", " desde steam", " desde epic")
+        ):
+            return self._plan(ActionName.GAME_LAUNCH, game=game_launch.group(1))
 
         if command in {
             "cual es el monitor 1 y cual es el monitor 2",
@@ -523,7 +1165,7 @@ class DeterministicActionParser:
                 original = imperative + original[len(source_verb) :]
                 break
         workflow_parts = self.workflow_parts(original)
-        if 2 <= len(workflow_parts) <= 3:
+        if 2 <= len(workflow_parts) <= 5:
             steps: list[ActionPlan] = []
             for part in workflow_parts:
                 parsed_part = self.parse(part)
@@ -568,7 +1210,8 @@ class DeterministicActionParser:
         if command in {"recarga la pagina", "actualiza la pagina", "refresca la pagina"}:
             return self._plan(ActionName.BROWSER_REFRESH)
         browser_new_tab = re.fullmatch(
-            r"(?:abre )?(?:una )?(?:nueva )?pestana (?:en|usando|con) "
+            r"(?:abre )?(?:una )?(?:nueva pestana|pestana nueva|pestana) "
+            r"(?:en|usando|con) "
             r"(?:el navegador )?(google chrome|chrome|microsoft edge|edge|"
             r"brave browser|brave|navegador predeterminado)",
             command,
@@ -578,7 +1221,13 @@ class DeterministicActionParser:
                 ActionName.BROWSER_NEW_TAB,
                 browser=self._BROWSERS[browser_new_tab.group(1)],
             )
-        if command in {"abre una pestana", "abre una nueva pestana", "nueva pestana"}:
+        if command in {
+            "abre una pestana",
+            "abre una nueva pestana",
+            "abre una pestana nueva",
+            "nueva pestana",
+            "pestana nueva",
+        }:
             return self._plan(ActionName.BROWSER_NEW_TAB)
         if command in {"lista las pestanas", "muestra las pestanas", "que pestanas estan abiertas"}:
             return self._plan(ActionName.BROWSER_LIST_TABS)
@@ -637,6 +1286,13 @@ class DeterministicActionParser:
             command,
         ):
             return self._plan(ActionName.VOLUME_GET)
+        if re.fullmatch(
+            r"(?:dime|indica(?:me)?) (?:cual es|en cuanto esta|a cuanto esta) "
+            r"(?:el )?(?:volumen|nivel de (?:volumen|audio|sonido))"
+            r"(?: (?:actual|del sistema|de la computadora|de mi pc))?",
+            command,
+        ):
+            return self._plan(ActionName.VOLUME_GET)
 
         if command in {
             "que hay en cada monitor",
@@ -651,29 +1307,62 @@ class DeterministicActionParser:
             "describe las dos pantallas",
             "dime que hay en cada monitor",
             "dime que hay en cada pantalla",
+            "dime que tengo en cada monitor",
+            "dime que tengo en cada pantalla",
         }:
             return self._plan(ActionName.SCREEN_DESCRIBE, monitor="all")
 
         monitor, screen_command = self._extract_monitor(command)
-        if screen_command in {
-            "que ves en la pantalla",
-            "que hay en la pantalla",
-            "que aparece en la pantalla",
-            "que estas viendo",
-            "describe la pantalla",
-            "describe lo que ves",
-            "describe lo que ves en la pantalla",
-            "dime que ves en la pantalla",
-            "mira la pantalla",
-            "que ves",
-            "que hay",
-            "que aparece",
-            "describe",
-            "dime que ves",
-            "dime que hay",
-            "dime que aparece",
-            "mira",
-        }:
+        visual_reference = monitor is not None or bool(
+            self._VISUAL_REFERENCE.search(command) or self._IMPLICIT_VISUAL.search(command)
+        )
+        visual_command = re.sub(
+            r"\b(?:(?:en|de|a)\s+)?(?:el|la|mi)?\s*(?:monitor|pantalla|display)\b",
+            " ",
+            screen_command,
+        )
+        visual_command = re.sub(r"\s+", " ", visual_command).strip(" ,")
+        general_visual_description = bool(
+            re.fullmatch(
+                r"(?:(?:dime|cuentame|explicame|muestrame|puedes decirme|"
+                r"me puedes decir)\s+)?"
+                r"(?:(?:que(?: es)?(?: lo que)?|como)\s+)?"
+                r"(?:ves|puedes ver|hay|aparece|se muestra|se ve|tengo abierto|"
+                r"esta abierto|esta apareciendo|tienes a la vista)",
+                visual_command,
+            )
+            or re.fullmatch(
+                r"(?:mira|observa|describe|revisa|fijate|"
+                r"echa(?:rle|le)? (?:un )?vistazo)"
+                r"(?: (?:esto|ahi|lo que tengo abierto)| a esto)?"
+                r"(?: y (?:dime|cuentame|contame|contarme|cuenta|describe) "
+                r"(?:que (?:ves|hay|aparece|se muestra)|lo que (?:ves|hay|aparece)))?",
+                visual_command,
+            )
+        )
+        if visual_reference and (
+            general_visual_description
+            or screen_command
+            in {
+                "que ves en la pantalla",
+                "que hay en la pantalla",
+                "que aparece en la pantalla",
+                "que estas viendo",
+                "describe la pantalla",
+                "describe lo que ves",
+                "describe lo que ves en la pantalla",
+                "dime que ves en la pantalla",
+                "mira la pantalla",
+                "que ves",
+                "que hay",
+                "que aparece",
+                "describe",
+                "dime que ves",
+                "dime que hay",
+                "dime que aparece",
+                "mira",
+            }
+        ):
             return self._plan(
                 ActionName.SCREEN_DESCRIBE,
                 **({"monitor": monitor} if monitor is not None else {}),
@@ -690,14 +1379,12 @@ class DeterministicActionParser:
                 **({"monitor": monitor} if monitor is not None else {}),
             )
         screen_find = re.fullmatch(
-            r"(?:encuentra|localiza|ubica)(?: visualmente)? (.+)|"
+            r"(?:encuentra|busca|localiza|ubica)(?: visualmente)? (.+)|"
             r"donde esta (.+) en (?:la )?pantalla",
             screen_command,
         )
         if screen_find and (
-            monitor is not None
-            or "visualmente" in screen_command
-            or "pantalla" in screen_command
+            monitor is not None or "visualmente" in screen_command or "pantalla" in screen_command
         ):
             return self._plan(
                 ActionName.SCREEN_FIND,
@@ -735,12 +1422,21 @@ class DeterministicActionParser:
             )
         if monitor is not None and re.match(
             r"^(?:que|cual|donde|puedes leer|lee|dime)\b",
-            screen_command,
+            visual_command,
         ):
             return self._plan(
                 ActionName.SCREEN_ASK,
-                question=screen_command,
+                question=visual_command,
                 monitor=monitor,
+            )
+        if visual_reference and re.match(
+            r"^(?:que|cual|donde|cuanto|como|puedes|podrias|lee|dime|revisa|verifica)\b",
+            visual_command,
+        ):
+            return self._plan(
+                ActionName.SCREEN_ASK,
+                question=visual_command,
+                **({"monitor": monitor} if monitor is not None else {}),
             )
 
         browser_search = re.fullmatch(
@@ -844,11 +1540,14 @@ class DeterministicActionParser:
             return self._plan(ActionName.APP_OPEN, app=self._APPS.get(target, target))
 
         volume_set = re.fullmatch(
-            r"(?:pon|ajusta|establece) (?:el )?volumen (?:al|a) (\d{1,3})(?: por ciento|%)?",
+            r"(?:pon|ajusta|establece) (?:el )?volumen (?:al|a) "
+            r"(.+?)(?: por ciento|%)?",
             command,
         )
         if volume_set:
-            return self._plan(ActionName.VOLUME_SET, level=int(volume_set.group(1)))
+            level = self._number_value(volume_set.group(1))
+            if level is not None:
+                return self._plan(ActionName.VOLUME_SET, level=level)
         volume_change = re.fullmatch(
             r"(?:sube|aumenta|incrementa|subele|baja|reduce|disminuye|bajale) "
             r"(?:un poco )?(?:el )?volumen(?: (\d{1,3})(?: por ciento|%)?)?",
@@ -861,7 +1560,8 @@ class DeterministicActionParser:
         if re.fullmatch(r"(?:silencia|mutea) (?:el )?(?:audio|sonido|volumen)", command):
             return self._plan(ActionName.VOLUME_MUTE, muted=True)
         if re.fullmatch(
-            r"(?:quita|desactiva) (?:el )?silencio|(?:desmutea|activa) (?:el )?(?:audio|sonido)",
+            r"(?:(?:quita|desactiva) (?:el )?silencio|"
+            r"(?:desmutea|activa) (?:el )?(?:audio|sonido))(?: del sistema)?",
             command,
         ):
             return self._plan(ActionName.VOLUME_MUTE, muted=False)
@@ -876,8 +1576,10 @@ class DeterministicActionParser:
 
         if command in {
             "lista las ventanas",
+            "lista las ventanas abiertas",
             "muestra ventanas",
             "muestra las ventanas",
+            "muestra las ventanas abiertas",
             "que ventanas estan abiertas",
         }:
             return self._plan(ActionName.WINDOW_LIST)
@@ -889,6 +1591,8 @@ class DeterministicActionParser:
             "que aplicacion tengo abierta",
             "que tengo abierto en primer plano",
             "dime la ventana activa",
+            "dime cual ventana esta activa",
+            "dime cual es la ventana activa",
         }:
             return self._plan(ActionName.WINDOW_CURRENT)
         window_focus = re.fullmatch(
@@ -903,7 +1607,10 @@ class DeterministicActionParser:
             ("restaura", ActionName.WINDOW_RESTORE),
             ("cierra", ActionName.WINDOW_CLOSE),
         ):
-            match = re.fullmatch(rf"{verb}(?: (?:la )?ventana(?: de)?(?: (.+))?)?", command)
+            match = re.fullmatch(
+                rf"{verb}(?: (?:(?:la|esta) )?ventana(?: de)?(?: (.+))?)?",
+                command,
+            )
             if match:
                 return self._plan(action_name, title=(match.group(1) or "").strip())
 
@@ -957,6 +1664,12 @@ class DeterministicActionParser:
             "uso actual del sistema",
             "uso de cpu y memoria",
             "cuanto cpu y memoria estoy usando",
+            "uso de disco",
+            "cuanto espacio libre tengo",
+            "cuanto espacio libre tengo en el disco",
+            "cuanta memoria disponible tengo",
+            "estado de la bateria",
+            "dime el uso de cpu memoria y disco",
         }:
             return self._plan(ActionName.SYSTEM_STATUS)
         if command in {"lee el portapapeles", "que hay en el portapapeles"}:

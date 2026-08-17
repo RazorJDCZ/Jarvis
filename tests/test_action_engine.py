@@ -12,6 +12,8 @@ from jarvis.actions.models import (
     ActionRisk,
     ActionSource,
     ActionStatus,
+    AgentGoalComplete,
+    ClarificationNeeded,
     ExecutionResult,
     PreparedAction,
     PreparedWorkflow,
@@ -68,10 +70,31 @@ class FixedPlanner:
     def __init__(self, plan: ActionPlan | None) -> None:
         self.planned_action = plan
         self.calls: list[str] = []
+        self.contexts: list[tuple[dict[str, str], ...]] = []
 
-    async def plan(self, text: str) -> ActionPlan | None:
+    async def plan(
+        self,
+        text: str,
+        context: tuple[dict[str, str], ...] = (),
+    ) -> ActionPlan | None:
         self.calls.append(text)
+        self.contexts.append(context)
         return self.planned_action
+
+
+class SequencedPlanner(FixedPlanner):
+    def __init__(self, plans: list[object]) -> None:
+        super().__init__(None)
+        self.plans = list(plans)
+
+    async def plan(
+        self,
+        text: str,
+        context: tuple[dict[str, str], ...] = (),
+    ):
+        self.calls.append(text)
+        self.contexts.append(context)
+        return self.plans.pop(0)
 
 
 def build_engine(
@@ -81,6 +104,7 @@ def build_engine(
     **settings: object,
 ) -> tuple[ActionEngine, RecordingCatalog]:
     action_catalog = catalog or RecordingCatalog(tmp_path)
+    settings.setdefault("action_model_planning", False)
     config = Settings(project_root=tmp_path, **settings)
     return (
         ActionEngine(config, catalog=action_catalog, planner=planner),
@@ -128,6 +152,187 @@ async def test_remote_read_only_action_stays_direct(tmp_path: Path) -> None:
 
     assert result.status is ActionStatus.COMPLETED
     assert result.name is ActionName.VOLUME_GET
+    assert len(action_catalog.executed) == 1
+
+
+@pytest.mark.asyncio
+async def test_mobile_natural_visual_question_reaches_screen_engine(tmp_path: Path) -> None:
+    planner = FixedPlanner(None)
+    engine, action_catalog = build_engine(tmp_path, planner=planner)
+
+    pending = await engine.try_handle(
+        "remote-device",
+        "Jarvis, ¿qué es lo que ves en mi monitor número uno?",
+        remote=True,
+    )
+    completed = await engine.decide("remote-device", pending.action_id, True)
+
+    assert pending.status is ActionStatus.PENDING
+    assert pending.name is ActionName.SCREEN_DESCRIBE
+    assert completed.status is ActionStatus.COMPLETED
+    assert action_catalog.executed[0].arguments == {"monitor": "1"}
+    assert planner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_computer_goal_uses_local_planner(tmp_path: Path) -> None:
+    planner = FixedPlanner(
+        ActionPlan(
+            ActionName.WINDOW_LIST,
+            source=ActionSource.LOCAL_MODEL,
+            confidence=0.91,
+        )
+    )
+    engine, action_catalog = build_engine(tmp_path, planner=planner)
+
+    result = await engine.try_handle(
+        "a",
+        "Necesito que organices las ventanas para poder concentrarme",
+    )
+
+    assert result.status is ActionStatus.COMPLETED
+    assert planner.calls == ["Necesito que organices las ventanas para poder concentrarme"]
+    assert action_catalog.executed[0].name is ActionName.WINDOW_LIST
+
+
+@pytest.mark.asyncio
+async def test_unresolved_computer_goal_asks_instead_of_falling_into_chat(tmp_path: Path) -> None:
+    engine, _ = build_engine(tmp_path, planner=FixedPlanner(None))
+
+    result = await engine.try_handle("a", "Organiza las ventanas para estudiar")
+
+    assert result.status is ActionStatus.REJECTED
+    assert result.details["clarification_required"] is True
+    assert result.message.endswith("¿Qué debería quedar listo al terminar?")
+
+
+@pytest.mark.asyncio
+async def test_planner_uses_previous_verified_action_as_context(tmp_path: Path) -> None:
+    planner = FixedPlanner(
+        ActionPlan(
+            ActionName.WINDOW_LIST,
+            source=ActionSource.LOCAL_MODEL,
+            confidence=0.92,
+        )
+    )
+    engine, _ = build_engine(tmp_path, planner=planner)
+    await engine.try_handle("a", "abre la calculadora")
+
+    await engine.try_handle("a", "ahora organiza la ventana para trabajar")
+
+    assert planner.contexts[0]
+    assert planner.contexts[0][-1]["request"] == "abre la calculadora"
+    assert planner.contexts[0][-1]["action"] == "app.open"
+
+
+@pytest.mark.asyncio
+async def test_clarification_answer_is_combined_with_original_goal(tmp_path: Path) -> None:
+    planner = SequencedPlanner(
+        [
+            ClarificationNeeded("¿En cuál monitor?", confidence=0.9),
+            ActionPlan(
+                ActionName.SCREEN_DESCRIBE,
+                {"monitor": "1"},
+                source=ActionSource.LOCAL_MODEL,
+                confidence=0.92,
+            ),
+        ]
+    )
+    engine, _ = build_engine(tmp_path, planner=planner)
+
+    question = await engine.try_handle(
+        "a",
+        "Necesito que analices la situación visual de mi computadora",
+    )
+    pending = await engine.try_handle("a", "en el monitor número uno")
+
+    assert question.status is ActionStatus.REJECTED
+    assert question.message == "¿En cuál monitor?"
+    assert pending.status is ActionStatus.PENDING
+    assert "Solicitud original:" in planner.calls[1]
+    assert "Aclaración del usuario: en el monitor número uno" in planner.calls[1]
+
+
+@pytest.mark.asyncio
+async def test_agent_observes_and_replans_until_the_goal_is_finished(tmp_path: Path) -> None:
+    planner = SequencedPlanner(
+        [
+            ActionPlan(
+                ActionName.WINDOW_LIST,
+                source=ActionSource.LOCAL_MODEL,
+                confidence=0.94,
+                continue_goal=True,
+            ),
+            ActionPlan(
+                ActionName.VOLUME_GET,
+                source=ActionSource.LOCAL_MODEL,
+                confidence=0.93,
+            ),
+        ]
+    )
+    engine, action_catalog = build_engine(tmp_path, planner=planner)
+
+    result = await engine.try_handle("a", "Necesito que organices mi espacio de trabajo")
+
+    assert result.status is ActionStatus.COMPLETED
+    assert result.name is ActionName.VOLUME_GET
+    assert [action.name for action in action_catalog.executed] == [
+        ActionName.WINDOW_LIST,
+        ActionName.VOLUME_GET,
+    ]
+    assert "observación verificada" in planner.calls[1]
+    assert planner.contexts[1][-1]["action"] == "verified-observation"
+
+
+@pytest.mark.asyncio
+async def test_agent_finishes_with_a_grounded_summary(tmp_path: Path) -> None:
+    planner = SequencedPlanner(
+        [
+            ActionPlan(
+                ActionName.WINDOW_LIST,
+                source=ActionSource.LOCAL_MODEL,
+                confidence=0.94,
+                continue_goal=True,
+            ),
+            AgentGoalComplete("Ya revisé las ventanas y el objetivo quedó verificado.", 0.93),
+        ]
+    )
+    engine, _ = build_engine(tmp_path, planner=planner)
+
+    result = await engine.try_handle("a", "Necesito que organices mi espacio de trabajo")
+
+    assert result.status is ActionStatus.COMPLETED
+    assert result.message == "Ya revisé las ventanas y el objetivo quedó verificado."
+    assert result.details["agent_goal_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_agent_requests_confirmation_before_an_adaptive_mutation(
+    tmp_path: Path,
+) -> None:
+    planner = SequencedPlanner(
+        [
+            ActionPlan(
+                ActionName.WINDOW_LIST,
+                source=ActionSource.LOCAL_MODEL,
+                confidence=0.94,
+                continue_goal=True,
+            ),
+            ActionPlan(
+                ActionName.APP_OPEN,
+                {"app": "calculator"},
+                source=ActionSource.LOCAL_MODEL,
+                confidence=0.93,
+            ),
+        ]
+    )
+    engine, action_catalog = build_engine(tmp_path, planner=planner)
+
+    result = await engine.try_handle("a", "Necesito que organices mi espacio de trabajo")
+
+    assert result.status is ActionStatus.PENDING
+    assert result.name is ActionName.APP_OPEN
+    assert result.requires_confirmation is True
     assert len(action_catalog.executed) == 1
 
 
@@ -455,6 +660,28 @@ async def test_new_pending_action_invalidates_previous_one(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_new_read_only_request_cannot_leave_an_old_mutation_armed(tmp_path: Path) -> None:
+    engine, action_catalog = build_engine(tmp_path)
+    old = await engine.try_handle("a", "cierra la ventana de Paint")
+
+    volume = await engine.try_handle("a", "dime el volumen actual")
+    late_confirmation = await engine.try_handle("a", "sí")
+    stale_api_confirmation = await engine.decide("a", old.action_id, True)
+
+    assert old.status is ActionStatus.PENDING
+    assert volume.status is ActionStatus.COMPLETED
+    assert volume.name is ActionName.VOLUME_GET
+    assert late_confirmation is None
+    assert stale_api_confirmation.status is ActionStatus.REJECTED
+    assert len(action_catalog.executed) == 1
+    assert action_catalog.executed[0].name is ActionName.VOLUME_GET
+    assert any(
+        entry["status"] == ActionStatus.CANCELLED.value
+        for entry in engine.recent_audit(10)
+    )
+
+
+@pytest.mark.asyncio
 async def test_low_risk_compound_request_executes_as_one_workflow(tmp_path: Path) -> None:
     engine, action_catalog = build_engine(tmp_path)
 
@@ -563,8 +790,10 @@ async def test_visual_context_is_isolated_by_session_and_reset(tmp_path: Path) -
     engine.reset("owner")
     reset_owner = await engine.try_handle("owner", "qué dice ese mensaje")
 
-    assert other is None
-    assert reset_owner is None
+    assert other.status is ActionStatus.REJECTED
+    assert other.details["clarification_required"] is True
+    assert reset_owner.status is ActionStatus.REJECTED
+    assert reset_owner.details["clarification_required"] is True
 
 
 @pytest.mark.asyncio
@@ -613,7 +842,8 @@ async def test_expired_visual_context_is_not_reused(
     now["value"] = 401.0
     followup = await engine.try_handle("owner", "qué dice ese error")
 
-    assert followup is None
+    assert followup.status is ActionStatus.REJECTED
+    assert followup.details["clarification_required"] is True
 
 
 @pytest.mark.asyncio

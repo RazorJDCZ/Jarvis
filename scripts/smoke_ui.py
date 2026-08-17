@@ -19,7 +19,7 @@ async def verify() -> dict[str, object]:
         await page.locator("#visionStatus.online").wait_for(state="visible", timeout=15_000)
 
         await page.locator("#textInput").fill("captura la pantalla")
-        await page.locator("#textForm button").click()
+        await page.locator('#textForm button[type="submit"]').click()
         gate = page.locator("#actionConfirmation")
         await gate.wait_for(state="visible", timeout=15_000)
         gate_text = await gate.inner_text()
@@ -31,7 +31,7 @@ async def verify() -> dict[str, object]:
         )
 
         await page.locator("#textInput").fill("estado del sistema")
-        await page.locator("#textForm button").click()
+        await page.locator('#textForm button[type="submit"]').click()
         await page.get_by_text("CPU", exact=False).last.wait_for(state="visible", timeout=15_000)
         await page.evaluate(
             """handleAction({

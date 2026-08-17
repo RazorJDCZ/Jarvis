@@ -51,20 +51,10 @@ class InformationVerifier:
         "que piensas",
         "puedes ayudarme",
         "me cuentas un chiste",
-    )
-    _QUESTION_MARKERS = (
-        "que ",
-        "quien ",
-        "cual ",
-        "donde ",
-        "cuando ",
-        "por que ",
-        "como ",
-        "cuanto ",
-        "dime quien",
-        "dime que",
-        "explicame ",
-        "informacion sobre ",
+        "presentate",
+        "hablame de ti",
+        "cuentame de ti",
+        "que puedes hacer",
     )
     _UNSUPPORTED_LIVE_MARKERS = (
         "ultimas noticias",
@@ -236,7 +226,24 @@ class InformationVerifier:
             return False
         if any(marker in normalized for marker in cls._CONVERSATIONAL_MARKERS):
             return False
-        return any(marker in normalized for marker in cls._QUESTION_MARKERS)
+        request = re.sub(
+            r"^(?:(?:oye|hey)\s+)?jarvis(?:\b|[,:;.!?])(?:[,:;.!?\s]+)?",
+            "",
+            normalized,
+        ).strip(" ¿¡!?.")
+        request = re.sub(
+            r"^(?:hola|buenas|buenos dias|buenas tardes|buenas noches)[,;:\s]+",
+            "",
+            request,
+        ).strip(" ¿¡!?.")
+        return bool(
+            re.match(
+                r"^(?:que|quien|cual|donde|cuando|por que|como|cuanto)\b|"
+                r"^(?:dime (?:quien|que)|explicame|informacion sobre|"
+                r"sabes (?:que|quien|cual|donde|cuando|como))\b",
+                request,
+            )
+        )
 
     async def _wikipedia(self, query: str) -> VerificationResult:
         try:

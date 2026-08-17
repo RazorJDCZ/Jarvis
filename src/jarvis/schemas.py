@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -23,6 +24,7 @@ class StateSnapshot(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8_000)
     session_id: str = Field(default="default", min_length=1, max_length=128)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=4)
 
     @field_validator("message")
     @classmethod
@@ -31,6 +33,13 @@ class ChatRequest(BaseModel):
         if not clean_value:
             raise ValueError("El mensaje no puede estar vacio")
         return clean_value
+
+    @field_validator("attachment_ids")
+    @classmethod
+    def attachment_ids_must_be_opaque(cls, value: list[str]) -> list[str]:
+        if any(not re.fullmatch(r"[a-f0-9]{32}", item) for item in value):
+            raise ValueError("Los adjuntos deben usar identificadores opacos v\u00e1lidos")
+        return list(dict.fromkeys(value))
 
 
 class ActionInfo(BaseModel):
@@ -47,12 +56,14 @@ class ChatResponse(BaseModel):
     response: str
     provider: str
     action: ActionInfo | None = None
+    trace_id: str | None = None
 
 
 class ActionDecisionRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     action_id: str = Field(min_length=1, max_length=64)
     approve: bool | None = None
+    remember: bool = False
     choice: str | None = Field(default=None, min_length=1, max_length=120)
 
 

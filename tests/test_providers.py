@@ -80,6 +80,34 @@ async def test_ollama_chat_sends_non_streaming_request(monkeypatch: pytest.Monke
     assert received[0]["think"] is False
     assert received[0]["keep_alive"] == "0s"
     assert received[0]["options"]["temperature"] == pytest.approx(0.45)
+    assert received[0]["options"]["num_predict"] == 512
+
+
+@pytest.mark.asyncio
+async def test_ollama_deep_chat_uses_a_larger_controlled_answer_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "thinking": "razonamiento privado",
+                    "content": "Conclusión analítica.",
+                }
+            },
+        )
+
+    mock_httpx(monkeypatch, handler)
+    answer = await OllamaBrain(Settings()).chat_deep([{"role": "user", "content": "analiza esto"}])
+
+    assert answer == "Conclusión analítica."
+    assert received[0]["think"] is False
+    assert received[0]["options"]["temperature"] == pytest.approx(0.35)
+    assert received[0]["options"]["num_predict"] == 1_024
 
 
 @pytest.mark.asyncio
@@ -112,9 +140,7 @@ async def test_ollama_warmup_skips_when_memory_is_low(
         raise AssertionError("No debe contactar Ollama con memoria insuficiente")
 
     mock_httpx(monkeypatch, handler)
-    brain = OllamaBrain(
-        Settings(ollama_warmup_enabled=True, ollama_warmup_min_free_gb=6)
-    )
+    brain = OllamaBrain(Settings(ollama_warmup_enabled=True, ollama_warmup_min_free_gb=6))
     monkeypatch.setattr(brain, "_available_memory_gb", lambda: 1.5)
 
     assert await brain.warmup() is False
@@ -169,7 +195,7 @@ async def test_fallback_brain_has_useful_offline_responses() -> None:
     identity = await brain.chat([{"role": "user", "content": "¿Quién eres?"}])
     generic = await brain.chat([{"role": "user", "content": "Prueba"}])
 
-    assert "Juandi" in greeting
+    assert "Juan Diego" in greeting
     assert "asistente local" in identity
     assert "Prueba" in generic
 

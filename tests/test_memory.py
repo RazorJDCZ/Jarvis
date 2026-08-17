@@ -89,9 +89,7 @@ def test_relevant_retrieval_and_physical_forget(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "memory.sqlite3")
     store.upsert(MemoryCandidate("like:music", "Le gusta tocar el ukelele.", "preferencia"))
     store.upsert(MemoryCandidate("like:games", "Le gustan los videojuegos.", "preferencia"))
-    store.upsert(
-        MemoryCandidate("project:jarvis", "Está trabajando en Jarvis.", "proyecto")
-    )
+    store.upsert(MemoryCandidate("project:jarvis", "Está trabajando en Jarvis.", "proyecto"))
 
     relevant = store.relevant("Hablemos del ukelele")
     projects = store.relevant("¿Qué sabes de mis proyectos?")
@@ -117,9 +115,7 @@ def test_recent_conversations_are_bounded_filterable_and_resettable(tmp_path: Pa
         ("dos", "respuesta dos"),
         ("tres", "respuesta tres"),
     )
-    assert store.recent_turns(exclude_session="c", limit=10) == (
-        ("dos", "respuesta dos"),
-    )
+    assert store.recent_turns(exclude_session="c", limit=10) == (("dos", "respuesta dos"),)
     assert store.stats().sessions == 2
     assert store.stats().turns == 2
     store.clear_session("b")
@@ -179,6 +175,8 @@ def test_memory_command_detection_does_not_capture_conversation_reset(tmp_path: 
 
     assert service.is_command("a", "Recuerda que me gusta el azul") is True
     assert service.is_command("a", "Borra toda tu memoria") is True
+    assert service.is_command("a", "¿Qué sabes de mí?") is False
+    assert service.is_command("a", "¿Qué recuerdas de mí?") is True
     assert service.is_command("a", "Borra la conversación") is False
     assert service.is_command("a", "Olvida esta conversación") is False
 
@@ -221,12 +219,26 @@ class MemoryBrain:
 
 
 class NoActions:
-    async def try_handle(self, _session_id: str, _message: str) -> ActionOutcome | None:
+    async def try_handle(
+        self,
+        _session_id: str,
+        _message: str,
+        *,
+        remote: bool = False,
+        conversation_context: tuple[dict[str, str], ...] = (),
+    ) -> ActionOutcome | None:
         return None
 
 
 class ExplodingActions(NoActions):
-    async def try_handle(self, _session_id: str, _message: str) -> ActionOutcome | None:
+    async def try_handle(
+        self,
+        _session_id: str,
+        _message: str,
+        *,
+        remote: bool = False,
+        conversation_context: tuple[dict[str, str], ...] = (),
+    ) -> ActionOutcome | None:
         raise AssertionError("El motor de acciones no debe recibir comandos de memoria")
 
     def reset(self, _session_id: str) -> None:
@@ -278,6 +290,32 @@ async def test_conversation_memory_survives_service_restart_and_is_injected_rele
     assert "Le gusta tocar el ukelele" in system_prompt
     assert "CONVERSACION_RECIENTE" in system_prompt
     assert "Me gusta tocar el ukelele" in system_prompt
+
+
+def test_recent_context_excludes_unrelated_people(tmp_path: Path) -> None:
+    service = MemoryService(memory_settings(tmp_path))
+    service.store.add_turn(
+        "old-samy",
+        "¿Quién es Sami?",
+        "Sami no aparece en el perfil confirmado.",
+    )
+    service.store.add_turn(
+        "old-music",
+        "Me gusta tocar el ukelele",
+        "Sami también toca un instrumento muy versátil.",
+    )
+    service.store.add_turn(
+        "old-washo",
+        "¿Quién es Washo?",
+        "Washo es Sami y esta respuesta antigua está equivocada.",
+    )
+
+    person_context = service.recent_context("new", "¿Quién es Washo?")
+    music_context = service.recent_context("new", "Hablemos del ukelele")
+
+    assert person_context == ""
+    assert "Sami" not in music_context
+    assert "ukelele" in music_context
 
 
 @pytest.mark.asyncio

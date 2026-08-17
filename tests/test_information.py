@@ -146,3 +146,28 @@ async def test_nonfactual_conversation_does_not_make_network_request() -> None:
 
     assert result is None
     assert called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Hola Jarvis, preséntate brevemente y confirma que la prueba funciona",
+        "Estoy contento de que el proyecto esté avanzando",
+        "Cuéntame de ti",
+    ),
+)
+async def test_embedded_que_and_personal_presentation_do_not_trigger_public_lookup(
+    message: str,
+) -> None:
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(500)
+
+    verifier = InformationVerifier(Settings(), transport=httpx.MockTransport(handler))
+
+    assert await verifier.verify(message) is None
+    assert called is False

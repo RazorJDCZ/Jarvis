@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import ctypes
 from datetime import datetime
 from typing import Protocol
@@ -8,6 +7,7 @@ from typing import Protocol
 import httpx
 
 from jarvis.config import Settings
+from jarvis.providers.ollama_runtime import OLLAMA_RUNTIME_LOCK
 from jarvis.schemas import ProviderStatus
 
 
@@ -22,13 +22,15 @@ class Brain(Protocol):
 
     async def chat(self, messages: list[dict[str, str]]) -> str: ...
 
+    async def chat_deep(self, messages: list[dict[str, str]]) -> str: ...
+
 
 class OllamaBrain:
     name = "ollama"
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._model_lock = asyncio.Lock()
+        self._model_lock = OLLAMA_RUNTIME_LOCK
         self._warmed = False
 
     @staticmethod
@@ -98,6 +100,17 @@ class OllamaBrain:
             )
 
     async def chat(self, messages: list[dict[str, str]]) -> str:
+        return await self._chat(messages, deep_analysis=False)
+
+    async def chat_deep(self, messages: list[dict[str, str]]) -> str:
+        return await self._chat(messages, deep_analysis=True)
+
+    async def _chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        deep_analysis: bool,
+    ) -> str:
         async with self._model_lock:
             if self.settings.ollama_warmup_enabled and not self._warmed:
                 await self._warmup_unlocked()
@@ -105,13 +118,20 @@ class OllamaBrain:
                 "model": self.settings.ollama_model,
                 "messages": messages,
                 "stream": False,
+                # Qwen's hidden thinking can consume the entire local token budget and
+                # leave the spoken answer truncated. Deep mode instead uses a lower-
+                # variance, larger final-answer budget guided by the analytical prompt.
                 "think": False,
                 "keep_alive": self.settings.ollama_keep_alive,
                 "options": {
-                    "temperature": 0.45,
+                    "temperature": 0.35 if deep_analysis else 0.45,
                     "top_p": 0.9,
-                    "repeat_penalty": 1.08,
+                    "repeat_penalty": 1.1 if deep_analysis else 1.08,
                     "num_ctx": 8192,
+                    # The spoken formats are bounded well below these limits. Explicit caps stop
+                    # a compact model from rambling and reduce worst-case latency without keeping
+                    # the model resident between requests.
+                    "num_predict": 1_024 if deep_analysis else 512,
                 },
             }
             async with httpx.AsyncClient(timeout=self.settings.ollama_timeout) as client:
@@ -137,10 +157,7 @@ class OllamaBrain:
         if not self.settings.ollama_warmup_enabled:
             return True
         available = self._available_memory_gb()
-        if (
-            available is not None
-            and available < self.settings.ollama_warmup_min_free_gb
-        ):
+        if available is not None and available < self.settings.ollama_warmup_min_free_gb:
             return False
         async with self._model_lock:
             if self._warmed:
@@ -174,8 +191,7 @@ class OllamaBrain:
                     running.raise_for_status()
                     models = running.json().get("models", [])
                     loaded = any(
-                        isinstance(model, dict)
-                        and model.get("name") == self.settings.ollama_model
+                        isinstance(model, dict) and model.get("name") == self.settings.ollama_model
                         for model in models
                     )
                     if not loaded:
@@ -214,7 +230,7 @@ class FallbackBrain:
         text = messages[-1]["content"].strip()
         normalized = text.casefold()
         if any(word in normalized for word in ("hola", "buenas", "buenos dias")):
-            return "Hola, Juandi. Aquí estoy, tranquilo y listo."
+            return "Hola, Juan Diego. Aquí estoy, tranquilo y listo."
         if "quien eres" in normalized or "quién eres" in normalized:
             return (
                 "Soy Jarvis, tu asistente local. De momento puedo escucharte y conversar contigo."
@@ -230,6 +246,9 @@ class FallbackBrain:
             f"Te escuché decir: {text}. El núcleo conversacional local no está disponible ahora, "
             "pero sigo listo para tus acciones y comandos seguros."
         )
+
+    async def chat_deep(self, messages: list[dict[str, str]]) -> str:
+        return await self.chat(messages)
 
 
 class AutoBrain:
@@ -258,6 +277,15 @@ class AutoBrain:
             pass
         self.active_name = self.fallback.name
         return await self.fallback.chat(messages)
+
+    async def chat_deep(self, messages: list[dict[str, str]]) -> str:
+        try:
+            self.active_name = self.ollama.name
+            return await self.ollama.chat_deep(messages)
+        except (httpx.HTTPError, RuntimeError):
+            pass
+        self.active_name = self.fallback.name
+        return await self.fallback.chat_deep(messages)
 
     async def warmup(self) -> bool:
         try:

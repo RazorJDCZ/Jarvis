@@ -125,7 +125,7 @@ async def verify() -> dict[str, object]:
                 )
 
                 await page.locator("#textInput").fill("abre la calculadora")
-                await page.locator("#textForm button").click()
+                await page.locator('#textForm button[type="submit"]').click()
                 await page.locator("#actionConfirmation").wait_for(state="visible")
                 elevated = "Autorizar desde el celular" in await page.locator(
                     "#actionDescription"

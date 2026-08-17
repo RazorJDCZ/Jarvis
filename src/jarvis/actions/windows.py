@@ -53,25 +53,187 @@ class DialogInfo:
 
 
 class WindowController:
+    @staticmethod
+    def _canonical_window_handle(handle: int) -> int:
+        # USER/GDI handles keep only 32 significant bits even in 64-bit Windows.
+        # Some callbacks sign-extend bit 31 and ctypes exposes a huge unsigned
+        # integer, which pywinauto cannot resolve. Keep one stable representation.
+        return int(handle) & 0xFFFFFFFF
+
     def _desktop(self):
         from pywinauto import Desktop
 
         return Desktop(backend="uia")
 
-    def _visible_windows(self) -> list[Any]:
-        windows: list[Any] = []
-        for window in self._desktop().windows():
-            try:
-                title = window.window_text().strip()
-                ignored = {"D3DProxyWindow", "Program Manager"}
-                if title and window.is_visible() and title not in ignored:
-                    windows.append(window)
-            except Exception:
-                continue
+    @staticmethod
+    def _window_api():
+        user32 = ctypes.windll.user32
+        handle = ctypes.c_void_p
+        user32.GetWindowTextLengthW.argtypes = [handle]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [handle, ctypes.POINTER(ctypes.c_wchar), ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetForegroundWindow.argtypes = []
+        user32.GetForegroundWindow.restype = handle
+        user32.IsIconic.argtypes = [handle]
+        user32.IsIconic.restype = ctypes.c_bool
+        user32.ShowWindow.argtypes = [handle, ctypes.c_int]
+        user32.ShowWindow.restype = ctypes.c_bool
+        user32.SetForegroundWindow.argtypes = [handle]
+        user32.SetForegroundWindow.restype = ctypes.c_bool
+        user32.PostMessageW.argtypes = [handle, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+        user32.PostMessageW.restype = ctypes.c_bool
+        return user32
+
+    @staticmethod
+    def _native_window_title(handle: int) -> str:
+        user32 = WindowController._window_api()
+        length = int(user32.GetWindowTextLengthW(handle))
+        if length <= 0:
+            return ""
+        buffer = ctypes.create_unicode_buffer(min(length + 1, 2_048))
+        user32.GetWindowTextW(handle, buffer, len(buffer))
+        return buffer.value.strip()
+
+    @classmethod
+    def _native_visible_windows(cls) -> list[tuple[int, str]]:
+        """Enumerate titles through Win32 so one frozen app cannot block all actions."""
+        user32 = ctypes.windll.user32
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        user32.EnumWindows.argtypes = [callback_type, ctypes.c_void_p]
+        user32.EnumWindows.restype = ctypes.c_bool
+        user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        user32.IsWindowVisible.restype = ctypes.c_bool
+        ignored = {"D3DProxyWindow", "Program Manager"}
+        windows: list[tuple[int, str]] = []
+
+        def inspect(handle: int, _parameter: int) -> bool:
+            if not user32.IsWindowVisible(handle):
+                return True
+            canonical_handle = cls._canonical_window_handle(handle)
+            title = cls._native_window_title(canonical_handle)
+            if title and title not in ignored:
+                windows.append((canonical_handle, title))
+            return True
+
+        callback = callback_type(inspect)
+        user32.EnumWindows(callback, 0)
         return windows
 
+    def visible_window_snapshot(self) -> dict[int, str]:
+        """Return stable Win32 identities for currently visible top-level windows.
+
+        Handles let diagnostics and automation close only the exact window they
+        created.  Title-only matching is intentionally not used for cleanup because
+        two documents or browser windows can legitimately have the same title.
+        """
+        return dict(self._native_visible_windows())
+
+    def _invoke_accessible_titlebar_close(self, handle: int, expected_title: str) -> bool:
+        if self.visible_window_snapshot().get(handle) != expected_title:
+            return False
+        try:
+            window = self._desktop().window(handle=handle)
+            window_top = int(window.rectangle().top)
+            matches = []
+            for control in window.descendants():
+                if self._control_type(control) != "Button":
+                    continue
+                name = _normalize(control.window_text().strip())
+                automation_id = str(getattr(control.element_info, "automation_id", ""))
+                rectangle = control.rectangle()
+                if (
+                    name in {"cerrar", "close"}
+                    and not automation_id
+                    and int(rectangle.top) <= window_top + 90
+                ):
+                    matches.append(control)
+            if len(matches) != 1:
+                return False
+            matches[0].invoke()
+            return True
+        except Exception:
+            return False
+
+    def _close_special_system_window(self, handle: int, expected_title: str) -> bool:
+        if self.visible_window_snapshot().get(handle) != expected_title:
+            return False
+        if _normalize(expected_title) not in {"lupa", "magnifier"}:
+            return False
+        # Magnifier is a UIAccess process and intentionally rejects ordinary window
+        # messages. Win+Esc is Windows' documented, non-destructive exit gesture.
+        user32 = self._window_api()
+        for virtual_key in (0x5B, 0x1B):  # Left Windows, Escape
+            user32.keybd_event(virtual_key, 0, 0, 0)
+        for virtual_key in (0x1B, 0x5B):
+            user32.keybd_event(virtual_key, 0, 0x0002, 0)
+        return True
+
+    def close_handle(self, handle: int, expected_title: str) -> ExecutionResult:
+        """Request closure of one revalidated top-level window.
+
+        A Win32 handle may eventually be reused, so callers must also provide the
+        title observed in their fresh snapshot.  If either identity changed, Jarvis
+        refuses the close instead of risking another application.
+        """
+        if isinstance(handle, bool) or not isinstance(handle, int) or handle <= 0:
+            return ExecutionResult(False, "El identificador de ventana no es válido.")
+        expected = expected_title.strip()
+        if not expected or len(expected) > 2_048:
+            return ExecutionResult(False, "El título esperado de la ventana no es válido.")
+        current_title = self.visible_window_snapshot().get(handle)
+        if current_title is None:
+            return ExecutionResult(False, "La ventana ya no está disponible.")
+        if current_title != expected:
+            return ExecutionResult(
+                False,
+                "La identidad de la ventana cambió; cancelé el cierre por seguridad.",
+                {"identity_changed": True},
+            )
+        posted = bool(self._window_api().PostMessageW(handle, 0x0010, 0, 0))
+        deadline = time.monotonic() + (1.5 if posted else 0.1)
+        while time.monotonic() < deadline:
+            if handle not in self.visible_window_snapshot():
+                return ExecutionResult(
+                    True,
+                    f"Cerré {current_title} y verifiqué que la ventana desapareció.",
+                    {"verified": True, "handle": handle},
+                )
+            time.sleep(0.1)
+        used_special_close = self._close_special_system_window(handle, current_title)
+        used_accessible_close = (
+            False
+            if used_special_close
+            else self._invoke_accessible_titlebar_close(handle, current_title)
+        )
+        if used_special_close or used_accessible_close:
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                if handle not in self.visible_window_snapshot():
+                    return ExecutionResult(
+                        True,
+                        f"Cerré {current_title} mediante su salida segura y lo verifiqué.",
+                        {
+                            "verified": True,
+                            "handle": handle,
+                            "accessible_fallback": used_accessible_close,
+                            "special_system_exit": used_special_close,
+                        },
+                    )
+                time.sleep(0.1)
+        if not posted and not used_special_close and not used_accessible_close:
+            return ExecutionResult(
+                False,
+                f"Windows no aceptó la solicitud de cierre para {current_title}.",
+            )
+        return ExecutionResult(
+            True,
+            f"Solicité cerrar {current_title}, pero la ventana sigue abierta.",
+            {"verified": False, "handle": handle},
+        )
+
     def _foreground(self):
-        handle = ctypes.windll.user32.GetForegroundWindow()
+        handle = self._window_api().GetForegroundWindow()
         if not handle:
             return None
         try:
@@ -153,7 +315,7 @@ class WindowController:
 
     @staticmethod
     def _native_dialog_handles() -> tuple[tuple[int, int], ...]:
-        user32 = ctypes.windll.user32
+        user32 = WindowController._window_api()
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
         user32.GetClassNameW.argtypes = [
             ctypes.c_void_p,
@@ -178,8 +340,14 @@ class WindowController:
             if user32.IsWindowVisible(handle) and (
                 class_name == "#32770" or "contentdialog" in class_name.casefold()
             ):
-                parent = int(user32.GetAncestor(handle, 2)) or int(handle)
-                found.add((parent, int(handle)))
+                canonical_handle = WindowController._canonical_window_handle(handle)
+                ancestor = user32.GetAncestor(handle, 2)
+                parent = (
+                    WindowController._canonical_window_handle(ancestor)
+                    if ancestor
+                    else canonical_handle
+                )
+                found.add((parent, canonical_handle))
             return True
 
         callback = callback_type(inspect)
@@ -269,12 +437,9 @@ class WindowController:
         if not title and not aliases:
             return self._foreground()
         needles = [_normalize(value) for value in (title, *aliases) if value]
-        candidates: list[tuple[int, Any]] = []
-        for window in self._visible_windows():
-            try:
-                normalized_title = _normalize(window.window_text())
-            except Exception:
-                continue
+        candidates: list[tuple[int, int]] = []
+        for handle, native_title in self._native_visible_windows():
+            normalized_title = _normalize(native_title)
             score = max(
                 (
                     3
@@ -288,13 +453,18 @@ class WindowController:
                 default=0,
             )
             if score:
-                candidates.append((score, window))
-        return max(candidates, key=lambda item: item[0])[1] if candidates else None
+                candidates.append((score, handle))
+        if not candidates:
+            return None
+        handle = max(candidates, key=lambda item: item[0])[1]
+        try:
+            return self._desktop().window(handle=handle)
+        except Exception:
+            return None
 
     def list_windows(self) -> ExecutionResult:
         titles: list[str] = []
-        for window in self._visible_windows():
-            title = window.window_text().strip()
+        for _handle, title in self._native_visible_windows():
             if title not in titles:
                 titles.append(title)
             if len(titles) >= 15:
@@ -309,57 +479,55 @@ class WindowController:
         )
 
     def current(self) -> ExecutionResult:
-        window = self._foreground()
-        if window is None:
+        raw_handle = self._window_api().GetForegroundWindow()
+        if not raw_handle:
             return ExecutionResult(False, "No pude identificar la ventana activa.")
-        try:
-            title = window.window_text().strip()
-            return ExecutionResult(
-                True,
-                f"La ventana activa es {title}.",
-                {"title": title, "handle": int(window.handle)},
-            )
-        except Exception as exc:
-            return ExecutionResult(False, f"No pude leer la ventana activa: {exc}")
+        handle = self._canonical_window_handle(raw_handle)
+        title = self._native_window_title(handle)
+        if not title:
+            return ExecutionResult(False, "No pude leer el título de la ventana activa.")
+        return ExecutionResult(
+            True,
+            f"La ventana activa es {title}.",
+            {"title": title, "handle": handle},
+        )
 
     def focus(self, title: str = "", aliases: tuple[str, ...] = ()) -> ExecutionResult:
         window = self.find(title, aliases)
         if window is None:
             label = title or (aliases[0] if aliases else "solicitada")
             return ExecutionResult(False, f"No encontré la ventana {label}.")
-        try:
-            if window.is_minimized():
-                window.restore()
-            window.set_focus()
-            return ExecutionResult(True, f"Ventana enfocada: {window.window_text()}.")
-        except Exception as exc:
-            return ExecutionResult(False, f"No pude enfocar la ventana: {exc}")
+        handle = int(window.handle)
+        name = self._native_window_title(handle) or title or aliases[0]
+        user32 = self._window_api()
+        if user32.IsIconic(handle):
+            user32.ShowWindow(handle, 9)
+        focused = bool(user32.SetForegroundWindow(handle))
+        return ExecutionResult(
+            focused,
+            f"Ventana enfocada: {name}." if focused else f"Windows no permitió enfocar {name}.",
+        )
 
     def change_state(self, operation: str, title: str = "") -> ExecutionResult:
         window = self.find(title)
         if window is None:
             return ExecutionResult(False, "No encontré la ventana solicitada.")
-        try:
-            getattr(window, operation)()
-            return ExecutionResult(True, f"Ventana {operation}: {window.window_text()}.")
-        except Exception as exc:
-            return ExecutionResult(False, f"No pude modificar la ventana: {exc}")
+        commands = {"minimize": 2, "maximize": 3, "restore": 9}
+        command = commands.get(operation)
+        if command is None:
+            return ExecutionResult(False, "La operación de ventana no está permitida.")
+        handle = int(window.handle)
+        name = self._native_window_title(handle) or title or "solicitada"
+        self._window_api().ShowWindow(handle, command)
+        return ExecutionResult(True, f"Ventana {operation}: {name}.")
 
     def close(self, title: str = "") -> ExecutionResult:
         window = self.find(title)
         if window is None:
             return ExecutionResult(False, "No encontré la ventana que debía cerrar.")
-        name = window.window_text()
-        try:
-            window.close()
-            time.sleep(0.35)
-            return ExecutionResult(
-                True,
-                f"Envié la solicitud de cierre a {name}. Si había cambios pendientes, "
-                "la aplicación puede pedir confirmación.",
-            )
-        except Exception as exc:
-            return ExecutionResult(False, f"No pude cerrar {name}: {exc}")
+        handle = int(window.handle)
+        name = self._native_window_title(handle) or title or "la ventana"
+        return self.close_handle(handle, name)
 
     def inspect_controls(self) -> ExecutionResult:
         window = self._foreground()
@@ -542,6 +710,37 @@ class AppController:
         "windows tools",
     )
     _BLOCKED_APP_NAMES = frozenset({"ejecutar", "run"})
+    # Entries whose *launch itself* can update, install, repair, reconfigure boot,
+    # schedule a restart, or expose broad administrative tooling.  Jarvis can still
+    # open normal settings through the fixed, audited ``settings`` application.
+    _SIDE_EFFECT_APP_TERMS = (
+        "actualizacion de",
+        "actualizacion software",
+        "ajustes epson scan",
+        "app recovery",
+        "application verifier",
+        "asistencia rapida",
+        "check for updates",
+        "comprobacion de estado de la pc",
+        "configuracion del sistema",
+        "desfragmentar y optimizar unidades",
+        "diagnostico de memoria",
+        "global flags",
+        "grabacion de acciones de usuario",
+        "herramientas administrativas",
+        "iniciador iscsi",
+        "kmspico",
+        "memory diagnostic",
+        "monitor de recursos",
+        "msi afterburner",
+        "recovery drive",
+        "samsung magician",
+        "unidad de recuperacion",
+        "update",
+        "updater",
+        "visual studio installer",
+        "windows software development kit",
+    )
     _NON_APP_SUFFIXES = frozenset(
         {
             ".bat",
@@ -591,6 +790,8 @@ class AppController:
 
     def __init__(self, windows: WindowController) -> None:
         self.windows = windows
+        self._inventory_cache: tuple[InstalledApp, ...] | None = None
+        self._inventory_cached_at = 0.0
         self._start_menu_roots = tuple(
             path
             for path in (
@@ -611,6 +812,7 @@ class AppController:
             not normalized_name
             or normalized_name in cls._BLOCKED_APP_NAMES
             or any(term in normalized_name for term in cls._BLOCKED_APP_TERMS)
+            or any(term in normalized_name for term in cls._SIDE_EFFECT_APP_TERMS)
         ):
             return False
         target = app.target_path.strip()
@@ -626,6 +828,8 @@ class AppController:
         normalized_target_name = _normalize(path.name)
         if normalized_target_name.startswith(("unins", "uninstall")):
             return False
+        if normalized_target_name.endswith(("installer.exe", "setup.exe")):
+            return False
         if path.suffix.casefold() in cls._NON_APP_SUFFIXES:
             return False
         if path.name.casefold() in cls._BLOCKED_TARGETS:
@@ -639,6 +843,8 @@ class AppController:
         return Dispatch("Shell.Application").Namespace("shell:AppsFolder")
 
     def installed_apps(self) -> tuple[InstalledApp, ...]:
+        if self._inventory_cache is not None and time.monotonic() - self._inventory_cached_at < 60:
+            return self._inventory_cache
         try:
             folder = self._apps_folder()
             items = folder.Items()
@@ -663,7 +869,10 @@ class AppController:
                 continue
             seen.add(identity)
             apps.append(app)
-        return tuple(sorted(apps, key=lambda app: _normalize(app.name)))
+        inventory = tuple(sorted(apps, key=lambda app: _normalize(app.name)))
+        self._inventory_cache = inventory
+        self._inventory_cached_at = time.monotonic()
+        return inventory
 
     def find_installed_apps(self, requested_name: str) -> tuple[InstalledApp, ...]:
         needle = _normalize(requested_name).strip()
@@ -790,19 +999,37 @@ class AppController:
                 False,
                 "La aplicación cambió o ya no está publicada en el menú Inicio.",
             )
+        before = self.windows.visible_window_snapshot()
+        # Invoking the COM verb directly can block indefinitely while Windows waits
+        # on a damaged shortcut or an elevation prompt. Explorer accepts the exact,
+        # revalidated AppsFolder identity as a literal argument and returns control
+        # immediately, keeping the assistant responsive.
         try:
-            selected.InvokeVerb()
-        except Exception as exc:
+            launcher = subprocess.Popen(  # nosec B603
+                ["explorer.exe", f"shell:AppsFolder\\{app_id}"],
+                close_fds=True,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+        except OSError as exc:
             return ExecutionResult(False, f"Windows no pudo abrir {display_name}: {exc}")
         time.sleep(0.65)
         focused = self.windows.focus(title=display_name)
+        after = self.windows.visible_window_snapshot()
+        created = [
+            {"handle": handle, "title": title}
+            for handle, title in after.items()
+            if handle not in before
+        ]
+        verified = focused.success or bool(created)
         return ExecutionResult(
             True,
             f"Abrí la aplicación instalada {display_name}.",
             {
-                "verified": focused.success,
+                "verified": verified,
                 "application": display_name,
                 "source": "windows-apps-folder",
+                "launcher_pid": launcher.pid,
+                "new_windows": created,
             },
         )
 
@@ -848,19 +1075,58 @@ class AppController:
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
         except OSError as exc:
-            return ExecutionResult(False, f"Windows no pudo abrir {spec.display_name}: {exc}")
+            if getattr(exc, "winerror", None) != 740:
+                return ExecutionResult(False, f"Windows no pudo abrir {spec.display_name}: {exc}")
+            # Some fixed Windows utilities declare an auto-elevation manifest and
+            # reject CreateProcess with ERROR_ELEVATION_REQUIRED. ShellExecute is
+            # safe here because executable and arguments come only from APPS.
+            try:
+                os.startfile(spec.command[0], arguments=" ".join(spec.command[1:]))  # type: ignore[attr-defined]  # nosec B606
+            except OSError as shell_exc:
+                return ExecutionResult(
+                    False,
+                    f"Windows no pudo abrir {spec.display_name}: {shell_exc}",
+                )
+            process = None
         time.sleep(0.2)
-        if process.poll() not in {None, 0}:
-            return ExecutionResult(False, f"{spec.display_name} terminó con un error al iniciar.")
         window = self._wait_for_window(spec.window_aliases)
         verified = window is not None
+        if not verified and process is not None and process.poll() not in {None, 0}:
+            return ExecutionResult(False, f"{spec.display_name} terminó con un error al iniciar.")
         if verified:
             self.windows.focus(aliases=spec.window_aliases)
         verification = " y verifiqué su ventana" if verified else ""
         return ExecutionResult(
             True,
             f"Abrí {spec.display_name}{verification}.",
-            {"verified": verified, "pid": process.pid},
+            {"verified": verified, **({"pid": process.pid} if process is not None else {})},
+        )
+
+    def open_game_protocol(self, target: str, display_name: str) -> ExecutionResult:
+        """Open only a launch target produced by the trusted game-manifest reader."""
+
+        steam = re.fullmatch(r"steam://rungameid/\d{1,12}", target, flags=re.IGNORECASE)
+        epic = re.fullmatch(
+            r"com\.epicgames\.launcher://apps/[A-Za-z0-9._%~-]{1,600}"
+            r"\?action=launch&silent=true",
+            target,
+            flags=re.IGNORECASE,
+        )
+        if steam is None and epic is None:
+            return ExecutionResult(
+                False, "El destino del juego no pertenece a un launcher permitido."
+            )
+        safe_name = display_name.strip()[:300]
+        if not safe_name or any(character in safe_name for character in "\r\n\x00"):
+            return ExecutionResult(False, "El nombre del juego no es v\u00e1lido.")
+        try:
+            os.startfile(target)  # type: ignore[attr-defined]  # nosec B606
+        except OSError as exc:
+            return ExecutionResult(False, f"Windows no pudo abrir {safe_name}: {exc}")
+        return ExecutionResult(
+            True,
+            f"Envi\u00e9 {safe_name} a su launcher.",
+            {"verified": False, "application": safe_name, "source": "game-manifest"},
         )
 
 

@@ -285,6 +285,136 @@ def test_static_app_focuses_existing_window(monkeypatch: pytest.MonkeyPatch) -> 
     assert result.details == {"verified": True, "already_open": True}
 
 
+def test_window_lookup_scores_native_titles_without_querying_every_uia_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = WindowController()
+    monkeypatch.setattr(
+        controller,
+        "_native_visible_windows",
+        lambda: [(10, "Calculadora"), (20, "Calculadora - ayuda"), (30, "Otro")],
+    )
+    desktop = type("Desktop", (), {"window": lambda _self, handle: f"window-{handle}"})()
+    monkeypatch.setattr(controller, "_desktop", lambda: desktop)
+
+    found = controller.find(aliases=("Calculadora", "Calculator"))
+    listed = controller.list_windows()
+
+    assert found == "window-10"
+    assert listed.details["windows"] == ["Calculadora", "Calculadora - ayuda", "Otro"]
+
+
+def test_win32_handles_are_canonicalized_when_callbacks_sign_extend_them() -> None:
+    assert WindowController._canonical_window_handle(0xFFFFFFFFAE1F187C) == 0xAE1F187C
+
+
+def test_close_handle_revalidates_exact_window_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = WindowController()
+    monkeypatch.setattr(
+        controller,
+        "visible_window_snapshot",
+        lambda: {41: "Documento privado"},
+    )
+
+    result = controller.close_handle(41, "Otro documento")
+
+    assert result.success is False
+    assert result.details["identity_changed"] is True
+
+
+def test_close_handle_only_posts_to_revalidated_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = WindowController()
+    snapshots = iter(({41: "Prueba"}, {}))
+    monkeypatch.setattr(controller, "visible_window_snapshot", lambda: next(snapshots))
+    posted: list[tuple[int, int, int, int]] = []
+    api = type(
+        "Api",
+        (),
+        {"PostMessageW": lambda _self, *args: posted.append(args) or True},
+    )()
+    monkeypatch.setattr(controller, "_window_api", lambda: api)
+
+    result = controller.close_handle(41, "Prueba")
+
+    assert result.success is True
+    assert result.details["verified"] is True
+    assert posted == [(41, 0x0010, 0, 0)]
+
+
+def test_close_handle_uses_exact_accessible_fallback_when_post_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = WindowController()
+    fallback: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        controller,
+        "visible_window_snapshot",
+        lambda: {} if fallback else {52: "FAX Utility"},
+    )
+    api = type("Api", (), {"PostMessageW": lambda *_args: False})()
+    monkeypatch.setattr(controller, "_window_api", lambda: api)
+    monkeypatch.setattr(
+        controller,
+        "_invoke_accessible_titlebar_close",
+        lambda handle, title: fallback.append((handle, title)) or True,
+    )
+
+    result = controller.close_handle(52, "FAX Utility")
+
+    assert result.success is True
+    assert result.details["accessible_fallback"] is True
+    assert fallback == [(52, "FAX Utility")]
+
+
+def test_close_handle_uses_safe_system_exit_for_magnifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = WindowController()
+    special: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        controller,
+        "visible_window_snapshot",
+        lambda: {} if special else {63: "Lupa"},
+    )
+    api = type("Api", (), {"PostMessageW": lambda *_args: False})()
+    monkeypatch.setattr(controller, "_window_api", lambda: api)
+    monkeypatch.setattr(
+        controller,
+        "_close_special_system_window",
+        lambda handle, title: special.append((handle, title)) or True,
+    )
+
+    result = controller.close_handle(63, "Lupa")
+
+    assert result.success is True
+    assert result.details["special_system_exit"] is True
+    assert special == [(63, "Lupa")]
+
+
+def test_installed_application_inventory_is_cached_for_repeated_language_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = FakeAppItem("Discord", "Discord.App", r"C:\Apps\Discord\Update.exe")
+    folder = FakeAppsFolder([item])
+    calls = {"count": 0}
+
+    def apps_folder() -> FakeAppsFolder:
+        calls["count"] += 1
+        return folder
+
+    controller = AppController(WindowController())
+    monkeypatch.setattr(controller, "_apps_folder", apps_folder)
+
+    assert controller.find_installed_apps("discord")
+    assert controller.find_installed_apps("disc")
+    assert controller.installed_apps()
+    assert calls["count"] == 1
+
+
 def test_static_app_uses_fixed_command_without_shell(monkeypatch: pytest.MonkeyPatch) -> None:
     windows = WindowController()
     monkeypatch.setattr(windows, "find", lambda **_kwargs: None)
@@ -312,6 +442,38 @@ def test_static_app_uses_fixed_command_without_shell(monkeypatch: pytest.MonkeyP
     assert "shell" not in calls[0][1]
 
 
+def test_static_app_uses_audited_shell_execute_when_elevation_is_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    windows = WindowController()
+    monkeypatch.setattr(windows, "find", lambda **_kwargs: None)
+
+    def elevation_required(*_args: object, **_kwargs: object) -> None:
+        error = OSError(740, "requires elevation")
+        error.winerror = 740  # type: ignore[attr-defined]
+        raise error
+
+    monkeypatch.setattr("jarvis.actions.windows.subprocess.Popen", elevation_required)
+    launched: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "jarvis.actions.windows.os.startfile",
+        lambda executable, *, arguments: launched.append((executable, arguments)),
+    )
+    monkeypatch.setattr("jarvis.actions.windows.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(AppController, "_wait_for_window", lambda *_args: object())
+    monkeypatch.setattr(
+        windows,
+        "focus",
+        lambda **_kwargs: ExecutionResult(True, "focused"),
+    )
+
+    result = AppController(windows).open("task_manager")
+
+    assert result.success is True
+    assert result.details["verified"] is True
+    assert launched == [("taskmgr.exe", "")]
+
+
 def test_windows_apps_inventory_includes_apps_and_filters_execution_surfaces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -323,6 +485,15 @@ def test_windows_apps_inventory_includes_apps_and_filters_execution_surfaces(
         FakeAppItem("Python 3.13", "Python", r"C:\Python313\python.exe"),
         FakeAppItem("Manual", "Manual", r"C:\Apps\manual.html"),
         FakeAppItem("Uninstall Example", "Uninstall", r"C:\Apps\uninstall.exe"),
+        FakeAppItem("Actualización de la app", "Updater", r"C:\Apps\updater.exe"),
+        FakeAppItem("Configuración del sistema", "MSConfig", r"C:\Windows\msconfig.exe"),
+        FakeAppItem("Ajustes EPSON Scan", "Epson.Settings", r"C:\Apps\escfg.exe"),
+        FakeAppItem("Asistencia rápida", "QuickAssist", r"C:\Windows\quickassist.exe"),
+        FakeAppItem("Comprobación de estado de la PC", "Health", r"C:\Apps\health.exe"),
+        FakeAppItem("Grabación de acciones de usuario", "PSR", r"C:\Windows\psr.exe"),
+        FakeAppItem("MSI Afterburner", "Afterburner", r"C:\Apps\MSIAfterburner.exe"),
+        FakeAppItem("Monitor de recursos", "Resmon", r"C:\Windows\resmon.exe"),
+        FakeAppItem("Roblox Studio", "Roblox", r"C:\Apps\RobloxStudioInstaller.exe"),
         FakeAppItem("Ejecutar", "Windows.Run"),
     ]
     controller = AppController(WindowController())
@@ -335,7 +506,7 @@ def test_windows_apps_inventory_includes_apps_and_filters_execution_surfaces(
     assert controller.find_installed_apps("python") == ()
 
 
-def test_installed_app_is_revalidated_and_invoked_through_windows_catalog(
+def test_installed_app_is_revalidated_and_launched_through_windows_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     item = FakeAppItem("Discord", "Discord.App", r"C:\Apps\Discord\Update.exe")
@@ -348,6 +519,15 @@ def test_installed_app_is_revalidated_and_invoked_through_windows_catalog(
     controller = AppController(windows)
     monkeypatch.setattr(controller, "_apps_folder", lambda: FakeAppsFolder([item]))
     monkeypatch.setattr("jarvis.actions.windows.time.sleep", lambda _seconds: None)
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 54
+
+    monkeypatch.setattr(
+        "jarvis.actions.windows.subprocess.Popen",
+        lambda command, **_kwargs: calls.append(command) or FakeProcess(),
+    )
 
     result = controller.open(
         "discord",
@@ -358,7 +538,9 @@ def test_installed_app_is_revalidated_and_invoked_through_windows_catalog(
 
     assert result.success is True
     assert result.details["source"] == "windows-apps-folder"
-    assert item.invoked is True
+    assert result.details["launcher_pid"] == 54
+    assert calls == [["explorer.exe", r"shell:AppsFolder\Discord.App"]]
+    assert item.invoked is False
 
 
 def test_installed_app_launch_rejects_changed_catalog_entry(

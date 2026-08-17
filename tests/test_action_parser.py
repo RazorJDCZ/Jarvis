@@ -114,6 +114,8 @@ from jarvis.actions.parser import DeterministicActionParser, normalize_request
         ("captura la pantalla", ActionName.SCREENSHOT_TAKE, {}),
         ("muestra el escritorio", ActionName.DESKTOP_SHOW, {}),
         ("estado del sistema", ActionName.SYSTEM_STATUS, {}),
+        ("cuánto espacio libre tengo en el disco", ActionName.SYSTEM_STATUS, {}),
+        ("cuánta memoria disponible tengo", ActionName.SYSTEM_STATUS, {}),
         ("qué aplicaciones puedes abrir", ActionName.APP_LIST, {}),
         ("lee el portapapeles", ActionName.CLIPBOARD_READ, {}),
         (
@@ -183,6 +185,10 @@ def test_meta_negated_and_conversational_phrases_are_not_actions(phrase: str) ->
 
 def test_normalization_is_wake_accent_and_whitespace_insensitive() -> None:
     assert normalize_request(" ¿OYE   JÁRVIS,  SÚBELE el volumen!? ") == "subele el volumen"
+
+
+def test_normalization_strips_typed_punctuation_after_wake_word() -> None:
+    assert normalize_request("Jarvis, ¿qué ves en mi monitor?") == "que ves en mi monitor"
 
 
 @pytest.mark.parametrize(
@@ -403,6 +409,51 @@ def test_monitor_aware_visual_commands(
     assert parsed.arguments == arguments
 
 
+@pytest.mark.parametrize(
+    ("phrase", "name", "arguments"),
+    [
+        (
+            "Jarvis, ¿qué es lo que ves en mi monitor número uno?",
+            ActionName.SCREEN_DESCRIBE,
+            {"monitor": "1"},
+        ),
+        (
+            "¿Puedes echarle un vistazo a mi primera pantalla y contarme qué aparece?",
+            ActionName.SCREEN_DESCRIBE,
+            {"monitor": "1"},
+        ),
+        (
+            "Dime qué tengo abierto en el display de la derecha",
+            ActionName.SCREEN_DESCRIBE,
+            {"monitor": "right"},
+        ),
+        (
+            "¿Qué dice el mensaje en mi monitor número dos?",
+            ActionName.SCREEN_ASK,
+            {"question": "que dice el mensaje", "monitor": "2"},
+        ),
+        (
+            "Observa cada uno de mis monitores",
+            ActionName.SCREEN_DESCRIBE,
+            {"monitor": "all"},
+        ),
+    ],
+)
+def test_visual_intent_accepts_natural_monitor_language(
+    phrase: str,
+    name: ActionName,
+    arguments: dict[str, object],
+) -> None:
+    parser = DeterministicActionParser()
+
+    parsed = parser.parse(phrase)
+
+    assert parsed is not None
+    assert parsed.name is name
+    assert parsed.arguments == arguments
+    assert parser.looks_visual(phrase) is True
+
+
 def test_generic_visual_command_leaves_monitor_available_for_session_context() -> None:
     parsed = DeterministicActionParser().parse("qué ves en la pantalla")
 
@@ -417,3 +468,108 @@ def test_visual_pronoun_uses_guarded_recent_target_reference() -> None:
     assert parsed is not None
     assert parsed.name is ActionName.SCREEN_CLICK
     assert parsed.arguments["target"] == DeterministicActionParser.LAST_VISUAL_TARGET
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    (
+        "Jarvis, ¿qué estás viendo?",
+        "¿Puedes ver lo que tengo abierto?",
+        "Mira esto",
+        "Échale un vistazo a esto",
+    ),
+)
+def test_implicit_visual_language_is_grounded_in_a_fresh_capture(phrase: str) -> None:
+    parser = DeterministicActionParser()
+
+    parsed = parser.parse(phrase)
+
+    assert parsed is not None
+    assert parsed.name is ActionName.SCREEN_DESCRIBE
+    assert parser.has_agent_intent(phrase) is True
+    assert parser.looks_visual(phrase) is True
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    (
+        "¿Podrías revisar las ventanas que están abiertas?",
+        "Me puedes organizar el escritorio para estudiar",
+        "Quisiera que analizaras el mensaje que aparece en pantalla",
+        "Necesito tener Discord abierto",
+        "Me gustaría escuchar música tranquila en Spotify",
+        "Me vendría bien tener Obsidian abierto para escribir",
+        "Estoy cansado; pon algo relajante en Spotify",
+    ),
+)
+def test_natural_computer_goals_reach_semantic_planning(phrase: str) -> None:
+    assert DeterministicActionParser().has_agent_intent(phrase) is True
+
+
+def test_additive_natural_goal_preserves_every_requested_subgoal() -> None:
+    parser = DeterministicActionParser()
+    phrase = (
+        "Jarvis, necesito que revises cómo está funcionando mi computadora "
+        "y además me digas cuál es el volumen actual"
+    )
+
+    parts = parser.workflow_parts(phrase)
+
+    assert len(parts) == 2
+    assert "además" not in parts[1]
+    volume = parser.parse(parts[1])
+    assert volume is not None
+    assert volume.name is ActionName.VOLUME_GET
+
+
+@pytest.mark.parametrize(
+    ("phrase", "name", "arguments"),
+    [
+        (
+            "Jarvis, necesito que me dejes abierto el bloc de notas",
+            ActionName.APP_OPEN,
+            {"app": "notepad"},
+        ),
+        ("Por favor abre Google Chrome", ActionName.APP_OPEN, {"app": "google chrome"}),
+        (
+            "Pon el volumen al cincuenta por ciento",
+            ActionName.VOLUME_SET,
+            {"level": 50},
+        ),
+        (
+            "Pon el volumen al cuarenta y dos por ciento",
+            ActionName.VOLUME_SET,
+            {"level": 42},
+        ),
+        ("Quita el silencio del sistema", ActionName.VOLUME_MUTE, {"muted": False}),
+        ("Jarvis, dimel volumen actual", ActionName.VOLUME_GET, {}),
+        (
+            "Dime qué tengo en cada monitor",
+            ActionName.SCREEN_DESCRIBE,
+            {"monitor": "all"},
+        ),
+        (
+            "Busca visualmente el botón de continuar en la pantalla derecha",
+            ActionName.SCREEN_FIND,
+            {"target": "el boton de continuar", "monitor": "right"},
+        ),
+        ("Lista las ventanas abiertas", ActionName.WINDOW_LIST, {}),
+        ("Dime cuál ventana está activa", ActionName.WINDOW_CURRENT, {}),
+        ("Minimiza esta ventana", ActionName.WINDOW_MINIMIZE, {"title": ""}),
+        (
+            "Abre una pestaña nueva en Chrome",
+            ActionName.BROWSER_NEW_TAB,
+            {"browser": "chrome"},
+        ),
+    ],
+)
+def test_common_natural_variants_do_not_require_model_planning(
+    phrase: str,
+    name: ActionName,
+    arguments: dict[str, object],
+) -> None:
+    parsed = DeterministicActionParser().parse(phrase)
+
+    assert parsed is not None
+    assert parsed.name is name
+    assert parsed.arguments == arguments

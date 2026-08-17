@@ -52,9 +52,38 @@ class ActionName(StrEnum):
     DESKTOP_SHOW = "desktop.show"
     CLIPBOARD_READ = "clipboard.read"
     CLIPBOARD_WRITE = "clipboard.write"
+    CLIPBOARD_ANALYZE = "clipboard.analyze"
     SYSTEM_STATUS = "system.status"
     PATH_OPEN = "path.open"
     PATH_OPEN_FOLDER = "path.open_folder"
+    SKILL_LIST = "skill.list"
+    SKILL_RUN = "skill.run"
+    TASK_LIST = "task.list"
+    TASK_CREATE = "task.create"
+    TASK_COMPLETE = "task.complete"
+    PROJECT_LIST = "project.list"
+    PROJECT_CREATE = "project.create"
+    CALENDAR_LIST = "calendar.list"
+    CALENDAR_CREATE = "calendar.create"
+    INBOX_LIST = "inbox.list"
+    INBOX_CAPTURE = "inbox.capture"
+    FOCUS_STATUS = "focus.status"
+    FOCUS_START = "focus.start"
+    REMINDER_LIST = "reminder.list"
+    REMINDER_CREATE = "reminder.create"
+    REMINDER_CANCEL = "reminder.cancel"
+    KNOWLEDGE_LIST = "knowledge.list"
+    KNOWLEDGE_SEARCH = "knowledge.search"
+    KNOWLEDGE_ADD_ATTACHMENT = "knowledge.add_attachment"
+    ATTACHMENT_LIST = "attachment.list"
+    PERMISSION_LIST = "permission.list"
+    PERMISSION_FORGET = "permission.forget"
+    DEV_LIST = "dev.list"
+    DEV_INSPECT = "dev.inspect"
+    DEV_SEARCH = "dev.search"
+    DEV_TEST = "dev.test"
+    GAME_LIST = "game.list"
+    GAME_LAUNCH = "game.launch"
     DIALOG_CHOOSE = "dialog.choose"
     WORKFLOW_RUN = "workflow.run"
 
@@ -88,6 +117,7 @@ class ActionPlan:
     arguments: dict[str, Any] = field(default_factory=dict)
     source: ActionSource = ActionSource.DETERMINISTIC
     confidence: float = 1.0
+    continue_goal: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,11 +125,25 @@ class ActionWorkflowPlan:
     steps: tuple[ActionPlan, ...]
     source: ActionSource = ActionSource.DETERMINISTIC
     confidence: float = 1.0
+    continue_goal: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class BlockedIntent:
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ClarificationNeeded:
+    question: str
+    original_request: str = ""
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class AgentGoalComplete:
+    message: str
+    confidence: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +189,7 @@ class PendingAction:
     action: PreparedAction | PreparedWorkflow
     created_at: float
     expires_at: float
+    remote: bool = False
 
 
 @dataclass(frozen=True, slots=True)

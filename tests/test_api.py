@@ -40,7 +40,7 @@ def test_health_and_ui_are_available() -> None:
     assert "JARVIS // Neural Interface" in index.text
     assert 'id="neuralField"' in index.text
     assert 'id="monitorFocus"' in index.text
-    assert "spider-v3" in index.text
+    assert "agent-v8" in index.text
     assert manifest.status_code == 200
     assert service_worker.status_code == 200
     assert "javascript" in service_worker.headers["content-type"]
@@ -66,7 +66,27 @@ def test_fallback_conversation() -> None:
 
     assert response.status_code == 200
     assert response.json()["provider"] == "fallback"
-    assert "Juandi" in response.json()["response"]
+    assert "Juan Diego" in response.json()["response"]
+
+
+def test_deep_analysis_confirmation_round_trip_through_chat_api() -> None:
+    app = create_app(fallback_settings(information_verification_enabled=False))
+    with TestClient(app) as client:
+        offer = client.post(
+            "/api/chat",
+            json={"message": "Analiza mis objetivos profesionales", "session_id": "deep-api"},
+        )
+        answer = client.post(
+            "/api/chat",
+            json={"message": "Sí, profundiza", "session_id": "deep-api"},
+        )
+
+    assert offer.status_code == 200
+    assert offer.json()["provider"] == "analysis-confirmation"
+    assert answer.status_code == 200
+    assert answer.json()["provider"] == "personal-analysis"
+    assert "crecimiento intelectual y profesional" in answer.json()["response"]
+    assert len(answer.json()["response"].split("\n\n")) == 6
 
 
 def test_safe_command_uses_deterministic_provider() -> None:

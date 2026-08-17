@@ -14,6 +14,7 @@ from jarvis.actions.models import (
     PreparedWorkflow,
 )
 from jarvis.actions.windows import DialogInfo, InstalledApp
+from jarvis.config import Settings
 
 
 def catalog(tmp_path: Path) -> ActionCatalog:
@@ -22,13 +23,34 @@ def catalog(tmp_path: Path) -> ActionCatalog:
 
 def test_every_declared_action_has_a_catalog_entry(tmp_path: Path) -> None:
     names = catalog(tmp_path).action_names
-
-    assert len(names) == 49
-    assert set(names) == {
+    expected = {
         name.value
         for name in ActionName
         if name not in {ActionName.DIALOG_CHOOSE, ActionName.WORKFLOW_RUN}
     }
+
+    assert len(names) == len(expected)
+    assert set(names) == expected
+
+
+def test_capability_package_can_be_disabled_without_changing_base_catalog(tmp_path: Path) -> None:
+    settings = Settings(project_root=tmp_path, capabilities_enabled=False)
+    action_catalog = ActionCatalog(
+        settings.data_dir,
+        settings.browser_search_url,
+        settings,
+    )
+
+    assert action_catalog.capabilities is None
+    assert ActionName.APP_OPEN.value in action_catalog.action_names
+
+
+def test_developer_workspace_name_is_case_insensitive(tmp_path: Path) -> None:
+    prepared = catalog(tmp_path).prepare(
+        ActionPlan(ActionName.DEV_SEARCH, {"workspace": "Jarvis", "query": "ActionEngine"})
+    )
+
+    assert prepared.arguments["workspace"] == "jarvis"
 
 
 def test_static_application_is_low_risk(tmp_path: Path) -> None:
@@ -144,6 +166,46 @@ def test_unknown_browser_is_rejected(tmp_path: Path) -> None:
                 {"url": "https://example.com", "browser": "Firefox"},
             )
         )
+
+
+def test_appa_reads_are_low_risk_and_mutations_require_confirmation(tmp_path: Path) -> None:
+    action_catalog = catalog(tmp_path)
+    reads = (
+        ActionName.PROJECT_LIST,
+        ActionName.CALENDAR_LIST,
+        ActionName.INBOX_LIST,
+        ActionName.FOCUS_STATUS,
+    )
+    mutations = (
+        ActionPlan(ActionName.PROJECT_CREATE, {"name": "Portafolio"}),
+        ActionPlan(
+            ActionName.CALENDAR_CREATE,
+            {"title": "Demo", "start_at": "mañana a las 9"},
+        ),
+        ActionPlan(ActionName.INBOX_CAPTURE, {"text": "Idea privada"}),
+        ActionPlan(ActionName.FOCUS_START, {"duration_minutes": 25}),
+    )
+
+    assert all(
+        action_catalog.prepare(ActionPlan(name)).risk is ActionRisk.LOW for name in reads
+    )
+    assert all(
+        action_catalog.prepare(plan).risk is ActionRisk.MEDIUM for plan in mutations
+    )
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        ActionPlan(ActionName.TASK_CREATE, {"title": "Demo", "priority": "urgente"}),
+        ActionPlan(ActionName.TASK_CREATE, {"title": "Demo", "category": "secreta"}),
+        ActionPlan(ActionName.FOCUS_START, {"duration_minutes": 181}),
+        ActionPlan(ActionName.INBOX_CAPTURE, {"text": "x" * 4_001}),
+    ],
+)
+def test_appa_mutation_arguments_are_bounded(tmp_path: Path, plan: ActionPlan) -> None:
+    with pytest.raises(ActionSecurityError):
+        catalog(tmp_path).prepare(plan)
 
 
 def test_ambiguous_installed_application_requires_full_name(
@@ -371,3 +433,37 @@ async def test_workflow_pauses_before_later_steps_when_dialog_appears(
     assert result.details["workflow_stopped_for_dialog"] is True
     assert result.details["completed_steps"] == 1
     assert audio_calls == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_returns_the_verified_final_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    action_catalog = catalog(tmp_path)
+    monkeypatch.setattr(
+        action_catalog.windows,
+        "list_windows",
+        lambda: ExecutionResult(True, "Ventanas verificadas."),
+    )
+    monkeypatch.setattr(
+        action_catalog.audio,
+        "get_level",
+        lambda: ExecutionResult(True, "El volumen actual es 37%.", {"level": 37}),
+    )
+    workflow = PreparedWorkflow(
+        steps=(
+            action_catalog.prepare(ActionPlan(ActionName.WINDOW_LIST)),
+            action_catalog.prepare(ActionPlan(ActionName.VOLUME_GET)),
+        ),
+        risk=ActionRisk.LOW,
+        description="Inspección encadenada",
+        source=ActionSource.DETERMINISTIC,
+    )
+
+    result = await action_catalog.execute(workflow)
+
+    assert result.success is True
+    assert result.details["final_result"] == "El volumen actual es 37%."
+    assert result.details["steps"][1]["message"] == "El volumen actual es 37%."
+    assert "Resultado final: El volumen actual es 37%." in result.message

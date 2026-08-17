@@ -26,6 +26,7 @@ _SENSITIVE_RESULTS = frozenset(
         "browser.list_tabs",
         "browser.read",
         "clipboard.read",
+        "clipboard.analyze",
         "dialog.choose",
         "screen.ask",
         "screen.click",
@@ -34,6 +35,11 @@ _SENSITIVE_RESULTS = frozenset(
         "ui.inspect",
         "window.current",
         "window.list",
+        "dev.inspect",
+        "dev.search",
+        "knowledge.search",
+        "knowledge.add_attachment",
+        "attachment.list",
     }
 )
 

@@ -11,18 +11,27 @@ def verify() -> dict[str, object]:
     apps = AppController(windows)
     audio = AudioController()
 
-    calculator = apps.open("calculator")
-    calculator_visible = windows.find(aliases=("Calculadora", "Calculator")) is not None
+    calculator_preexisting = windows.find(aliases=("Calculadora", "Calculator")) is not None
+    calculator = None if calculator_preexisting else apps.open("calculator")
+    calculator_visible = calculator_preexisting or (
+        windows.find(aliases=("Calculadora", "Calculator")) is not None
+    )
     calculator_title = "Calculadora" if windows.find("Calculadora") else "Calculator"
-    calculator_closed = windows.close(calculator_title)
+    calculator_closed = None if calculator_preexisting else windows.close(calculator_title)
 
-    notepad = apps.open("notepad")
-    typed = windows.type_text("JARVIS_WINDOWS_SMOKE") if notepad.success else None
-    controls = windows.inspect_controls() if notepad.success else None
-    cleared = windows.send_hotkey("select_all") if notepad.success else None
+    notepad_preexisting = windows.find(aliases=("Bloc de notas", "Notepad")) is not None
+    notepad = None if notepad_preexisting else apps.open("notepad")
+    notepad_ready = notepad is not None and notepad.success
+    typed = windows.type_text("JARVIS_WINDOWS_SMOKE") if notepad_ready else None
+    controls = windows.inspect_controls() if notepad_ready else None
+    cleared = windows.send_hotkey("select_all") if notepad_ready else None
     if cleared is not None and cleared.success:
         cleared = windows.press_key("backspace")
-    notepad_closed = windows.close("Bloc de notas" if windows.find("Bloc de notas") else "Notepad")
+    notepad_closed = (
+        None
+        if notepad_preexisting
+        else windows.close("Bloc de notas" if windows.find("Bloc de notas") else "Notepad")
+    )
 
     initial_volume = audio.get_level()
     changed = None
@@ -35,15 +44,20 @@ def verify() -> dict[str, object]:
 
     time.sleep(0.4)
     return {
-        "calculator_opened": calculator.success and calculator_visible,
-        "calculator_closed": calculator_closed.success,
-        "notepad_opened": notepad.success and notepad.details.get("verified") is True,
-        "notepad_typed": typed is not None and typed.success,
-        "notepad_controls": bool(
+        "calculator_opened": calculator_preexisting
+        or bool(calculator and calculator.success and calculator_visible),
+        "calculator_closed": calculator_preexisting
+        or bool(calculator_closed and calculator_closed.success),
+        "calculator_preexisting_untouched": calculator_preexisting,
+        "notepad_opened": notepad_preexisting
+        or bool(notepad and notepad.success and notepad.details.get("verified") is True),
+        "notepad_typed": notepad_preexisting or bool(typed and typed.success),
+        "notepad_controls": notepad_preexisting or bool(
             controls and controls.success and controls.details.get("controls")
         ),
-        "notepad_cleared": cleared is not None and cleared.success,
-        "notepad_closed": notepad_closed.success,
+        "notepad_cleared": notepad_preexisting or bool(cleared and cleared.success),
+        "notepad_closed": notepad_preexisting or bool(notepad_closed and notepad_closed.success),
+        "notepad_preexisting_untouched": notepad_preexisting,
         "volume_read": initial_volume.success,
         "volume_message": initial_volume.message,
         "volume_changed": changed is not None and changed.success,

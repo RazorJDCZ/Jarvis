@@ -4,10 +4,10 @@ Asistente de voz privado y local para Windows. El proyecto está dividido en cin
 
 1. MVP de voz — completado.
 2. Motor de acciones — completado.
-3. Acceso móvil — implementado en esta versión (`0.6.0`).
+3. Acceso móvil — implementado (`0.7.0`).
 4. Memoria y personalidad — implementada.
-5. Visión y proactividad — la percepción visual multimonitor y contextual ya está implementada;
-   la proactividad sigue pendiente.
+5. Visión y proactividad — la percepción visual multimonitor y contextual está implementada;
+   recordatorios y alertas aportan proactividad local acotada, sin autonomía continua.
 
 ## Qué hace esta versión
 
@@ -15,11 +15,16 @@ Asistente de voz privado y local para Windows. El proyecto está dividido en cin
 - Transcribe localmente con Faster Whisper y habla con la voz masculina `em_alex` de Kokoro 82M;
   Piper y las voces de Windows quedan como respaldos automáticos.
 - Ofrece modo pulsar-para-hablar y manos libres con la frase “Jarvis”.
-- Ejecuta 49 acciones tipadas sobre Windows, aplicaciones, pantalla y navegadores controlados.
-- Interpreta primero órdenes deterministas y usa el modelo local como traductor restringido cuando
-  una orden directa no coincide exactamente.
-- Entiende variantes coloquiales y puede preparar flujos explícitos de dos o tres pasos con una
-  confirmación calculada según el riesgo más alto.
+- Ejecuta 78 acciones tipadas sobre Windows, aplicaciones, pantalla, navegadores y capacidades
+  locales controladas.
+- Usa una vía determinista rápida para acciones evidentes y un núcleo semántico local para entender
+  metas expresadas con contexto, cortesía, motivación, pronombres o lenguaje indirecto; no exige una
+  frase exacta ni que el usuario reformule su intención como “comando”.
+- Puede preparar hasta cinco acciones y resolver metas dependientes mediante un ciclo acotado de
+  planificar, ejecutar, verificar, observar y volver a planear. Nunca decide con una observación que
+  todavía no existe y cada cambio sensible conserva su confirmación.
+- Si falta un dato esencial o las herramientas no pueden materializar la meta, hace una sola
+  pregunta concreta y conserva la solicitud original para entender la respuesta breve.
 - Enumera monitores y permite describir, consultar o localizar elementos en uno específico mediante
   el modelo visual local de Ollama; las capturas transitorias se mantienen en memoria.
 - Conserva durante cinco minutos el foco visual de cada conversación para entender continuaciones
@@ -36,6 +41,9 @@ Asistente de voz privado y local para Windows. El proyecto está dividido en cin
   reciente para continuar después de reiniciar.
 - Funciona como PWA tanto en la PC como en el teléfono. El servidor siempre permanece limitado a
   `127.0.0.1`; Tailscale Serve proporciona el único enlace HTTPS privado hacia el celular.
+- Añade un Control Deck para trazas, recordatorios, adjuntos y métricas; integra tareas locales o
+  Appa, biblioteca privada, skills declarativas, permisos temporales, workspaces y juegos sin
+  entregar al modelo una terminal ni acceso irrestricto al equipo.
 
 El modo manos libres detecta la frase de activación después de transcribir localmente cada
 intervención. Una etapa posterior podrá incorporar openWakeWord para reducir el consumo continuo.
@@ -174,7 +182,23 @@ Si se configura `JARVIS_BROWSER_PERSONAL_PROFILE=false`, vuelve al perfil persis
   confiable antes de llegar a Qwen. El modelo debe citar la fuente brevemente y no rellenar vacíos.
 - Noticias, precios, marcadores y otros datos en vivo no compatibles se rechazan con honestidad.
 - El perfil privado se encuentra en `.data/user_profile.json`; puede editarse sin tocar el código y
-  nunca se envía a Open-Meteo ni Wikipedia.
+  nunca se envía a Open-Meteo ni Wikipedia. Admite identidad, estudios, trabajo, objetivos,
+  proyectos, rutina, herramientas, preferencias de asistencia, personas importantes, fechas,
+  gustos y planes de futuro.
+- En cada conversación se inyecta un núcleo personal compacto y solo las secciones relacionadas
+  con el tema actual. Mencionar a una persona concreta recupera sus datos sin cargar todo el grupo;
+  hablar de juegos, música, comida, viajes o proyectos recupera únicamente esa categoría.
+- Las descripciones de personas funcionan como apuntes privados. Una pregunta factual como
+  “¿quién es?” responde desde los datos estructurados para impedir alucinaciones; “¿qué sabes de?”,
+  “¿cómo es?” o “analiza a…” usa una composición local fundamentada cuando se refiere a una sola
+  persona conocida. Así responde en milisegundos, separa hechos de impresiones y reconoce lo que
+  no puede inferir. Comparaciones complejas conservan el modelo, pero aíslan la solicitud actual
+  para que una conversación anterior no cambie el tema.
+- Las preguntas sobre Juan Diego distinguen identidad, memoria y reflexión. “¿Quién soy?” devuelve
+  un resumen factual; “¿qué recuerdas de mí?” enumera memoria local; y “¿qué sabes de mí?”,
+  “¿cómo me ves?” o “analízame” activan un análisis propio. Este último conecta únicamente hechos
+  compatibles del perfil mediante una composición local fundamentada, porque permitir inferencias
+  libres al modelo pequeño producía rasgos psicológicos y relaciones causales no confirmadas.
 - Jarvis evita preguntas genéricas al final de cada respuesta y solo pregunta cuando necesita una
   aclaración real para continuar.
 
@@ -198,7 +222,19 @@ Comandos de voz útiles:
 Jarvis también aprende frases claras como “me gusta tocar el ukelele”, “vivo en Quito”, “estudio
 Ingeniería…” o “estoy desarrollando mi propio Jarvis”. La personalidad está orientada a voz:
 gentil, servicial, serena y ligeramente ingeniosa, con una sola pregunta puntual únicamente cuando
-la conversación realmente la amerita.
+la conversación realmente la amerita. Las consultas de opinión o análisis reciben normalmente de
+tres a seis oraciones sustantivas. Si el tema permite un desarrollo mucho mayor, Jarvis ofrece el
+modo de análisis profundo: “sí, profundiza” retoma la pregunta original con una respuesta extensa y
+“no, dame la versión normal” conserva el formato habitual. Pedir “analízalo a fondo” activa el modo
+directamente. La confirmación caduca después de 180 segundos y puede deshabilitarse con
+`JARVIS_DEEP_ANALYSIS_CONFIRMATION_ENABLED=false`. El modo profundo baja la variabilidad y amplía
+el presupuesto de la respuesta final dentro de un límite estricto; no mantiene otro modelo cargado
+ni reserva RAM adicional. Las respuestas naturales o imperfectas como “sí, quiero que profundices”
+y “no, dame la version nomal” se interpretan dentro de la elección pendiente en vez de enviarse
+solas al historial conversacional.
+El análisis del propio Juan Diego usa una ruta fundamentada separada: la versión normal sintetiza
+su situación en tres bloques y la profunda desarrolla seis perspectivas, siempre distinguiendo
+hechos, conexiones permitidas, riesgos prácticos y límites de lo que el perfil puede demostrar.
 
 ### Audio, multimedia y escritorio
 
@@ -228,8 +264,11 @@ la conversación realmente la amerita.
   control no está disponible, la visión solo coloca el cursor y solicita una segunda confirmación
   antes del clic real. Puedes revisar la posición o cancelar; mover el cursor invalida el clic.
 - “Abre el bloc de notas y después escribe «hola»” prepara los pasos en orden y pide una sola
-  confirmación de riesgo medio. Se admiten hasta tres acciones explícitas y el flujo se detiene si
-  un paso falla.
+  confirmación de riesgo medio. Se admiten hasta cinco acciones y el flujo se detiene si un paso
+  falla.
+- Metas como “busca cursos de Python, compara los resultados y abre el mejor” se dividen en rondas:
+  primero busca y lee; solo después usa lo observado para decidir. El agente está limitado a tres
+  rondas y cinco acciones totales, y devuelve el resultado verificado del último paso.
 - También se aceptan formas naturales como “¿me abres YouTube?”, “búscame restaurantes cerca”,
   “quiero que abras la calculadora” o “deja el sonido aproximadamente a la mitad”.
 
@@ -239,20 +278,49 @@ los permisos del motor.
 
 ### Sistema, portapapeles y archivos
 
-- “Estado del sistema” informa CPU, memoria y batería cuando está disponible.
+- “Estado del sistema” informa CPU, memoria, disco y batería cuando están disponibles.
 - “Lee el portapapeles” y `copia "Texto" al portapapeles` requieren confirmación.
+- “Resume mi portapapeles”, “explícalo”, “corrígelo” o “tradúcelo al inglés” lo analiza de forma
+  efímera con Ollama local sin incorporarlo a memoria.
 - “Abre la carpeta Descargas”.
 - `abre el archivo "D:\Datos\reporte.pdf"` requiere confirmación. Solo se permiten formatos
   comunes de documentos sin macros, texto, imagen, audio, video y archivos ZIP.
 - “Dime la hora”, “dime la fecha”, “qué versión eres”, “ayuda”.
 - “Olvida esta conversación”.
 
+### Control Deck y capacidades locales
+
+- **Actividad** muestra trazas censuradas de cada solicitud y sus pasos, aisladas por sesión.
+- **Agenda** crea, lista y cancela recordatorios locales; acepta “recuérdame entregar el informe
+  mañana a las 9” y recurrencias diarias, semanales o mensuales.
+- **Archivos** adjunta documentos o imágenes desde PC y celular. “Guarda este adjunto en mi
+  biblioteca” lo indexa y “busca … en mi biblioteca” devuelve resultados con su fuente.
+- **Sistema** muestra métricas sin administrar ni cerrar procesos.
+- “Crea una tarea para…”, “lista mis pendientes” y “completa la tarea…” usan SQLite local o
+  descubren automáticamente el puente privado de Appa. Jarvis entiende fechas naturales,
+  prioridad, categoría y proyecto sin enviar texto ambiguo al backend.
+- Appa también aporta proyectos, calendario, inbox y sesiones focus por voz. Las creaciones se
+  confirman y todo permanece en loopback, incluso cuando Appa está oculta en la bandeja.
+- “Lista mis skills” y “ejecuta la receta diagnóstico rápido” usan recetas declarativas que vuelven
+  a pasar por el catálogo y las confirmaciones normales.
+- “Lista los proyectos autorizados”, “busca … en el proyecto Jarvis” y “ejecuta las pruebas del
+  proyecto Jarvis” trabajan dentro de raíces explícitas; las pruebas son de riesgo alto.
+- “Lista mis juegos” e “inicia el juego…” detectan manifiestos locales de Steam/Epic y confirman
+  antes de abrir.
+- El botón de cámara solicita permiso para una única captura, detiene el stream y envía la imagen
+  como adjunto efímero; Jarvis nunca enciende la cámara de fondo.
+- Algunas confirmaciones benignas pueden recordarse durante 30 días desde el mismo dispositivo.
+  Las acciones de riesgo alto y las que manejan datos sensibles siempre vuelven a preguntar.
+
 La referencia completa de acciones, riesgos y límites está en
-[docs/action-engine.md](docs/action-engine.md).
+[docs/action-engine.md](docs/action-engine.md). La guía del nuevo centro local, Appa, adjuntos,
+workspaces y sus límites está en [docs/capabilities.md](docs/capabilities.md).
 
 ## Seguridad
 
 - No existe ninguna acción de PowerShell, CMD, terminal ni comandos arbitrarios.
+- El modelo nunca recibe acceso directo a Windows: únicamente propone nombres y argumentos del
+  catálogo cerrado. El motor vuelve a validar tipos, rangos, permisos, riesgo y estado real.
 - Apagar, reiniciar, borrar, formatear, comprar, pagar o transferir están bloqueados.
 - Los controles cuyo nombre indica compra, transferencia o eliminación tampoco se activan.
 - Los clics visuales estimados por píxeles nunca se realizan en el mismo paso que la detección: se
@@ -262,7 +330,8 @@ La referencia completa de acciones, riesgos y límites está en
 - Las mutaciones sugeridas por el modelo local se elevan automáticamente a confirmación aunque la
   acción normalmente sea de riesgo bajo.
 - Las confirmaciones están vinculadas a la sesión, tienen identificadores impredecibles, expiran y
-  no pueden reutilizarse desde otra sesión.
+  no pueden reutilizarse desde otra sesión. Una solicitud nueva cancela la confirmación anterior,
+  evitando que un “sí” tardío autorice una acción de otro tema.
 - Los diálogos se vinculan al identificador nativo de la ventana y solo aceptan una de las opciones
   que continúen visibles. Si el aviso cambió o desapareció, la elección se rechaza.
 - Las frases de interrupción requieren la palabra de activación y una orden cerrada; el audio se
@@ -283,6 +352,12 @@ La referencia completa de acciones, riesgos y límites está en
 - Los audios temporales se eliminan al terminar la transcripción. `.env`, modelos, temporales,
   auditoría y el entorno virtual están excluidos de Git.
 - El análisis visual rechaza servidores externos y no guarda su captura transitoria en disco.
+- Los adjuntos se validan por tamaño, extensión, MIME y firma, se renombran y aíslan por sesión;
+  caducan automáticamente y nunca pueden convertirse en instrucciones para el agente.
+- Las herramientas de desarrollo permanecen dentro de workspaces autorizados, bloquean secretos,
+  enlaces y rutas internas de Git, y no aceptan comandos ni argumentos libres.
+- Un permiso solo se recuerda después de una ejecución exitosa, nunca para riesgo alto y, desde el
+  teléfono, queda ligado a ese dispositivo autenticado.
 
 El registro se guarda en `.data/action-audit.jsonl` y se rota automáticamente. También puede verse
 localmente en `/api/actions/audit`; texto escrito, portapapeles y contenido visible se censuran.
@@ -305,12 +380,20 @@ JARVIS_ACTION_CONFIRMATION_SECONDS=90
 JARVIS_VISION_ACTIONS_ENABLED=true
 JARVIS_VISION_TIMEOUT=180
 JARVIS_BROWSER_SEARCH_URL=https://www.google.com/search?q={query}
+JARVIS_CAPABILITIES_ENABLED=true
+JARVIS_ATTACHMENT_RETENTION_HOURS=24
+JARVIS_APPA_AUTO_DISCOVER=true
+JARVIS_APPA_BRIDGE_CONFIG=
+JARVIS_APPA_URL=
+JARVIS_WORKSPACE_ROOTS=
 ```
 
 `JARVIS_BROWSER_SEARCH_URL` debe ser HTTP/HTTPS y contener exactamente `{query}`. Puedes apagar todo
 el motor con `JARVIS_SAFE_ACTIONS_ENABLED=false`, desactivar solo la interpretación flexible con
 `JARVIS_ACTION_MODEL_PLANNING=false` o apagar la percepción visual con
 `JARVIS_VISION_ACTIONS_ENABLED=false`.
+El paquete de capacidades también puede desactivarse de una vez con
+`JARVIS_CAPABILITIES_ENABLED=false`; sus almacenes permanecen en `.data` y no se eliminan.
 
 ## Desarrollo y pruebas
 
@@ -320,9 +403,11 @@ el motor con `JARVIS_SAFE_ACTIONS_ENABLED=false`, desactivar solo la interpretac
 node --check src\jarvis\web\app.js
 ```
 
-La suite cubre parser, catálogo, niveles de riesgo, confirmaciones, aislamiento por sesión,
+La suite cubre parser, catálogo, niveles de riesgo, confirmaciones y permisos recordados,
 auditoría, flujos encadenados, visión, controlador de Windows, navegador personal, verificación de
-información, perfil privado, API, voz y regresiones de la etapa 1. El smoke test remoto crea y
+información, perfil privado, API, voz, trazas, adjuntos hostiles, recordatorios, contrato Appa
+simulado y aislado (tareas, proyectos, calendario, inbox y focus),
+workspaces, skills, juegos, cámara simulada y regresiones de la etapa 1. El smoke test remoto crea y
 verifica una passkey WebAuthn real mediante un autenticador virtual de Chrome. El esquema OpenAPI
 está disponible localmente en `http://127.0.0.1:8765/api/openapi.json`.
 
