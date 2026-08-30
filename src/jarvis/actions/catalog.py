@@ -226,6 +226,9 @@ class ActionCatalog:
         ActionName.FOCUS_START: ActionSpec(
             ActionRisk.MEDIUM, "Iniciar una sesi\u00f3n focus en Appa"
         ),
+        ActionName.APPA_BRIEFING: ActionSpec(
+            ActionRisk.LOW, "Consultar el contexto personal unificado de Appa"
+        ),
         ActionName.REMINDER_LIST: ActionSpec(ActionRisk.LOW, "Listar recordatorios activos"),
         ActionName.REMINDER_CREATE: ActionSpec(
             ActionRisk.MEDIUM, "Programar un recordatorio local"
@@ -283,6 +286,7 @@ class ActionCatalog:
             ActionName.CALENDAR_LIST,
             ActionName.INBOX_LIST,
             ActionName.FOCUS_STATUS,
+            ActionName.APPA_BRIEFING,
             ActionName.REMINDER_LIST,
             ActionName.KNOWLEDGE_LIST,
             ActionName.KNOWLEDGE_SEARCH,
@@ -1033,6 +1037,7 @@ class ActionCatalog:
             ActionName.INBOX_CAPTURE,
             ActionName.FOCUS_STATUS,
             ActionName.FOCUS_START,
+            ActionName.APPA_BRIEFING,
             ActionName.REMINDER_LIST,
             ActionName.REMINDER_CREATE,
             ActionName.REMINDER_CANCEL,

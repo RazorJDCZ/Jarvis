@@ -1,0 +1,18 @@
+[
+  {"text": "Revisa en la pantalla dos si Minecraft sigue abierto", "tool": "screen.ask"},
+  {"text": "Anota en Appa que debo entregar el informe mañana", "tool": "task.create"},
+  {"text": "Quiero jugar Minecraft", "tool": "game.launch"},
+  {"text": "Cámbiate a la pestaña donde está YouTube", "tool": "browser.switch_tab"},
+  {"text": "Pulsa el enlace que dice documentación dentro del sitio", "tool": "browser.click"},
+  {"text": "Haz que Chrome ocupe toda la pantalla sin cerrarlo", "tool": "window.maximize"},
+  {"text": "¿Cuál programa tiene el foco en este instante?", "tool": "window.current"},
+  {"text": "Mira el monitor derecho y dime si Minecraft está en pausa", "tool": "screen.ask"},
+  {"text": "Oculta las ventanas y enséñame el escritorio", "tool": "desktop.show"},
+  {"text": "Abre el documento D:\\Documentos\\informe.pdf", "tool": "path.open"},
+  {"text": "Consulta mis pendientes activos de Appa", "tool": "task.list"},
+  {"text": "Agrega el adjunto autorizado a mi biblioteca de conocimiento", "tool": "knowledge.add_attachment"},
+  {"text": "Corre la batería fija de pruebas del workspace Jarvis", "tool": "dev.test"},
+  {"text": "¿En qué proyectos estoy trabajando según Appa?", "tool": "project.list"},
+  {"text": "¿Qué automatizaciones seguras sabe ejecutar Jarvis?", "tool": "skill.list"},
+  {"text": "Avísame dentro de media hora que debo llamar a mi mamá", "tool": "reminder.create"}
+]

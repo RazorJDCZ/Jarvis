@@ -573,3 +573,50 @@ def test_common_natural_variants_do_not_require_model_planning(
     assert parsed is not None
     assert parsed.name is name
     assert parsed.arguments == arguments
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    (
+        "Jarvis, ¿qué aplicaciones están abiertas en mi PC?",
+        "¿Qué aplicaciones estaban abiertas en mi computadora?",
+        "Dime qué programas tengo abiertos",
+        "¿Qué apps se están ejecutando en la PC?",
+        "¿Cuáles son las aplicaciones abiertas?",
+        "Quiero saber qué ventanas siguen abiertas",
+        "¿Qué tengo abierto en mi computadora?",
+        "¿Qué se está ejecutando en mi equipo?",
+    ),
+)
+def test_open_application_inventory_uses_windows_without_visual_capture(phrase: str) -> None:
+    parser = DeterministicActionParser()
+
+    parsed = parser.parse(phrase)
+
+    assert parsed is not None
+    assert parsed.name is ActionName.WINDOW_LIST
+    assert parsed.arguments == {}
+    assert parser.looks_visual(phrase) is False
+
+
+def test_explicit_monitor_wording_remains_visual() -> None:
+    parsed = DeterministicActionParser().parse(
+        "Dime qué tengo abierto en el display de la derecha"
+    )
+
+    assert parsed is not None
+    assert parsed.name is ActionName.SCREEN_DESCRIBE
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Dame un resumen completo de mi día usando Appa",
+        "Dame el estado actual del sistema de mi PC",
+        "Dame la lista de ventanas abiertas",
+    ],
+)
+def test_dame_is_a_general_agent_request_when_a_computer_domain_is_present(text: str) -> None:
+    parser = DeterministicActionParser()
+
+    assert parser.has_agent_intent(text) is True

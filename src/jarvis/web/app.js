@@ -199,6 +199,29 @@ async function cancellableFetch(input, init = {}) {
   }
 }
 
+async function submitAgentFeedback(traceId, rating, controls) {
+  for (const button of controls.querySelectorAll("button")) button.disabled = true;
+  try {
+    const response = await cancellableFetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: appState.sessionId,
+        trace_id: traceId,
+        rating,
+        category: "conversation",
+      }),
+    });
+    if (!response.ok) throw new Error(await readError(response));
+    controls.dataset.rating = String(rating);
+    controls.setAttribute("aria-label", "Evaluación guardada localmente");
+    showToast("Evaluación guardada sólo en esta PC.", 3500);
+  } catch (error) {
+    for (const button of controls.querySelectorAll("button")) button.disabled = false;
+    showToast(error.message || "No pude guardar la evaluación.", 5000);
+  }
+}
+
 function addMessage(role, text, label, metadata = {}) {
   const article = document.createElement("article");
   article.className = `message ${role}-message`;
@@ -208,7 +231,27 @@ function addMessage(role, text, label, metadata = {}) {
   labelElement.textContent = displayLabel;
   textElement.textContent = text;
   article.append(labelElement, textElement);
-  if (metadata.traceId) attachTraceDetails(article, metadata.traceId);
+  if (metadata.traceId) {
+    attachTraceDetails(article, metadata.traceId);
+    if (role === "jarvis") {
+      const feedback = document.createElement("div");
+      feedback.className = "message-feedback";
+      feedback.setAttribute("aria-label", "Evaluar respuesta");
+      for (const [rating, symbol, title] of [
+        [1, "↑", "Respuesta útil"],
+        [-1, "↓", "Respuesta incorrecta o poco útil"],
+      ]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = symbol;
+        button.title = title;
+        button.setAttribute("aria-label", title);
+        button.addEventListener("click", () => submitAgentFeedback(metadata.traceId, rating, feedback));
+        feedback.appendChild(button);
+      }
+      article.appendChild(feedback);
+    }
+  }
   elements.transcript.appendChild(article);
   appState.activityCount += 1;
   if (elements.activityCode) {

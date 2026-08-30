@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -40,7 +41,7 @@ def test_health_and_ui_are_available() -> None:
     assert "JARVIS // Neural Interface" in index.text
     assert 'id="neuralField"' in index.text
     assert 'id="monitorFocus"' in index.text
-    assert "agent-v8" in index.text
+    assert "agent-v9" in index.text
     assert manifest.status_code == 200
     assert service_worker.status_code == 200
     assert "javascript" in service_worker.headers["content-type"]
@@ -67,6 +68,30 @@ def test_fallback_conversation() -> None:
     assert response.status_code == 200
     assert response.json()["provider"] == "fallback"
     assert "Juan Diego" in response.json()["response"]
+
+
+def test_feedback_is_saved_locally_without_external_service(tmp_path: Path) -> None:
+    app = create_app(fallback_settings(project_root=tmp_path))
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/feedback",
+            json={
+                "session_id": "local-feedback",
+                "trace_id": "trace-12345678",
+                "rating": 1,
+                "category": "conversation",
+            },
+        )
+
+    assert response.status_code == 204
+    database = sqlite3.connect(tmp_path / ".data" / "agent-feedback.sqlite3")
+    try:
+        row = database.execute(
+            "SELECT trace_id, rating, category FROM agent_feedback"
+        ).fetchone()
+    finally:
+        database.close()
+    assert row == ("trace-12345678", 1, "conversation")
 
 
 def test_deep_analysis_confirmation_round_trip_through_chat_api() -> None:

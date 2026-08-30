@@ -97,6 +97,11 @@ class SequencedPlanner(FixedPlanner):
         return self.plans.pop(0)
 
 
+class SemanticFixedPlanner(FixedPlanner):
+    def likely_tool_request(self, _text: str) -> bool:
+        return True
+
+
 def build_engine(
     tmp_path: Path,
     catalog: RecordingCatalog | None = None,
@@ -156,6 +161,31 @@ async def test_remote_read_only_action_stays_direct(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_remote_open_app_inventory_uses_windows_without_model_or_vision(
+    tmp_path: Path,
+) -> None:
+    planner = FixedPlanner(
+        ActionPlan(
+            ActionName.SCREEN_DESCRIBE,
+            source=ActionSource.LOCAL_MODEL,
+            confidence=0.99,
+        )
+    )
+    engine, action_catalog = build_engine(tmp_path, planner=planner)
+
+    result = await engine.try_handle(
+        "remote-device",
+        "Jarvis, ¿qué aplicaciones están abiertas en mi PC?",
+        remote=True,
+    )
+
+    assert result.status is ActionStatus.COMPLETED
+    assert result.name is ActionName.WINDOW_LIST
+    assert action_catalog.executed[0].name is ActionName.WINDOW_LIST
+    assert planner.calls == []
+
+
+@pytest.mark.asyncio
 async def test_mobile_natural_visual_question_reaches_screen_engine(tmp_path: Path) -> None:
     planner = FixedPlanner(None)
     engine, action_catalog = build_engine(tmp_path, planner=planner)
@@ -193,6 +223,27 @@ async def test_semantic_computer_goal_uses_local_planner(tmp_path: Path) -> None
     assert result.status is ActionStatus.COMPLETED
     assert planner.calls == ["Necesito que organices las ventanas para poder concentrarme"]
     assert action_catalog.executed[0].name is ActionName.WINDOW_LIST
+
+
+@pytest.mark.asyncio
+async def test_semantic_admission_reaches_planner_without_an_exact_parser_rule(
+    tmp_path: Path,
+) -> None:
+    planner = SemanticFixedPlanner(
+        ActionPlan(
+            ActionName.APP_OPEN,
+            {"app": "Spotify"},
+            source=ActionSource.LOCAL_MODEL,
+            confidence=0.93,
+        )
+    )
+    engine, catalog = build_engine(tmp_path, planner=planner)
+
+    result = await engine.try_handle("semantic", "Pon en marcha Spotify para escuchar algo")
+
+    assert result.status is ActionStatus.PENDING
+    assert planner.calls == ["Pon en marcha Spotify para escuchar algo"]
+    assert catalog.executed == []
 
 
 @pytest.mark.asyncio
@@ -966,3 +1017,143 @@ async def test_reset_removes_pending_confirmation(tmp_path: Path) -> None:
     result = await engine.decide("a", pending.action_id, True)
 
     assert result.status is ActionStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_remote_agent_goal_survives_engine_restart_without_replaying_pending_action(
+    tmp_path: Path,
+) -> None:
+    initial_planner = FixedPlanner(
+        ActionPlan(
+            ActionName.APP_OPEN,
+            {"app": "calculator"},
+            source=ActionSource.LOCAL_MODEL,
+            confidence=0.95,
+            continue_goal=True,
+        )
+    )
+    first, first_catalog = build_engine(tmp_path, planner=initial_planner)
+    pending = await first.try_handle(
+        "remote:phone:goal",
+        "Necesito que organices mis ventanas para estudiar",
+        remote=True,
+    )
+    stored = first.agent_state.load_goal("remote:phone:goal", max_age_seconds=60)
+
+    assert pending.status is ActionStatus.PENDING
+    assert first_catalog.executed == []
+    assert stored is not None and stored.remote is True
+
+    resumed_planner = FixedPlanner(
+        ActionPlan(
+            ActionName.APP_OPEN,
+            {"app": "notepad"},
+            source=ActionSource.LOCAL_MODEL,
+            confidence=0.94,
+        )
+    )
+    second, second_catalog = build_engine(tmp_path, planner=resumed_planner)
+    resumed = await second.try_handle("remote:phone:goal", "continúa", remote=False)
+
+    assert resumed.status is ActionStatus.PENDING
+    assert resumed.requires_confirmation is True
+    assert second_catalog.executed == []
+    assert second._pending["remote:phone:goal"].remote is True
+    assert "organices mis ventanas para estudiar" in resumed_planner.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_independent_request_supersedes_persisted_agent_goal(tmp_path: Path) -> None:
+    planner = FixedPlanner(
+        ActionPlan(
+            ActionName.APP_OPEN,
+            {"app": "calculator"},
+            source=ActionSource.LOCAL_MODEL,
+            confidence=0.95,
+            continue_goal=True,
+        )
+    )
+    first, _ = build_engine(tmp_path, planner=planner)
+    await first.try_handle("session", "Organiza mi espacio de trabajo", remote=True)
+    assert first.agent_state.load_goal("session", max_age_seconds=60) is not None
+
+    second, catalog = build_engine(tmp_path, planner=FixedPlanner(None))
+    result = await second.try_handle("session", "dime el volumen actual")
+
+    assert result.status is ActionStatus.COMPLETED
+    assert result.name is ActionName.VOLUME_GET
+    assert catalog.executed[0].name is ActionName.VOLUME_GET
+    assert second.agent_state.load_goal("session", max_age_seconds=60) is None
+
+
+@pytest.mark.asyncio
+async def test_agent_goal_round_limit_is_enforced_and_removed_from_disk(tmp_path: Path) -> None:
+    planner = SequencedPlanner(
+        [
+            ActionPlan(
+                ActionName.WINDOW_LIST,
+                source=ActionSource.LOCAL_MODEL,
+                confidence=0.95,
+                continue_goal=True,
+            ),
+            ActionPlan(
+                ActionName.WINDOW_LIST,
+                source=ActionSource.LOCAL_MODEL,
+                confidence=0.95,
+                continue_goal=True,
+            ),
+        ]
+    )
+    engine, catalog = build_engine(tmp_path, planner=planner, agent_max_rounds=1)
+
+    result = await engine.try_handle("bounded", "Organiza mis ventanas para estudiar")
+
+    assert result.status is ActionStatus.COMPLETED
+    assert result.details["agent_limit_reached"] is True
+    assert len(catalog.executed) == 2
+    assert engine.agent_state.load_goal("bounded", max_age_seconds=60) is None
+
+
+@pytest.mark.asyncio
+async def test_failed_agent_step_clears_persisted_goal(tmp_path: Path) -> None:
+    planner = FixedPlanner(
+        ActionPlan(
+            ActionName.WINDOW_LIST,
+            source=ActionSource.LOCAL_MODEL,
+            confidence=0.95,
+            continue_goal=True,
+        )
+    )
+    catalog = RecordingCatalog(tmp_path, ExecutionResult(False, "fallo verificado"))
+    engine, _ = build_engine(tmp_path, catalog=catalog, planner=planner)
+
+    result = await engine.try_handle("failed", "Organiza mis ventanas para estudiar")
+
+    assert result.status is ActionStatus.FAILED
+    assert engine.agent_state.load_goal("failed", max_age_seconds=60) is None
+
+
+@pytest.mark.asyncio
+async def test_grounded_agent_completion_removes_goal_from_memory_and_disk(
+    tmp_path: Path,
+) -> None:
+    planner = SequencedPlanner(
+        [
+            ActionPlan(
+                ActionName.WINDOW_LIST,
+                source=ActionSource.LOCAL_MODEL,
+                confidence=0.95,
+                continue_goal=True,
+            ),
+            AgentGoalComplete("Revisión terminada con evidencia.", 0.95),
+        ]
+    )
+    engine, _ = build_engine(tmp_path, planner=planner)
+
+    result = await engine.try_handle(
+        "complete", "Necesito que organices mis ventanas para estudiar"
+    )
+
+    assert result.details["agent_goal_complete"] is True
+    assert "complete" not in engine._agent_goals
+    assert engine.agent_state.load_goal("complete", max_age_seconds=60) is None

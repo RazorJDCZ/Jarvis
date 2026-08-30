@@ -1226,6 +1226,40 @@ h1 span {
   font: 12px/1.5 "Segoe UI", sans-serif;
 }
 
+.message-feedback {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.message-feedback button {
+  width: 25px;
+  height: 22px;
+  border: 1px solid rgba(255, 54, 88, 0.22);
+  color: #c890a0;
+  background: rgba(5, 13, 22, 0.55);
+  cursor: pointer;
+  font: 12px/1 "Segoe UI", sans-serif;
+}
+
+.message-feedback button:hover:not(:disabled) {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.message-feedback[data-rating="1"] button:first-child,
+.message-feedback[data-rating="-1"] button:last-child {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  box-shadow: 0 0 12px rgba(67, 232, 203, 0.14);
+}
+
+.message-feedback button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
 .user-message {
   align-self: flex-end;
   padding-right: 14px;

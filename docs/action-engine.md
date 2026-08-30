@@ -42,6 +42,10 @@
 | Desarrollo | listar, inspeccionar, buscar, ejecutar pruebas permitidas | bajo / alto |
 | Juegos | listar manifiestos, iniciar mediante URI validado | bajo / medio |
 
+`window.list` obtiene las ventanas abiertas mediante la API de Windows y no depende de una captura,
+del brillo ni de que los monitores estén encendidos. La visión se reserva para preguntas sobre el
+contenido que aparece visualmente en una pantalla.
+
 Hay 78 acciones ejecutables cerradas en `ActionName`, además del contenedor interno
 `workflow.run`. Agregar otra requiere definir explícitamente su riesgo, validación, ejecución y
 pruebas.

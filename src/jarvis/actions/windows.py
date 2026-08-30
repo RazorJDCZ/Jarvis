@@ -470,12 +470,30 @@ class WindowController:
             if len(titles) >= 15:
                 break
         if not titles:
-            return ExecutionResult(True, "No encontré ventanas visibles.", {"windows": []})
+            return ExecutionResult(
+                True,
+                (
+                    "Windows no reporta aplicaciones con una ventana visible abierta. "
+                    "Consulté el sistema directamente; no necesité una captura."
+                ),
+                {
+                    "windows": [],
+                    "source": "windows-api",
+                    "display_capture_required": False,
+                },
+            )
         spoken = "; ".join(titles[:8])
         return ExecutionResult(
             True,
-            f"Encontré {len(titles)} ventanas. {spoken}",
-            {"windows": titles},
+            (
+                f"Windows reporta {len(titles)} aplicaciones o ventanas abiertas. {spoken}. "
+                "Lo consulté directamente, sin usar los monitores ni una captura."
+            ),
+            {
+                "windows": titles,
+                "source": "windows-api",
+                "display_capture_required": False,
+            },
         )
 
     def current(self) -> ExecutionResult:

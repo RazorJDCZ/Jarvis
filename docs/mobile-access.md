@@ -1,6 +1,6 @@
 # Acceso móvil privado
 
-Jarvis 0.9.0 expone su PWA únicamente dentro de la red privada de Tailscale. El proceso de Python
+Jarvis 1.0.0 expone su PWA únicamente dentro de la red privada de Tailscale. El proceso de Python
 continúa escuchando en `127.0.0.1`; no se abre un puerto del router, no se activa Tailscale Funnel y
 no existe un listener en la LAN.
 

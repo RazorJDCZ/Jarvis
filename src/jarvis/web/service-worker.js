@@ -1,10 +1,10 @@
-const CACHE_NAME = "jarvis-agent-interface-v10";
+const CACHE_NAME = "jarvis-agent-interface-v11";
 const STATIC_ASSETS = [
   "/",
-  "/static/styles.css?v=agent-v8",
-  "/static/app.js?v=agent-v8",
-  "/static/icon.svg?v=agent-v8",
-  "/manifest.webmanifest?v=agent-v8",
+  "/static/styles.css?v=agent-v9",
+  "/static/app.js?v=agent-v9",
+  "/static/icon.svg?v=agent-v9",
+  "/manifest.webmanifest?v=agent-v9",
 ];
 
 self.addEventListener("install", (event) => {

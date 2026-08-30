@@ -1,0 +1,4 @@
+[
+  {"text": "Pon en marcha Spotify para escuchar algo", "tool": "app.open"},
+  {"text": "¿Qué software tengo disponible en esta máquina?", "tool": "app.list"}
+]

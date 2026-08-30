@@ -211,7 +211,7 @@ class DeterministicActionParser:
     )
     _REQUEST_SIGNALS = re.compile(
         r"\b(?:puedes|podrias|quiero|quisiera|necesito|haz|hazme|ayudame|ayudas|"
-        r"gustaria|agradeceria|importaria|dime|muestrame|cuentame|revisa|verifica|"
+        r"gustaria|agradeceria|importaria|dame|dime|muestrame|cuentame|revisa|verifica|"
         r"analiza|analices|averigua|comprueba|"
         r"observa|mira|encuentra|localiza|abre|cierra|busca|escribe|lee|sube|baja|"
         r"cambia|pon|quita|organiza|acomoda|deja|llevame|entra|ve|visita|navega|"
@@ -613,8 +613,14 @@ class DeterministicActionParser:
             command,
         ):
             return True
+        if re.match(r"^(?:explica(?:me)?|cuenta(?:me)?|ensena(?:me)?) como\b", command):
+            return True
+        if command.startswith("muestra como "):
+            return True
         if re.match(
-            r"^(?:explica(?:me)?|cuenta(?:me)?|ensena(?:me)?|muestra(?:me)?|dime) como\b",
+            r"^dime como (?:puedo|podria|se puede|debo|deberia|"
+            r"haria|hago|hacer|abrir|cerrar|buscar|usar|configurar|cambiar|subir|bajar|"
+            r"eliminar|instalar)\b",
             command,
         ):
             return True
@@ -638,6 +644,12 @@ class DeterministicActionParser:
                 command,
             )
         )
+
+    def is_explicitly_non_action(self, text: str) -> bool:
+        """Expose the conservative negation/meta guard to the semantic admission layer."""
+
+        command = self._canonical_command(text)
+        return not command or self._is_meta_request(command)
 
     def has_agent_intent(self, text: str) -> bool:
         """Broad, local gate for requests that deserve semantic tool planning.
@@ -676,6 +688,8 @@ class DeterministicActionParser:
 
     def looks_visual(self, text: str) -> bool:
         command = self._canonical_command(text)
+        if command and self._is_open_window_inventory_request(command):
+            return False
         return bool(
             command
             and not self._is_meta_request(command)
@@ -825,6 +839,43 @@ class DeterministicActionParser:
             if command.startswith(source_verb + " "):
                 return imperative + command[len(source_verb) :]
         return command
+
+    @classmethod
+    def _is_open_window_inventory_request(cls, command: str) -> bool:
+        """Distinguish Windows state from questions about visible screen content."""
+
+        # An explicit monitor/screen reference really does ask for visual evidence.
+        if cls._VISUAL_REFERENCE.search(command):
+            return False
+        request = re.match(
+            r"^(?:que|cuales|cuantas|dime|decirme|indicame|muestra(?:me)?|lista|enumera|"
+            r"revisa|comprueba|quiero saber|necesito saber|me gustaria saber)\b",
+            command,
+        )
+        if request is None:
+            return False
+        plural_application = re.search(
+            r"\b(?:aplicaciones|apps|programas|ventanas)\b",
+            command,
+        )
+        open_state = re.search(
+            r"\b(?:abiertas|abiertos|ejecutandose|ejecutando|corriendo|"
+            r"activas|activos|iniciadas|iniciados)\b",
+            command,
+        )
+        if plural_application is not None and open_state is not None:
+            return True
+
+        computer = re.search(
+            r"\ben (?:mi|la|el) (?:pc|computadora|ordenador|equipo)\b",
+            command,
+        )
+        generic_state = re.search(
+            r"\b(?:que (?:tengo|tenia|hay|habia|quedo) abiert[oa]s?|"
+            r"que se (?:esta|estaba|sigue) ejecutando)\b",
+            command,
+        )
+        return computer is not None and generic_state is not None
 
     @classmethod
     def _number_value(cls, value: str) -> int | None:
@@ -1276,6 +1327,9 @@ class DeterministicActionParser:
             "cuantos monitores hay",
         }:
             return self._plan(ActionName.SCREEN_LIST)
+
+        if self._is_open_window_inventory_request(command):
+            return self._plan(ActionName.WINDOW_LIST)
 
         if re.fullmatch(
             r"(?:que|cual|cuanto|dime|indica|consulta|revisa|verifica|"

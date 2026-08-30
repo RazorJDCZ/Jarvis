@@ -138,6 +138,8 @@ sus runners; el siguiente arranque elimina runners huérfanos de la carpeta del 
 - “Abre Spotify”, “abre Discord”, “abre Word” o “abre Visual Studio Code”. Jarvis consulta el
   catálogo de aplicaciones de Windows, incluidos programas clásicos y aplicaciones empaquetadas.
 - “¿Qué aplicaciones puedes abrir?” muestra el inventario seguro disponible en este equipo.
+- “¿Qué aplicaciones están abiertas en mi PC?” consulta las ventanas directamente mediante
+  Windows; funciona aunque los monitores estén apagados y no necesita una captura.
 - Las aplicaciones descubiertas dinámicamente requieren confirmación y vuelven a validarse contra
   el catálogo de Windows justo antes de abrirse. Si un nombre es ambiguo, Jarvis pide el nombre
   completo.
@@ -315,6 +317,13 @@ los permisos del motor.
 La referencia completa de acciones, riesgos y límites está en
 [docs/action-engine.md](docs/action-engine.md). La guía del nuevo centro local, Appa, adjuntos,
 workspaces y sus límites está en [docs/capabilities.md](docs/capabilities.md).
+
+## Agente local 1.0
+
+La toma de decisiones combina llamadas nativas a herramientas, selección semántica del catálogo,
+estado verificable con caducidad y metas persistentes. Qwen 4B atiende lo cotidiano y Qwen 9B se
+activa sólo para razonamiento complejo. Appa aporta en una sola lectura el contexto real de tareas,
+proyectos, agenda, inbox y focus. Consulta [docs/agent-architecture.md](docs/agent-architecture.md).
 
 ## Seguridad
 

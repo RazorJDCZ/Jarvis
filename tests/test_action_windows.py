@@ -302,6 +302,9 @@ def test_window_lookup_scores_native_titles_without_querying_every_uia_window(
 
     assert found == "window-10"
     assert listed.details["windows"] == ["Calculadora", "Calculadora - ayuda", "Otro"]
+    assert listed.details["source"] == "windows-api"
+    assert listed.details["display_capture_required"] is False
+    assert "sin usar los monitores ni una captura" in listed.message
 
 
 def test_win32_handles_are_canonicalized_when_callbacks_sign_extend_them() -> None:

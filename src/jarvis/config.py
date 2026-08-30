@@ -78,6 +78,10 @@ class Settings:
         "JARVIS_AGENT_MODEL",
         os.getenv("JARVIS_OLLAMA_MODEL", "qwen3.5:4b"),
     )
+    agent_reasoning_model: str = os.getenv("JARVIS_AGENT_REASONING_MODEL", "qwen3.5:9b").strip()
+    agent_reasoning_enabled: bool = _env_bool("JARVIS_AGENT_REASONING_ENABLED", True)
+    agent_native_tools: bool = _env_bool("JARVIS_AGENT_NATIVE_TOOLS", True)
+    agent_tool_limit: int = _env_int("JARVIS_AGENT_TOOL_LIMIT", 18)
     agent_keep_alive: str = os.getenv("JARVIS_AGENT_KEEP_ALIVE", "0s").strip() or "0s"
     agent_timeout: float = _env_float("JARVIS_AGENT_TIMEOUT", 60.0)
     agent_max_steps: int = _env_int("JARVIS_AGENT_MAX_STEPS", 5)
@@ -164,6 +168,12 @@ class Settings:
             raise ValueError("Un objetivo del agente debe permitir entre 1 y 4 rondas")
         if not 30 <= self.deep_analysis_confirmation_seconds <= 600:
             raise ValueError("La confirmación de análisis debe durar entre 30 y 600 segundos")
+        if not 8 <= self.agent_tool_limit <= 32:
+            raise ValueError("El selector del agente debe ofrecer entre 8 y 32 herramientas")
+        if len(self.agent_reasoning_model) > 160 or any(
+            character in self.agent_reasoning_model for character in "\x00\r\n"
+        ):
+            raise ValueError("El modelo de razonamiento no es valido")
         if not 0.5 <= self.agent_min_confidence <= 1:
             raise ValueError("La confianza mínima del agente debe estar entre 0.5 y 1")
 
@@ -278,6 +288,11 @@ class Settings:
     @property
     def capability_database_path(self) -> Path:
         configured = Path(os.getenv("JARVIS_CAPABILITY_DATABASE", ".data/capabilities.sqlite3"))
+        return configured if configured.is_absolute() else self.project_root / configured
+
+    @property
+    def agent_state_path(self) -> Path:
+        configured = Path(os.getenv("JARVIS_AGENT_STATE_DATABASE", ".data/agent-state.sqlite3"))
         return configured if configured.is_absolute() else self.project_root / configured
 
     @property

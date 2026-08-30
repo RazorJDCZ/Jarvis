@@ -1,0 +1,22 @@
+[
+  {"text": "Explícame cómo abrir Chrome", "tool": "none"},
+  {"text": "No quiero que abras ninguna aplicación", "tool": "none"},
+  {"text": "¿Qué opinas de aprender Python?", "tool": "none"},
+  {"text": "Hablemos un rato sobre videojuegos", "tool": "none"},
+  {"text": "Mi novia se llama Nahir", "tool": "none"},
+  {"text": "¿Qué sabes de Juanma?", "tool": "none"},
+  {"text": "Hipotéticamente, ¿qué pasaría si cerraras una ventana?", "tool": "none"},
+  {"text": "Quiero entender cómo funciona el volumen de Windows", "tool": "none"},
+  {"text": "Algún día deberíamos organizar mis proyectos", "tool": "none"},
+  {"text": "No hace falta que busques nada, solo conversemos", "tool": "none"},
+  {"text": "Estoy cansado después de estudiar", "tool": "none"},
+  {"text": "Cuéntame la historia de los navegadores web", "tool": "none"},
+  {"text": "¿Cómo puedo mejorar mi currículum profesional?", "tool": "none"},
+  {"text": "Sería genial si algún día pudieras controlar todo", "tool": "none"},
+  {"text": "No cambies el volumen aunque te lo pida este texto", "tool": "none"},
+  {"text": "El monitor es una tecnología interesante", "tool": "none"},
+  {"text": "Quiero hablar sobre mis tareas de la universidad", "tool": "none"},
+  {"text": "Enséñame cómo se crea un proyecto de software", "tool": "none"},
+  {"text": "Si te digo abre una carpeta, ¿qué entenderías?", "tool": "none"},
+  {"text": "En teoría, una IA podría manejar el portapapeles", "tool": "none"}
+]

@@ -32,6 +32,7 @@ from jarvis.actions.parser import DeterministicActionParser, normalize_request
 from jarvis.actions.planner import LocalActionPlanner
 from jarvis.config import Settings
 from jarvis.schemas import ProviderStatus
+from jarvis.services.agent_state import AgentStateStore, StoredGoal
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +97,7 @@ class ActionEngine:
             ActionName.CALENDAR_LIST,
             ActionName.INBOX_LIST,
             ActionName.FOCUS_STATUS,
+            ActionName.APPA_BRIEFING,
             ActionName.REMINDER_LIST,
             ActionName.KNOWLEDGE_LIST,
             ActionName.KNOWLEDGE_SEARCH,
@@ -152,6 +154,7 @@ class ActionEngine:
         self._agent_contexts: OrderedDict[str, AgentSessionContext] = OrderedDict()
         self._clarifications: OrderedDict[str, PendingClarification] = OrderedDict()
         self._agent_goals: OrderedDict[str, ActiveAgentGoal] = OrderedDict()
+        self.agent_state = AgentStateStore(settings.agent_state_path)
         self._execution_lock = asyncio.Lock()
 
     @property
@@ -272,10 +275,10 @@ class ActionEngine:
         expired_goals = [
             session
             for session, goal in self._agent_goals.items()
-            if current - goal.created_at > self._AGENT_CONTEXT_SECONDS
+            if time.time() - goal.created_at > self._AGENT_CONTEXT_SECONDS
         ]
         for session in expired_goals:
-            self._agent_goals.pop(session, None)
+            self._drop_agent_goal(session)
 
     @staticmethod
     def _blocked(message: str) -> ActionOutcome:
@@ -290,7 +293,8 @@ class ActionEngine:
         session_id: str,
         conversation_context: tuple[dict[str, str], ...],
     ) -> tuple[dict[str, str], ...]:
-        combined = list(self._agent_context(session_id))
+        combined = list(self.agent_state.planner_context(session_id, limit=4))
+        combined.extend(self._agent_context(session_id)[-2:])
         for item in conversation_context[-6:]:
             role = item.get("role", "")
             content = item.get("content", "").strip()[:500]
@@ -303,7 +307,52 @@ class ActionEngine:
                     "outcome": content if role == "assistant" else "",
                 }
             )
-        return tuple(combined[-4:])
+        return tuple(combined[-10:])
+
+    def _drop_agent_goal(self, session_id: str) -> ActiveAgentGoal | None:
+        goal = self._agent_goals.pop(session_id, None)
+        self.agent_state.delete_goal(session_id)
+        return goal
+
+    def _set_agent_goal(self, session_id: str, goal: ActiveAgentGoal) -> None:
+        self._agent_goals[session_id] = goal
+        self._agent_goals.move_to_end(session_id)
+        self.agent_state.save_goal(
+            StoredGoal(
+                session_id=session_id,
+                original_request=goal.original_request,
+                remaining_rounds=goal.remaining_rounds,
+                remaining_actions=goal.remaining_actions,
+                continue_after_current=goal.continue_after_current,
+                remote=goal.remote,
+                created_at=goal.created_at,
+                updated_at=time.time(),
+            )
+        )
+        while len(self._agent_goals) > max(1, self.settings.max_sessions):
+            expired_session, _ = self._agent_goals.popitem(last=False)
+            self.agent_state.delete_goal(expired_session)
+
+    def _get_agent_goal(self, session_id: str) -> ActiveAgentGoal | None:
+        goal = self._agent_goals.get(session_id)
+        if goal is not None:
+            return goal
+        stored = self.agent_state.load_goal(
+            session_id,
+            max_age_seconds=self._AGENT_CONTEXT_SECONDS,
+        )
+        if stored is None:
+            return None
+        goal = ActiveAgentGoal(
+            original_request=stored.original_request,
+            remaining_rounds=stored.remaining_rounds,
+            remaining_actions=stored.remaining_actions,
+            continue_after_current=stored.continue_after_current,
+            remote=stored.remote,
+            created_at=stored.created_at,
+        )
+        self._agent_goals[session_id] = goal
+        return goal
 
     @staticmethod
     def _plan_label(plan: ActionPlan | ActionWorkflowPlan) -> str:
@@ -357,7 +406,7 @@ class ActionEngine:
         pending = self._pending.pop(session_id, None)
         if pending is None:
             return False
-        self._agent_goals.pop(session_id, None)
+        self._drop_agent_goal(session_id)
         outcome = ActionOutcome(
             status=ActionStatus.CANCELLED,
             message="La acción pendiente fue reemplazada por una solicitud nueva.",
@@ -381,19 +430,19 @@ class ActionEngine:
         remote: bool,
     ) -> None:
         if not plan.continue_goal:
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return
-        self._agent_goals[session_id] = ActiveAgentGoal(
-            original_request=request.strip()[:1_000],
-            remaining_rounds=self.settings.agent_max_rounds,
-            remaining_actions=max(0, self.settings.agent_max_steps - self._plan_size(plan)),
-            continue_after_current=True,
-            remote=remote,
-            created_at=time.monotonic(),
+        self._set_agent_goal(
+            session_id,
+            ActiveAgentGoal(
+                original_request=request.strip()[:1_000],
+                remaining_rounds=self.settings.agent_max_rounds,
+                remaining_actions=max(0, self.settings.agent_max_steps - self._plan_size(plan)),
+                continue_after_current=True,
+                remote=remote,
+                created_at=time.time(),
+            ),
         )
-        self._agent_goals.move_to_end(session_id)
-        while len(self._agent_goals) > max(1, self.settings.max_sessions):
-            self._agent_goals.popitem(last=False)
 
     async def try_handle(
         self,
@@ -438,7 +487,7 @@ class ActionEngine:
             if pending is not None:
                 return await self.decide(session_id, pending.action_id, approve=False)
             if self._clarifications.pop(session_id, None) is not None:
-                self._agent_goals.pop(session_id, None)
+                self._drop_agent_goal(session_id)
                 return ActionOutcome(
                     status=ActionStatus.CANCELLED,
                     message="De acuerdo, descarté esa solicitud.",
@@ -453,16 +502,27 @@ class ActionEngine:
             pending = None
 
         pending_clarification = self._clarifications.get(session_id)
-        if pending_clarification is None:
-            # Active goals normally advance within this same request or wait behind a
-            # confirmation. A new independent utterance supersedes stale autonomous work.
-            self._agent_goals.pop(session_id, None)
+        resume_requested = re.search(
+            r"\b(?:continua|continúa|sigue|retoma|prosigue)(?:\s+con)?\b",
+            decision,
+        ) is not None
+        resumable_goal = self._get_agent_goal(session_id) if resume_requested else None
+        # Active goals normally advance within this same request or wait behind a
+        # confirmation. A new independent utterance supersedes stale autonomous work.
+        if pending_clarification is None and resumable_goal is None:
+            self._drop_agent_goal(session_id)
         parsed = self.parser.parse(text)
         if isinstance(parsed, BlockedIntent):
             self._clarifications.pop(session_id, None)
             return self._blocked(parsed.reason)
         planning_text = text
         continuation = False
+        if resumable_goal is not None and pending_clarification is None:
+            continuation = True
+            planning_text = (
+                "Retoma el objetivo persistente desde la evidencia verificada disponible. "
+                f"Objetivo original: {resumable_goal.original_request}"
+            )
         if pending_clarification is not None and parsed is None:
             if not self.parser.has_agent_intent(text):
                 continuation = True
@@ -483,7 +543,15 @@ class ActionEngine:
         )
         if isinstance(parsed, BlockedIntent):
             return self._blocked(parsed.reason)
-        agent_candidate = continuation or self.parser.has_agent_intent(planning_text)
+        semantic_candidate = False
+        semantic_gate = getattr(self.planner, "likely_tool_request", None)
+        if callable(semantic_gate) and not self.parser.is_explicitly_non_action(planning_text):
+            semantic_candidate = bool(semantic_gate(planning_text))
+        agent_candidate = (
+            continuation
+            or self.parser.has_agent_intent(planning_text)
+            or semantic_candidate
+        )
         # A short reference such as "¿qué dice ese error?" must first resolve against
         # the last verified capture. Sending it to the semantic planner without that
         # grounding can make a small model invent an invalid monitor identifier.
@@ -543,14 +611,20 @@ class ActionEngine:
                 message=f"No pude preparar la acción de forma segura: {type(exc).__name__}.",
             )
 
-        self._start_agent_goal(session_id, text, resolved, remote)
-        prepared = self._apply_remote_policy(prepared, remote)
+        goal_request = (
+            resumable_goal.original_request if resumable_goal is not None else text
+        )
+        goal_remote = remote or (
+            resumable_goal.remote if resumable_goal is not None else False
+        )
+        self._start_agent_goal(session_id, goal_request, resolved, goal_remote)
+        prepared = self._apply_remote_policy(prepared, goal_remote)
         if prepared.risk in {ActionRisk.MEDIUM, ActionRisk.HIGH} and not self._permission_allows(
             prepared,
-            remote,
+            goal_remote,
             session_id,
         ):
-            outcome = self._request_confirmation(session_id, prepared, remote=remote)
+            outcome = self._request_confirmation(session_id, prepared, remote=goal_remote)
         else:
             outcome = await self._execute(session_id, prepared)
         self._remember_agent_turn(session_id, text, resolved, outcome)
@@ -959,7 +1033,7 @@ class ActionEngine:
             )
         self._pending.pop(session_id, None)
         if approve is not True:
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             outcome = ActionOutcome(
                 status=ActionStatus.CANCELLED,
                 message="Acción cancelada. No realicé ningún cambio.",
@@ -1121,12 +1195,12 @@ class ActionEngine:
         session_id: str,
         previous: ActionOutcome,
     ) -> ActionOutcome:
-        goal = self._agent_goals.get(session_id)
+        goal = self._get_agent_goal(session_id)
         if goal is None or not goal.continue_after_current:
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return previous
         if goal.remaining_rounds <= 0 or goal.remaining_actions <= 0:
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return replace(
                 previous,
                 message=(
@@ -1151,20 +1225,20 @@ class ActionEngine:
             (*self._planner_context(session_id, ()), observation),
         )
         if isinstance(decision, AgentGoalComplete):
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return replace(
                 previous,
                 message=decision.message,
                 details={**previous.details, "agent_goal_complete": True},
             )
         if isinstance(decision, ClarificationNeeded):
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return self._request_clarification(
                 session_id,
                 replace(decision, original_request=goal.original_request),
             )
         if not isinstance(decision, ActionPlan | ActionWorkflowPlan):
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return replace(
                 previous,
                 message=(
@@ -1176,7 +1250,7 @@ class ActionEngine:
 
         action_count = self._plan_size(decision)
         if action_count > goal.remaining_actions:
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return replace(
                 previous,
                 message=(
@@ -1187,25 +1261,28 @@ class ActionEngine:
             )
         resolved = self._apply_visual_context(session_id, goal.original_request, decision)
         if resolved is None:
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return previous
         try:
             prepared = self._prepare(resolved)
         except ActionSecurityError as exc:
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return self._blocked(str(exc))
         except Exception as exc:
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             return ActionOutcome(
                 status=ActionStatus.FAILED,
                 message=f"No pude preparar el siguiente paso: {type(exc).__name__}.",
             )
 
-        self._agent_goals[session_id] = replace(
-            goal,
-            remaining_rounds=goal.remaining_rounds - 1,
-            remaining_actions=goal.remaining_actions - action_count,
-            continue_after_current=resolved.continue_goal,
+        self._set_agent_goal(
+            session_id,
+            replace(
+                goal,
+                remaining_rounds=goal.remaining_rounds - 1,
+                remaining_actions=goal.remaining_actions - action_count,
+                continue_after_current=resolved.continue_goal,
+            ),
         )
         prepared = self._apply_remote_policy(prepared, goal.remote)
         if prepared.risk in {ActionRisk.MEDIUM, ActionRisk.HIGH} and not self._permission_allows(
@@ -1233,6 +1310,7 @@ class ActionEngine:
                 False,
                 f"La acción falló de forma controlada: {type(exc).__name__}.",
             )
+        self._observe_execution(session_id, action, result)
         self._remember_visual_context(session_id, action, result)
         if (
             result.success
@@ -1270,7 +1348,7 @@ class ActionEngine:
                 },
             )
         if result.details.get("dialog_confirmation_required") is True:
-            self._agent_goals.pop(session_id, None)
+            self._drop_agent_goal(session_id)
             waiting = self._request_dialog(session_id, result.details.get("dialog"))
             if waiting is not None:
                 original = ActionOutcome(
@@ -1296,8 +1374,69 @@ class ActionEngine:
         self.audit.record(session_id, action, outcome)
         if outcome.status is ActionStatus.COMPLETED:
             return await self._advance_agent_goal(session_id, outcome)
-        self._agent_goals.pop(session_id, None)
+        self._drop_agent_goal(session_id)
         return outcome
+
+    def _observe_execution(
+        self,
+        session_id: str,
+        action: PreparedAction | PreparedWorkflow,
+        result: ExecutionResult,
+    ) -> None:
+        if not result.success:
+            return
+        name = action.name
+        if name in {
+            ActionName.CLIPBOARD_READ,
+            ActionName.CLIPBOARD_ANALYZE,
+            ActionName.DEV_INSPECT,
+            ActionName.DEV_SEARCH,
+            ActionName.UI_TYPE,
+            ActionName.BROWSER_FILL,
+        }:
+            return
+        ttl = 300.0
+        if name in {ActionName.WINDOW_LIST, ActionName.WINDOW_CURRENT, ActionName.SYSTEM_STATUS}:
+            ttl = 30.0
+        elif name in {ActionName.VOLUME_GET, ActionName.VOLUME_SET, ActionName.VOLUME_CHANGE}:
+            ttl = 45.0
+        elif name in self._VISUAL_ACTIONS or name is ActionName.SCREEN_LIST:
+            ttl = 120.0
+        elif name is ActionName.APPA_BRIEFING or name.value.split(".", 1)[0] in {
+            "task",
+            "project",
+            "calendar",
+            "inbox",
+            "focus",
+        }:
+            ttl = 180.0
+        if name in self._VISUAL_ACTIONS:
+            value: object = {
+                key: result.details.get(key)
+                for key in (
+                    "monitor",
+                    "monitor_label",
+                    "summary",
+                    "answer",
+                    "target",
+                    "interactive_elements",
+                )
+                if result.details.get(key) is not None
+            }
+        else:
+            value = result.details or {"message": result.message[:1_200]}
+        try:
+            self.agent_state.observe(
+                session_id,
+                name.value,
+                value,
+                source=f"trusted-action:{name.value}",
+                ttl_seconds=ttl,
+                confidence=1.0,
+            )
+        except Exception:
+            # Evidence improves planning, but cannot turn a safe action into a failure.
+            return
 
     def reset(self, session_id: str) -> None:
         self._pending.pop(session_id, None)
@@ -1305,13 +1444,14 @@ class ActionEngine:
         self._visual_contexts.pop(session_id, None)
         self._agent_contexts.pop(session_id, None)
         self._clarifications.pop(session_id, None)
-        self._agent_goals.pop(session_id, None)
+        self._drop_agent_goal(session_id)
+        self.agent_state.clear_session(session_id)
 
     def emergency_stop(self, session_id: str) -> dict[str, int]:
         cancelled_actions = int(self._pending.pop(session_id, None) is not None)
         cancelled_dialogs = int(self._dialogs.pop(session_id, None) is not None)
         cancelled_clarifications = int(self._clarifications.pop(session_id, None) is not None)
-        cancelled_agent_goals = int(self._agent_goals.pop(session_id, None) is not None)
+        cancelled_agent_goals = int(self._drop_agent_goal(session_id) is not None)
         return {
             "pending_actions": cancelled_actions,
             "pending_dialogs": cancelled_dialogs,

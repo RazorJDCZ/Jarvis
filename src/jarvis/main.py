@@ -26,6 +26,7 @@ from jarvis.schemas import (
     ActionInfo,
     ChatRequest,
     ChatResponse,
+    FeedbackRequest,
     HealthResponse,
     InterruptResponse,
     RemoteAuthenticationRequest,
@@ -37,6 +38,7 @@ from jarvis.schemas import (
     VoiceResponse,
 )
 from jarvis.services.conversation import ConversationService
+from jarvis.services.feedback import FeedbackStore
 from jarvis.services.interruptions import VoiceInterruptionMatcher
 from jarvis.services.remote_access import (
     RemoteAccessError,
@@ -97,6 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     wake_gate = WakeGate(config.wake_word, config.wake_window_seconds, config.max_sessions)
     interruption_matcher = VoiceInterruptionMatcher(config.wake_word)
     remote_access = RemoteAccessService(config)
+    feedback = FeedbackStore(config.data_dir / "agent-feedback.sqlite3")
 
     async def warm_brain() -> bool:
         try:
@@ -143,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.wake_gate = wake_gate
     app.state.action_engine = action_engine
     app.state.remote_access = remote_access
+    app.state.feedback = feedback
     trusted_origins = {
         f"http://127.0.0.1:{config.port}",
         f"http://localhost:{config.port}",
@@ -453,7 +457,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/chat", response_model=ChatResponse)
     async def chat(http_request: Request, request: ChatRequest) -> ChatResponse:
         session_id = effective_session_id(http_request, request.session_id)
-        await state_hub.set("thinking", "Procesando solicitud")
+        await state_hub.set("thinking", "Interpretando intención y seleccionando herramientas")
         try:
             answer = await conversation.reply(
                 session_id,
@@ -464,7 +468,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as exc:
             await state_hub.set("error", "No pude generar una respuesta")
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        await state_hub.set("ready", "Respuesta preparada")
+        await state_hub.set(
+            "ready",
+            "Acción verificada" if answer.action is not None else "Respuesta preparada",
+        )
         record_remote_result(http_request, answer.provider, answer.action)
         return ChatResponse(
             response=answer.text,
@@ -472,6 +479,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             action=action_info(answer.action),
             trace_id=answer.trace_id,
         )
+
+    @app.post("/api/feedback", status_code=204)
+    async def agent_feedback(http_request: Request, request: FeedbackRequest) -> Response:
+        session_id = effective_session_id(http_request, request.session_id)
+        feedback.record(
+            request.trace_id,
+            session_id,
+            request.rating,
+            category=request.category,
+            note=request.note,
+        )
+        return Response(status_code=204)
 
     @app.post("/api/actions/decision", response_model=ChatResponse)
     async def decide_action(http_request: Request, request: ActionDecisionRequest) -> ChatResponse:

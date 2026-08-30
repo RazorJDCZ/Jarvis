@@ -561,6 +561,26 @@ class CapabilitySuite:
                     source=plan.source,
                 )
                 return await catalog.execute(workflow, session_id=session_id)
+            if name is ActionName.APPA_BRIEFING:
+                context = await self.connectors.require_appa().personal_context()
+                counts = context["counts"]
+                focus = context.get("focus")
+                focus_text = ""
+                if isinstance(focus, dict):
+                    focus_text = (
+                        f" Focus {focus.get('status', 'activo')}, "
+                        f"{int(focus.get('remaining_seconds', 0)) // 60} minutos restantes."
+                    )
+                return ExecutionResult(
+                    True,
+                    "Appa registra "
+                    f"{counts['open_tasks']} tareas abiertas, "
+                    f"{counts['active_projects']} proyectos activos, "
+                    f"{counts['calendar_items']} elementos de agenda y "
+                    f"{counts['inbox_pending']} capturas pendientes."
+                    f"{focus_text}",
+                    {"appa_context": context, "verified": True, "source": "appa"},
+                )
             if name is ActionName.TASK_LIST:
                 tasks = await self.connectors.tasks.list_tasks(session_id)
                 message = (

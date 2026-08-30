@@ -869,6 +869,53 @@ class AppaConnector:
                 "detail": str(exc),
             }
 
+    async def personal_context(self) -> dict[str, object]:
+        """Return Appa's compact productivity state as verified local evidence."""
+        await self._require_capabilities("context.read")
+        response = await self._request("GET", "/context")
+        payload = self._json(response)
+        if not isinstance(payload, dict):
+            raise ConnectorError("Appa devolvió un contexto personal inválido.")
+        generated_at = self._rfc3339(
+            self._required_text(payload, "generated_at", 80),
+            "generación de contexto",
+            required=True,
+        )
+        counts = payload.get("counts")
+        if not isinstance(counts, dict):
+            raise ConnectorError("Appa devolvió conteos de contexto inválidos.")
+        clean_counts: dict[str, int] = {}
+        for key in ("open_tasks", "active_projects", "calendar_items", "inbox_pending"):
+            value = counts.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 100_000:
+                raise ConnectorError("Appa devolvió conteos de contexto inválidos.")
+            clean_counts[key] = value
+        tasks = [self._decode(item).as_dict() for item in self._collection(payload, "tasks")[:12]]
+        projects = [
+            self._decode_project(item).as_dict()
+            for item in self._collection(payload, "projects")[:8]
+        ]
+        events = [
+            self._decode_calendar(item).as_dict()
+            for item in self._collection(payload, "events")[:12]
+        ]
+        inbox = [
+            self._decode_inbox(item).as_dict()
+            for item in self._collection(payload, "inbox")[:8]
+        ]
+        raw_focus = payload.get("focus")
+        focus = self._decode_focus(raw_focus).as_dict() if raw_focus is not None else None
+        return {
+            "generated_at": generated_at,
+            "counts": clean_counts,
+            "tasks": tasks,
+            "projects": projects,
+            "events": events,
+            "inbox": inbox,
+            "focus": focus,
+            "source": "appa-bridge-v1",
+        }
+
     async def list_tasks(self, session_id: str, include_completed: bool = False) -> list[TaskItem]:
         del session_id
         await self._require_capabilities("tasks.read")

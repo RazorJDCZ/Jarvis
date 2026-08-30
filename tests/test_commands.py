@@ -15,7 +15,7 @@ def test_informational_commands_are_local_and_deterministic() -> None:
     assert router.try_handle("¿Qué hora es?").response == "Son las 22:30."
     assert router.try_handle("dime la fecha").response == ("Hoy es viernes, 17 de julio de 2026.")
     version_response = router.try_handle("¿Cuál es tu versión?").response
-    assert "0.9.0" in version_response
+    assert "1.0.0" in version_response
     assert "enlace móvil privado" in version_response
     help_response = router.try_handle("ayuda").response
     assert "aplicaciones" in help_response

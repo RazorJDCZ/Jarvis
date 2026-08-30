@@ -59,6 +59,14 @@ class ChatResponse(BaseModel):
     trace_id: str | None = None
 
 
+class FeedbackRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    trace_id: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9._:-]+$")
+    rating: Literal[-1, 1]
+    category: str = Field(default="general", min_length=1, max_length=40)
+    note: str = Field(default="", max_length=500)
+
+
 class ActionDecisionRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     action_id: str = Field(min_length=1, max_length=64)

@@ -69,6 +69,7 @@ class ActionName(StrEnum):
     INBOX_CAPTURE = "inbox.capture"
     FOCUS_STATUS = "focus.status"
     FOCUS_START = "focus.start"
+    APPA_BRIEFING = "appa.briefing"
     REMINDER_LIST = "reminder.list"
     REMINDER_CREATE = "reminder.create"
     REMINDER_CANCEL = "reminder.cancel"

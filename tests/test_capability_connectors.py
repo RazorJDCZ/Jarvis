@@ -29,7 +29,72 @@ APPA_CAPABILITIES = [
     "inbox.write",
     "focus.read",
     "focus.write",
+    "context.read",
 ]
+
+
+@pytest.mark.asyncio
+async def test_appa_context_is_a_single_bounded_verified_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/v1/health":
+            return httpx.Response(200, json=health())
+        return httpx.Response(
+            200,
+            json={
+                "generated_at": "2026-08-29T20:00:00Z",
+                "counts": {
+                    "open_tasks": 1,
+                    "active_projects": 1,
+                    "calendar_items": 1,
+                    "inbox_pending": 0,
+                },
+                "tasks": [
+                    {
+                        "id": "task-1",
+                        "title": "Probar Jarvis",
+                        "completed": False,
+                        "created_at": "2026-08-29T19:00:00Z",
+                    }
+                ],
+                "projects": [
+                    {
+                        "id": "project-1",
+                        "name": "Jarvis",
+                        "status": "active",
+                        "created_at": "2026-08-20T19:00:00Z",
+                        "updated_at": "2026-08-29T19:00:00Z",
+                    }
+                ],
+                "events": [
+                    {
+                        "id": "event-1",
+                        "title": "Revisión",
+                        "start_at": "2026-08-30T15:00:00Z",
+                        "source_type": "manual",
+                        "completed": False,
+                        "created_at": "2026-08-29T19:00:00Z",
+                        "updated_at": "2026-08-29T19:00:00Z",
+                    }
+                ],
+                "inbox": [],
+                "focus": None,
+            },
+        )
+
+    patch_appa_transport(monkeypatch, handler)
+    appa = AppaConnector("http://127.0.0.1:47651/v1", "private-token")
+
+    context = await appa.personal_context()
+
+    assert paths == ["/v1/health", "/v1/context"]
+    assert context["counts"]["open_tasks"] == 1
+    assert context["tasks"][0]["title"] == "Probar Jarvis"
+    assert context["source"] == "appa-bridge-v1"
 
 
 def health() -> dict[str, object]:
