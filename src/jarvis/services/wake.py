@@ -33,7 +33,7 @@ class WakeGate:
             # Faster Whisper commonly maps the Spanish /x/ onset in "Jarvis" to one of
             # these rare spellings. Keep the list explicit so ordinary near-matches such as
             # "Carlos" or the name "Travis" never activate the assistant.
-            variants.update({"carvis", "garvis", "harvis", "yarvis"})
+            variants.update({"carvis", "garvis", "harvis", "yarvis", "harbis", "harbys"})
         alternatives = sorted(variants, key=len, reverse=True)
         return "(?:" + "|".join(re.escape(item) for item in alternatives) + ")"
 
@@ -86,3 +86,6 @@ class WakeGate:
 
     def reset(self, session_id: str) -> None:
         self._armed_until.pop(session_id, None)
+
+    def is_armed(self, session_id: str) -> bool:
+        return self._armed_until.get(session_id, 0) >= time.monotonic()

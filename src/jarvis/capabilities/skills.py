@@ -56,6 +56,10 @@ DEFAULT_SKILL_ACTIONS = frozenset(
         ActionName.DESKTOP_SHOW,
         ActionName.SYSTEM_STATUS,
         ActionName.PATH_OPEN_FOLDER,
+        ActionName.TASK_LIST,
+        ActionName.REMINDER_LIST,
+        ActionName.APPA_BRIEFING,
+        ActionName.FOCUS_STATUS,
     }
 )
 
@@ -106,6 +110,24 @@ class SkillManifest:
 
 
 _BUILTIN_PAYLOADS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "preparar_estudio",
+        "name": "Preparar estudio",
+        "description": "Consulta tus tareas y abre el bloc de notas para comenzar.",
+        "steps": [
+            {"action": "task.list", "arguments": {}},
+            {"action": "app.open", "arguments": {"app": "notepad"}},
+        ],
+    },
+    {
+        "id": "resumen_del_dia",
+        "name": "Resumen del día",
+        "description": "Consulta pendientes y recordatorios sin modificar nada.",
+        "steps": [
+            {"action": "task.list", "arguments": {}},
+            {"action": "reminder.list", "arguments": {}},
+        ],
+    },
     {
         "id": "diagnostico_rapido",
         "name": "Diagnóstico rápido",

@@ -59,6 +59,12 @@ class Settings:
     stt_device: str = os.getenv("JARVIS_STT_DEVICE", "cpu")
     stt_compute_type: str = os.getenv("JARVIS_STT_COMPUTE_TYPE", "int8")
     stt_language: str = os.getenv("JARVIS_STT_LANGUAGE", "es")
+    stt_cpu_threads: int = _env_int("JARVIS_STT_CPU_THREADS", 4)
+    adaptive_resources: bool = _env_bool("JARVIS_ADAPTIVE_RESOURCES", False)
+    semantic_enabled: bool = _env_bool("JARVIS_SEMANTIC_ENABLED", False)
+    voice_preload: bool = _env_bool("JARVIS_VOICE_PRELOAD", False)
+    model_reserve_gb: float = _env_float("JARVIS_MODEL_RESERVE_GB", 2.5)
+    reasoning_min_free_gb: float = _env_float("JARVIS_REASONING_MIN_FREE_GB", 8.0)
 
     wake_word: str = os.getenv("JARVIS_WAKE_WORD", "jarvis")
     wake_window_seconds: int = _env_int("JARVIS_WAKE_WINDOW_SECONDS", 10)

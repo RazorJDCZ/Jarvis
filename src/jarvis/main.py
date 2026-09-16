@@ -10,7 +10,7 @@ from typing import Annotated
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from jarvis import __version__
@@ -21,6 +21,7 @@ from jarvis.config import Settings
 from jarvis.providers.brain import build_brain
 from jarvis.providers.stt import WhisperTranscriber
 from jarvis.providers.tts import PiperTTS
+from jarvis.providers.wake_detector import LightweightWakeDetector
 from jarvis.schemas import (
     ActionDecisionRequest,
     ActionInfo,
@@ -40,6 +41,9 @@ from jarvis.schemas import (
 from jarvis.services.conversation import ConversationService
 from jarvis.services.feedback import FeedbackStore
 from jarvis.services.interruptions import VoiceInterruptionMatcher
+from jarvis.services.mail import MailService
+from jarvis.services.mail_api import mail_router
+from jarvis.services.performance import PerformanceLog, available_ram_gb, response_events, stage
 from jarvis.services.remote_access import (
     RemoteAccessError,
     RemoteAccessService,
@@ -100,6 +104,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     interruption_matcher = VoiceInterruptionMatcher(config.wake_word)
     remote_access = RemoteAccessService(config)
     feedback = FeedbackStore(config.data_dir / "agent-feedback.sqlite3")
+    performance = PerformanceLog()
+    wake_detector = LightweightWakeDetector(config.project_root / "models" / "wake")
+    mail = MailService(config, action_engine.capabilities)
+    conversation.mail = mail
+    if action_engine.capabilities is not None:
+        action_engine.capabilities.mail = mail
 
     async def warm_brain() -> bool:
         try:
@@ -109,10 +119,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # deterministic fallback available and the next chat can retry.
             return False
 
+    async def preload_voice():
+        if config.voice_preload and available_ram_gb() >= 3.5:
+            try:
+                await transcriber._ensure_model()
+                await transcriber.park()
+                if available_ram_gb() >= 2.5:
+                    await tts.synthesize("Listo.")
+            except Exception:
+                pass
+
+    async def resource_guard():
+        from jarvis.services.performance import gpu_free_mb
+
+        while True:
+            await asyncio.sleep(15)
+            if config.adaptive_resources:
+                gpu_free = await asyncio.to_thread(gpu_free_mb)
+                if available_ram_gb() < 1.8 or (gpu_free is not None and gpu_free < 512):
+                    await brain.release()
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         (config.data_dir / "tmp").mkdir(parents=True, exist_ok=True)
         await action_engine.start()
+        await mail.start()
+        voice_preload_task = asyncio.create_task(preload_voice())
+        resource_task = asyncio.create_task(resource_guard())
         warmup_task = (
             asyncio.create_task(warm_brain(), name="jarvis-ollama-warmup")
             if config.ollama_warmup_enabled
@@ -121,6 +154,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await mail.close()
+            for background in (voice_preload_task, resource_task):
+                background.cancel()
+            await asyncio.gather(voice_preload_task, resource_task, return_exceptions=True)
             if warmup_task is not None:
                 if not warmup_task.done():
                     warmup_task.cancel()
@@ -128,6 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await warmup_task
             await brain.release()
             await action_engine.close()
+            await state_hub.close()
 
     app = FastAPI(
         title="Jarvis Local Core",
@@ -147,6 +185,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.action_engine = action_engine
     app.state.remote_access = remote_access
     app.state.feedback = feedback
+    app.state.performance = performance
+    app.state.mail = mail
     trusted_origins = {
         f"http://127.0.0.1:{config.port}",
         f"http://localhost:{config.port}",
@@ -219,6 +259,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         remote_access.record_event(device.device_id, "command", status, summary)
 
+    from jarvis.services.assistant_api import assistant_router
+
+    app.include_router(mail_router(mail, require_local_console, config.web_dir))
+
+    app.include_router(
+        assistant_router(
+            config,
+            conversation,
+            action_engine.capabilities,
+            effective_session_id,
+            require_local_console,
+        )
+    )
+
     @app.middleware("http")
     async def secure_local_requests(request: Request, call_next) -> Response:
         origin = request.headers.get("origin")
@@ -271,6 +325,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     status_code=401,
                     content={"detail": "Este dispositivo debe autenticarse con su passkey."},
                 )
+        if request.url.path in {
+            "/api/chat",
+            "/api/chat/stream",
+            "/api/voice/utterance",
+            "/api/voice/stream",
+            "/api/voice/interrupt",
+        }:
+            mail.activity()
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; "
@@ -459,12 +521,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session_id = effective_session_id(http_request, request.session_id)
         await state_hub.set("thinking", "Interpretando intención y seleccionando herramientas")
         try:
-            answer = await conversation.reply(
-                session_id,
-                request.message,
-                remote=remote_device(http_request) is not None,
-                attachment_ids=tuple(request.attachment_ids),
-            )
+            with stage("conversation"):
+                answer = await conversation.reply(
+                    session_id,
+                    request.message,
+                    remote=remote_device(http_request) is not None,
+                    attachment_ids=tuple(request.attachment_ids),
+                )
         except Exception as exc:
             await state_hub.set("error", "No pude generar una respuesta")
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -491,6 +554,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             note=request.note,
         )
         return Response(status_code=204)
+
+    @app.post("/api/chat/stream")
+    async def chat_stream(http_request: Request, request: ChatRequest):
+        session = effective_session_id(http_request, request.session_id)
+        return StreamingResponse(
+            response_events(lambda: chat(http_request, request), performance, session),
+            media_type="application/x-ndjson",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/performance")
+    async def performance_status(request: Request, session_id: str = "default"):
+        return {
+            "requests": performance.recent(effective_session_id(request, session_id)),
+            "available_ram_gb": round(available_ram_gb(), 2),
+            "lightweight_wake": wake_detector.available,
+        }
 
     @app.post("/api/actions/decision", response_model=ChatResponse)
     async def decide_action(http_request: Request, request: ActionDecisionRequest) -> ChatResponse:
@@ -533,6 +613,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         audio: Annotated[UploadFile, File()],
         session_id: Annotated[str, Form()] = "default",
         wake_mode: Annotated[bool, Form()] = False,
+        wake_fast: Annotated[bool, Form()] = False,
     ) -> VoiceResponse:
         effective_session = effective_session_id(request, session_id)
         audio_bytes = await audio.read(config.max_audio_bytes + 1)
@@ -544,8 +625,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         suffix = safe_audio_suffix(audio.filename)
         tmp_path: Path | None = None
         try:
+            if wake_mode and wake_fast and not wake_gate.is_armed(effective_session):
+                with stage("wake_detection"):
+                    detected = await wake_detector.detects(audio_bytes)
+                if detected is False:
+                    return VoiceResponse(transcript="")
             await state_hub.set("transcribing", "Preparando memoria para reconocer tu voz")
-            await brain.release()
+            if not config.adaptive_resources or available_ram_gb() < config.model_reserve_gb:
+                with stage("model_release"):
+                    await brain.release()
             await state_hub.set("transcribing", "Convirtiendo voz en texto")
             with tempfile.NamedTemporaryFile(
                 mode="wb",
@@ -556,7 +644,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 tmp_file.write(audio_bytes)
                 tmp_path = Path(tmp_file.name)
 
-            transcript, language = await transcriber.transcribe(tmp_path)
+            with stage("transcription"):
+                transcript, language = await transcriber.transcribe(tmp_path)
             decision = wake_gate.evaluate(
                 session_id=effective_session,
                 transcript=transcript,
@@ -592,6 +681,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 response=answer.text,
                 provider=answer.provider,
                 action=action_info(answer.action),
+                trace_id=answer.trace_id,
             )
         except HTTPException:
             raise
@@ -605,13 +695,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/tts")
     async def synthesize(request: TTSRequest) -> Response:
         try:
-            audio_bytes = await tts.synthesize(request.text)
+            with stage("tts"):
+                audio_bytes = await tts.synthesize(request.text)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return Response(
             content=audio_bytes,
             media_type="audio/wav",
             headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/voice/stream")
+    async def voice_stream(
+        request: Request,
+        audio: Annotated[UploadFile, File()],
+        session_id: Annotated[str, Form()] = "default",
+        wake_mode: Annotated[bool, Form()] = False,
+        wake_fast: Annotated[bool, Form()] = False,
+    ):
+        session = effective_session_id(request, session_id)
+        # Read while the UploadFile is owned by this request, before response streaming.
+        import io
+
+        data = await audio.read(config.max_audio_bytes + 1)
+        if not data or len(data) > config.max_audio_bytes:
+            raise HTTPException(status_code=413, detail="Tamaño de audio no permitido")
+        owned_audio = UploadFile(io.BytesIO(data), filename=audio.filename)
+        return StreamingResponse(
+            response_events(
+                lambda: voice_utterance(request, owned_audio, session_id, wake_mode, wake_fast),
+                performance,
+                session,
+            ),
+            media_type="application/x-ndjson",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
         )
 
     @app.post("/api/voice/interrupt", response_model=InterruptResponse)

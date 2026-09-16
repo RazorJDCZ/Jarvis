@@ -183,6 +183,7 @@ function showToast(message, duration = 3600) {
 }
 
 function cancelActiveClientWork() {
+  appState.streaming = false;
   appState.operationGeneration += 1;
   for (const controller of appState.activeControllers) controller.abort();
   appState.activeControllers.clear();
@@ -857,7 +858,7 @@ async function pollNotifications() {
   appState.notificationPending = true;
   try {
     const result = await optionalJson(
-      deckSessionPath("/api/notifications", { consume: true }),
+      deckSessionPath("/api/notifications", { consume: false }),
     );
     if (!result.available) return;
     const notifications = payloadArray(result.data, ["notifications", "items"]);
@@ -891,6 +892,12 @@ async function pollNotifications() {
         } catch (error) {
           console.debug("System notification could not be displayed", error);
         }
+      }
+      if (notification.notification_id) {
+        await assistantJson("/api/assistant/notifications/ack", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: appState.sessionId, identifiers: [notification.notification_id] }),
+        });
       }
     }
   } finally {
@@ -1139,6 +1146,12 @@ async function loadFiles() {
     emptyTitle: "BIBLIOTECA VACÍA",
     emptyDetail: "Puedes adjuntar un documento y pedir que se incorpore a tu biblioteca.",
   });
+  for (const source of knowledge.data?.sources || []) {
+    elements.knowledgeSourceList.append(assistantButton(`Preparar búsqueda por significado: ${source.title}`, async () => {
+      const result = await assistantJson(deckSessionPath(`/api/assistant/knowledge/${encodeURIComponent(source.source_id)}/index`), { method: "POST" });
+      showToast(`Índice actualizado: ${result.fragments} fragmentos.`, 5000);
+    }));
+  }
   renderSimpleCollection(elements.workspaceList, workspaces, {
     keys: ["workspaces", "projects", "items"],
     emptyTitle: "SIN WORKSPACES AUTORIZADOS",
@@ -1402,6 +1415,10 @@ async function loadControlDeckSummary() {
 }
 
 async function loadDeckTab(name) {
+  if (name === "assistant") {
+    try { await loadAssistantPanel(); } catch (error) { showToast(error.message, 6000); }
+    return;
+  }
   if (name === "activity") await loadTraces();
   else if (name === "agenda") await loadAgenda();
   else if (name === "files") await loadFiles();
@@ -1842,6 +1859,7 @@ function handleAction(action) {
 async function decideAction(approve, choice = null, remember = false) {
   const pending = appState.pendingAction;
   if (!pending) return;
+  if (appState.streaming) cancelActiveClientWork();
   stopSpeaking();
   appState.busy = true;
   elements.approveActionButton.disabled = true;
@@ -1936,7 +1954,7 @@ function chooseSpanishVoice() {
 function finishSpeaking() {
   appState.interruptionPaused = false;
   appState.speaking = false;
-  appState.busy = false;
+  appState.busy = Boolean(appState.streaming);
   setVisualState(
     appState.handsFree ? "standby" : "ready",
     appState.handsFree ? "Di “Jarvis” para activarme" : "Mantén pulsado el núcleo para hablar",
@@ -1960,7 +1978,7 @@ function stopSpeaking() {
     appState.audioUrl = null;
   }
   appState.speaking = false;
-  appState.busy = false;
+  appState.busy = Boolean(appState.streaming);
   appState.interruptionPaused = false;
 }
 
@@ -2082,7 +2100,7 @@ async function sendText(message) {
   setVisualState("thinking", "Consultando el núcleo local");
   const generation = appState.operationGeneration;
   try {
-    const response = await cancellableFetch("/api/chat", {
+    const payload = await receiveAssistantStream("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2091,15 +2109,9 @@ async function sendText(message) {
         attachment_ids: readyAttachments.map(attachmentId),
       }),
     });
-    if (!response.ok) throw new Error(await readError(response));
-    const payload = await response.json();
     if (generation !== appState.operationGeneration) return;
     if (payload.action) handleAction(payload.action);
-    addMessage("jarvis", payload.response, `JARVIS // ${payload.provider.toUpperCase()}`, {
-      traceId: payload.trace_id,
-    });
     clearAttachmentSelection();
-    await speak(payload.response);
   } catch (error) {
     if (error.name === "AbortError") return;
     appState.busy = false;
@@ -2173,6 +2185,7 @@ class LocalMicrophone {
     }
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
+        ...(localStorage.getItem("jarvis-microphone") ? { deviceId: { ideal: localStorage.getItem("jarvis-microphone") } } : {}),
         channelCount: 1,
         echoCancellation: true,
         noiseSuppression: true,
@@ -2329,7 +2342,7 @@ class LocalMicrophone {
       }
       return;
     }
-    const blob = encodeWav(samples, this.context.sampleRate);
+    const blob = encodeWav(resampleVoice(samples, this.context.sampleRate), 16000);
     this.onUtterance(blob, wakeMode, wasInterruption);
   }
 }
@@ -2346,6 +2359,7 @@ async function sendInterruption(blob) {
     if (!response.ok) throw new Error(await readError(response));
     const payload = await response.json();
     if (payload.interrupted) {
+      if (appState.streaming) cancelActiveClientWork();
       interrupted = true;
       stopSpeaking();
       setVisualState("ready", "Respuesta interrumpida por voz");
@@ -2372,14 +2386,13 @@ async function sendUtterance(blob, wakeMode, interruptOnly = false) {
   form.append("audio", blob, "utterance.wav");
   form.append("session_id", appState.sessionId);
   form.append("wake_mode", String(wakeMode));
+  form.append("wake_fast", String(localStorage.getItem("jarvis-wake-mode") === "light"));
   const generation = appState.operationGeneration;
   try {
-    const response = await cancellableFetch("/api/voice/utterance", {
+    const payload = await receiveAssistantStream("/api/voice/stream", {
       method: "POST",
       body: form,
     });
-    if (!response.ok) throw new Error(await readError(response));
-    const payload = await response.json();
     if (generation !== appState.operationGeneration) return;
     if (!payload.transcript) {
       appState.busy = false;
@@ -2391,22 +2404,13 @@ async function sendUtterance(blob, wakeMode, interruptOnly = false) {
       setVisualState("standby", "En espera de “Jarvis”");
       return;
     }
-    addMessage("user", payload.transcript, payload.activated ? "TÚ // WAKE DETECTED" : "TÚ");
     if (payload.needs_command) {
       appState.busy = false;
       setVisualState("listening", "Te escucho");
-      await speak(payload.response || "Te escucho.");
       return;
     }
     if (payload.response) {
       if (payload.action) handleAction(payload.action);
-      addMessage(
-        "jarvis",
-        payload.response,
-        `JARVIS // ${(payload.provider || "LOCAL").toUpperCase()}`,
-        { traceId: payload.trace_id },
-      );
-      await speak(payload.response);
     } else {
       appState.busy = false;
       setVisualState("ready", "Solicitud recibida");
@@ -2423,6 +2427,7 @@ async function sendUtterance(blob, wakeMode, interruptOnly = false) {
 const microphone = new LocalMicrophone(sendUtterance);
 
 async function beginManualCapture() {
+  if (appState.streaming && appState.speaking) cancelActiveClientWork();
   if (appState.handsFree || (appState.busy && !appState.speaking)) return;
   if (appState.speaking) stopSpeaking();
   try {
@@ -2800,7 +2805,7 @@ function startNeuralField() {
   };
 
   const draw = (time = 0) => {
-    if (document.hidden) {
+    if (document.hidden || document.body.classList.contains("compact-mode")) {
       if (!reducedMotion) window.requestAnimationFrame(draw);
       return;
     }

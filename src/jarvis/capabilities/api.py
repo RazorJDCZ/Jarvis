@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -184,7 +185,7 @@ def create_capability_router(
         query: Annotated[str, Query(min_length=1, max_length=500)],
         session_id: str = "default",
     ):
-        items = suite.knowledge.search(session(request, session_id), query)
+        items = await asyncio.to_thread(suite.knowledge.search, session(request, session_id), query)
         return {"results": [asdict(item) for item in items]}
 
     @router.get("/workspaces")

@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 voice = [
+  "openwakeword==0.6.0",
   "faster-whisper>=1.2.1,<2",
   "kokoro-onnx>=0.4.4,<0.5",
   "piper-tts>=1.5,<2",

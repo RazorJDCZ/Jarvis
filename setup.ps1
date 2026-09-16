@@ -35,6 +35,11 @@ if ($SkipVoice) {
 } else {
     & $VenvPython -m pip install -e '.[voice,actions,dev]'
 }
+if ($LASTEXITCODE -ne 0) { throw 'No se pudieron instalar las dependencias.' }
+if (-not $SkipVoice) {
+    & $VenvPython (Join-Path $ProjectRoot 'scripts\setup_assistant_models.py')
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudieron preparar los modelos de activacion.' }
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot '.env'))) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot '.env.example') -Destination (Join-Path $ProjectRoot '.env')

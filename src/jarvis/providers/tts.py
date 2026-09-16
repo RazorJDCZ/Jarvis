@@ -8,6 +8,7 @@ from typing import Any
 
 from jarvis.config import Settings
 from jarvis.schemas import ProviderStatus
+from jarvis.services.preferences import PreferenceStore
 
 
 class PiperTTS:
@@ -25,17 +26,19 @@ class PiperTTS:
         self._synthesis_lock = asyncio.Lock()
 
     def _kokoro_ready(self) -> bool:
-        return not self._kokoro_failed and (self._kokoro is not None or (
-            importlib.util.find_spec("kokoro_onnx") is not None
-            and importlib.util.find_spec("soundfile") is not None
-            and self.settings.kokoro_model.is_file()
-            and self.settings.kokoro_voices.is_file()
-        ))
+        return not self._kokoro_failed and (
+            self._kokoro is not None
+            or (
+                importlib.util.find_spec("kokoro_onnx") is not None
+                and importlib.util.find_spec("soundfile") is not None
+                and self.settings.kokoro_model.is_file()
+                and self.settings.kokoro_voices.is_file()
+            )
+        )
 
     def _piper_ready(self) -> bool:
         return self._voice is not None or (
-            importlib.util.find_spec("piper") is not None
-            and self.settings.piper_model.is_file()
+            importlib.util.find_spec("piper") is not None and self.settings.piper_model.is_file()
         )
 
     async def status(self) -> ProviderStatus:
@@ -64,11 +67,20 @@ class PiperTTS:
             if self._kokoro is None:
                 from kokoro_onnx import Kokoro
 
-                self._kokoro = await asyncio.to_thread(
-                    Kokoro,
-                    str(self.settings.kokoro_model),
-                    str(self.settings.kokoro_voices),
-                )
+                def load():
+                    import onnxruntime as ort
+
+                    options = ort.SessionOptions()
+                    options.intra_op_num_threads = 3
+                    options.inter_op_num_threads = 1
+                    session = ort.InferenceSession(
+                        str(self.settings.kokoro_model),
+                        sess_options=options,
+                        providers=["CPUExecutionProvider"],
+                    )
+                    return Kokoro.from_session(session, str(self.settings.kokoro_voices))
+
+                self._kokoro = await asyncio.to_thread(load)
         return self._kokoro
 
     async def _ensure_piper(self) -> Any:
@@ -91,13 +103,19 @@ class PiperTTS:
             import soundfile as sf
 
             available_voices = set(engine.voices)
-            voice = self.settings.kokoro_voice
+            preference_store = PreferenceStore(self.settings.data_dir / "preferences.json")
+            preferences = preference_store.get()
+            voice = (
+                preferences.voice if preference_store.path.exists() else self.settings.kokoro_voice
+            )
             if voice not in available_voices:
                 voice = "em_alex" if "em_alex" in available_voices else "em_santa"
             samples, sample_rate = engine.create(
                 text,
                 voice=voice,
-                speed=max(0.75, min(self.settings.kokoro_speed, 1.25)),
+                speed=preferences.voice_speed
+                if preference_store.path.exists()
+                else self.settings.kokoro_speed,
                 lang="es",
             )
             buffer = io.BytesIO()
@@ -127,7 +145,7 @@ class PiperTTS:
 
         return await asyncio.to_thread(_run)
 
-    async def synthesize(self, text: str) -> bytes:
+    async def _synthesize(self, text: str) -> bytes:
         async with self._synthesis_lock:
             if self._kokoro_ready():
                 try:
@@ -147,3 +165,11 @@ class PiperTTS:
                     ) from exc
             status = await self.status()
             raise RuntimeError(status.detail)
+
+    async def synthesize(self, text: str) -> bytes:
+        task = asyncio.create_task(self._synthesize(text))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise

@@ -358,6 +358,17 @@ class ConversationService:
                     "analysis-confirmation",
                 )
 
+        mail = getattr(self, "mail", None)
+        if mail is not None and re.fullmatch(
+            r"(?:jarvis )?(?:resume|resumeme|revisa|muestra|muestrame|leeme|dime|que|tengo) "
+            r"(?:mis |los |el |un |un resumen de |resumen de )?"
+            r"(?:correos|correo|emails|email)(?: importantes| pendientes| nuevos| de hoy)?"
+            r"(?: tengo| hay)?(?: pendientes| importantes| nuevos)?",
+            normalize_request(message),
+        ):
+            self._supersede_pending_action(session_id)
+            return ConversationReply(mail.briefing(), "local-mail")
+
         safe_command = self.commands.try_handle(message)
         if safe_command is not None:
             if safe_command.reset_history:
@@ -555,11 +566,19 @@ class ConversationService:
         else:
             messages = [{"role": "system", "content": system_prompt}, *history]
         deep_chat = getattr(self.brain, "chat_deep", None)
-        raw_response = (
-            await deep_chat(messages)
-            if deep_analysis and callable(deep_chat)
-            else await self.brain.chat(messages)
-        )
+        # Private-person responses must pass their existing sanitizers before disclosure.
+        from jarvis.services.performance import token_sink
+
+        stream_token = token_sink.set(None) if private_person else None
+        try:
+            raw_response = (
+                await deep_chat(messages)
+                if deep_analysis and callable(deep_chat)
+                else await self.brain.chat(messages)
+            )
+        finally:
+            if stream_token is not None:
+                token_sink.reset(stream_token)
         response = self._trim_generic_follow_up(raw_response)
         if private_person:
             if analytical and not deep_analysis:

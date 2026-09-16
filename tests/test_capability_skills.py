@@ -19,6 +19,8 @@ def test_builtin_skills_are_inert_typed_workflows() -> None:
     assert {skill.skill_id for skill in registry.list()} == {
         "diagnostico_rapido",
         "vista_de_trabajo",
+        "preparar_estudio",
+        "resumen_del_dia",
     }
     manifest = registry.get("DIAGNOSTICO_RAPIDO")
     workflow = registry.compile("diagnostico_rapido")

@@ -606,6 +606,16 @@ class DeterministicActionParser:
     @classmethod
     def _is_meta_request(cls, command: str) -> bool:
         """Distinguish an immediate goal from explanations, hypotheticals and negations."""
+        if re.match(
+            r"^(?:cuentame|narra|inventa|redacta|escribe|crea) "
+            r"(?:(?:un|una|otro|otra|el|la) )?(?:historia|cuento|poema|relato|chiste)\b",
+            command,
+        ) and not re.search(
+            r"\b(?:en|dentro de|a) (?:el |la |un |una )?"
+            r"(?:archivo|ventana|bloc|campo|documento)\b",
+            command,
+        ):
+            return True
         if command.startswith(cls._META_PREFIXES):
             return True
         if re.match(
@@ -1015,9 +1025,7 @@ class DeterministicActionParser:
             command,
         )
         if focus_start:
-            arguments: dict[str, Any] = {
-                "duration_minutes": int(focus_start.group(1))
-            }
+            arguments: dict[str, Any] = {"duration_minutes": int(focus_start.group(1))}
             if focus_start.group(2):
                 arguments["task_title"] = focus_start.group(2)
             return self._plan(ActionName.FOCUS_START, **arguments)

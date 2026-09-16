@@ -30,7 +30,6 @@ from jarvis.capabilities.files import AttachmentError, AttachmentStore
 from jarvis.capabilities.gaming import GameInfo, GameLibrary, GameLibraryError
 from jarvis.capabilities.skills import SkillRegistry, SkillValidationError
 from jarvis.capabilities.stores import (
-    KnowledgeStore,
     PermissionStore,
     Reminder,
     ReminderStore,
@@ -76,7 +75,14 @@ class CapabilitySuite:
         self.traces = TraceStore(database)
         self.permissions = PermissionStore(database)
         self.reminders = ReminderStore(database)
-        self.knowledge = KnowledgeStore(database)
+        from jarvis.services.notifications import NotificationStore
+        from jarvis.services.preferences import PreferenceStore
+
+        self.outbox = NotificationStore(settings.data_dir / "notifications.sqlite3")
+        self.preferences = PreferenceStore(settings.data_dir / "preferences.json")
+        from jarvis.capabilities.semantic import SemanticKnowledgeStore
+
+        self.knowledge = SemanticKnowledgeStore(database, settings)
         self.attachments = AttachmentStore(
             settings.attachment_dir,
             max_bytes=settings.attachment_max_bytes,
@@ -95,12 +101,8 @@ class CapabilitySuite:
         self.connectors = ConnectorRegistry(
             LocalTaskConnector(settings.data_dir / "tasks.sqlite3"),
             appa,
-            bridge_config_path=(
-                settings.appa_bridge_config_path if appa is None else None
-            ),
-            bridge_database_marker=(
-                settings.appa_database_marker_path if appa is None else None
-            ),
+            bridge_config_path=(settings.appa_bridge_config_path if appa is None else None),
+            bridge_database_marker=(settings.appa_database_marker_path if appa is None else None),
             bridge_required=bool(settings.appa_bridge_config),
             appa_timeout=settings.appa_timeout,
         )
@@ -113,6 +115,7 @@ class CapabilitySuite:
         self._system_alert_seen: dict[str, int] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
         self._monitor_task: asyncio.Task[None] | None = None
+        self._proactive_task: asyncio.Task[None] | None = None
         self._closed = False
 
     async def start(self, callback: NotificationCallback | None = None) -> None:
@@ -120,6 +123,8 @@ class CapabilitySuite:
             return
         self._notification_callback = callback
         self.attachments.cleanup()
+        if self._proactive_task is None or self._proactive_task.done():
+            self._proactive_task = asyncio.create_task(self._proactive_loop())
         if self._scheduler_task is None or self._scheduler_task.done():
             self._scheduler_task = asyncio.create_task(
                 self._scheduler_loop(),
@@ -133,7 +138,11 @@ class CapabilitySuite:
 
     async def close(self) -> None:
         self._closed = True
-        tasks = [task for task in (self._scheduler_task, self._monitor_task) if task is not None]
+        tasks = [
+            task
+            for task in (self._scheduler_task, self._monitor_task, self._proactive_task)
+            if task is not None
+        ]
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -151,9 +160,7 @@ class CapabilitySuite:
             self._system_alerts.append(item)
             del self._system_alerts[:-50]
         else:
-            queue = self._notifications.setdefault(session_id, [])
-            queue.append(item)
-            del queue[:-50]
+            item = await asyncio.to_thread(self.outbox.publish, session_id, item)
         callback = self._notification_callback
         if callback is not None:
             try:
@@ -162,7 +169,8 @@ class CapabilitySuite:
                 return
 
     def notifications(self, session_id: str, *, consume: bool = False) -> list[dict[str, object]]:
-        items = list(self._notifications.get(session_id, ()))
+        self.outbox.register(session_id)
+        items = self.outbox.pending(session_id)
         # A tab opened or restored from the service-worker cache must not replay
         # warnings raised hours before that client session existed. Register the
         # current sequence on its first poll; later transitions are still delivered.
@@ -172,9 +180,25 @@ class CapabilitySuite:
         system_items = [
             item for item in self._system_alerts if int(item.get("_sequence", 0)) > last_seen
         ]
-        items.extend(system_items)
+        for item in system_items:
+            items.append(
+                self.outbox.publish(
+                    session_id,
+                    {
+                        **item,
+                        "id": f"system:{item['created_at']}:{item['_sequence']}",
+                    },
+                )
+            )
+        if system_items:
+            self._system_alert_seen[session_id] = max(
+                int(item["_sequence"]) for item in system_items
+            )
         items.sort(key=lambda item: str(item.get("created_at", "")))
         if consume:
+            self.outbox.acknowledge(
+                session_id, [item["notification_id"] for item in items if "notification_id" in item]
+            )
             self._notifications.pop(session_id, None)
             if system_items:
                 self._system_alert_seen[session_id] = max(
@@ -209,6 +233,75 @@ class CapabilitySuite:
                 raise
             except Exception:
                 await asyncio.sleep(self.settings.scheduler_poll_seconds)
+
+    async def briefing(self, session_id: str) -> dict:
+        from jarvis.capabilities.connectors import ConnectorError
+
+        self.outbox.register(session_id)
+        mail = getattr(self, "mail", None)
+        mail_summary = "\n" + mail.briefing() if mail and mail.store.accounts() else ""
+        try:
+            connector = self.connectors.require_appa()
+            context = await connector.personal_context()
+            counts = context["counts"]
+            titles = "; ".join(str(t.get("title", "")) for t in context.get("tasks", [])[:5])
+            summary = (
+                f"Appa: {counts['open_tasks']} tareas pendientes, "
+                f"{counts['calendar_items']} eventos. {titles}"
+            )
+            return {"summary": summary + mail_summary, "source": "Appa", "context": context}
+        except ConnectorError:
+            tasks = await self.connectors.local.list_tasks(session_id)
+            reminders = await asyncio.to_thread(self.reminders.list, session_id)
+            task_names = "; ".join(item.title for item in tasks[:5]) or "sin tareas pendientes"
+            reminder_names = "; ".join(item.title for item in reminders[:5]) or "sin recordatorios"
+            return {
+                "summary": f"Tareas locales: {task_names}. Agenda: {reminder_names}."
+                + mail_summary,
+                "source": "local",
+            }
+
+    async def _proactive_loop(self) -> None:
+        while True:
+            try:
+                await self._proactive_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(60)
+
+    async def _proactive_tick(self) -> None:
+        preferences = self.preferences.get()
+        now = datetime.now().astimezone()
+        if not preferences.proactive or self.preferences.quiet(now.hour):
+            return
+        if getattr(self, "_last_proactive_minute", None) == now.strftime("%Y-%m-%d %H:%M"):
+            return
+        self._last_proactive_minute = now.strftime("%Y-%m-%d %H:%M")
+        for session in self.outbox.sessions():
+            identifier = "briefing:" + now.date().isoformat()
+            if now.hour >= preferences.briefing_hour and not self.outbox.has_event(
+                session, identifier
+            ):
+                briefing = await self.briefing(session)
+                await self._notify(
+                    session, {"event": "briefing", "id": identifier, "title": briefing["summary"]}
+                )
+            for reminder in self.reminders.list(session):
+                due = datetime.fromisoformat(reminder.due_at)
+                identifier = f"upcoming:{reminder.reminder_id}:{reminder.due_at}"
+                if 0 < (due - now).total_seconds() <= 900 and not self.outbox.has_event(
+                    session, identifier
+                ):
+                    await self._notify(
+                        session,
+                        {
+                            "event": "upcoming",
+                            "id": identifier,
+                            "title": f"En menos de 15 minutos: {reminder.title}",
+                        },
+                    )
 
     async def _system_loop(self) -> None:
         while True:
@@ -598,11 +691,7 @@ class CapabilitySuite:
                 return ExecutionResult(True, message, {"tasks": [item.as_dict() for item in tasks]})
             if name is ActionName.TASK_CREATE:
                 connector = self.connectors.tasks
-                due = (
-                    self.parse_task_due(arguments["due"])
-                    if arguments.get("due")
-                    else None
-                )
+                due = self.parse_task_due(arguments["due"]) if arguments.get("due") else None
                 reminder_at = (
                     self.parse_due(arguments["reminder_at"]).isoformat()
                     if arguments.get("reminder_at")
@@ -615,8 +704,7 @@ class CapabilitySuite:
                     exact_projects = [
                         project
                         for project in projects
-                        if project.project_id == project_id
-                        or _normalized(project.name) == needle
+                        if project.project_id == project_id or _normalized(project.name) == needle
                     ]
                     if len(exact_projects) != 1:
                         raise ConnectorError(
@@ -664,8 +752,7 @@ class CapabilitySuite:
                     if not active
                     else "Proyectos de Appa: "
                     + "; ".join(
-                        item.name
-                        + (f", objetivo {item.target_date}" if item.target_date else "")
+                        item.name + (f", objetivo {item.target_date}" if item.target_date else "")
                         for item in active[:20]
                     )
                     + ".",
@@ -695,19 +782,13 @@ class CapabilitySuite:
                     "No tienes eventos pendientes en Appa."
                     if not pending
                     else "Agenda de Appa: "
-                    + "; ".join(
-                        f"{item.title}, {item.start_at}" for item in pending[:20]
-                    )
+                    + "; ".join(f"{item.title}, {item.start_at}" for item in pending[:20])
                     + ".",
                     {"events": [item.as_dict() for item in events]},
                 )
             if name is ActionName.CALENDAR_CREATE:
                 start = self.parse_due(arguments["start_at"])
-                end = (
-                    self.parse_due(arguments["end_at"])
-                    if arguments.get("end_at")
-                    else None
-                )
+                end = self.parse_due(arguments["end_at"]) if arguments.get("end_at") else None
                 if end is not None and end <= start:
                     raise ValueError("El fin del evento debe ser posterior al inicio.")
                 event = await self.connectors.require_appa().create_calendar_event(

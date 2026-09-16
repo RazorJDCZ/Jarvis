@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 from datetime import datetime
 from typing import Protocol
 
@@ -9,6 +10,8 @@ import httpx
 from jarvis.config import Settings
 from jarvis.providers.ollama_runtime import OLLAMA_RUNTIME_LOCK
 from jarvis.schemas import ProviderStatus
+from jarvis.services.performance import active_timing, model_keep_alive, stage, token_sink
+from jarvis.services.preferences import PreferenceStore
 
 
 class Brain(Protocol):
@@ -117,29 +120,67 @@ class OllamaBrain:
             payload = {
                 "model": self.settings.ollama_model,
                 "messages": messages,
-                "stream": False,
+                "stream": token_sink.get() is not None,
                 # Qwen's hidden thinking can consume the entire local token budget and
                 # leave the spoken answer truncated. Deep mode instead uses a lower-
                 # variance, larger final-answer budget guided by the analytical prompt.
                 "think": False,
-                "keep_alive": self.settings.ollama_keep_alive,
+                "keep_alive": model_keep_alive(self.settings, self.settings.ollama_keep_alive),
                 "options": {
                     "temperature": 0.35 if deep_analysis else 0.45,
                     "top_p": 0.9,
                     "repeat_penalty": 1.1 if deep_analysis else 1.08,
-                    "num_ctx": 8192,
+                    "num_ctx": 4096 if self.settings.adaptive_resources else 8192,
                     # The spoken formats are bounded well below these limits. Explicit caps stop
                     # a compact model from rambling and reduce worst-case latency without keeping
                     # the model resident between requests.
                     "num_predict": 1_024 if deep_analysis else 512,
                 },
             }
+            preference = PreferenceStore(self.settings.data_dir / "preferences.json").get()
+            if preference.performance == "economy":
+                payload["keep_alive"] = "0s"
             async with httpx.AsyncClient(timeout=self.settings.ollama_timeout) as client:
-                response = await client.post(
-                    f"{self.settings.ollama_url}/api/chat",
-                    json=payload,
-                )
-                response.raise_for_status()
+                with stage("model"):
+                    if payload["stream"]:
+                        chunks = []
+                        completed = False
+                        async with client.stream(
+                            "POST",
+                            f"{self.settings.ollama_url}/api/chat",
+                            json=payload,
+                        ) as response:
+                            response.raise_for_status()
+                            async for line in response.aiter_lines():
+                                if not line:
+                                    continue
+                                part = json.loads(line)
+                                if part.get("error"):
+                                    raise RuntimeError("El modelo interrumpió la respuesta")
+                                content = part.get("message", {}).get("content", "")
+                                if content:
+                                    chunks.append(content)
+                                    await token_sink.get()(content)
+                                if part.get("done"):
+                                    completed = True
+                                    timing = active_timing.get()
+                                    if timing is not None:
+                                        for key in (
+                                            "load_duration",
+                                            "prompt_eval_duration",
+                                            "eval_duration",
+                                        ):
+                                            timing[key] = round(part.get(key, 0) / 1_000_000, 1)
+                        if not completed:
+                            raise RuntimeError("La conexión al modelo terminó antes de completarse")
+                        if not chunks:
+                            raise RuntimeError("Ollama devolvió una respuesta vacía")
+                        return "".join(chunks).strip()
+                    response = await client.post(
+                        f"{self.settings.ollama_url}/api/chat",
+                        json=payload,
+                    )
+                    response.raise_for_status()
             self._warmed = self.settings.ollama_keep_alive not in {"0", "0s", "0m"}
         try:
             payload = response.json()
@@ -274,6 +315,8 @@ class AutoBrain:
             self.active_name = self.ollama.name
             return await self.ollama.chat(messages)
         except (httpx.HTTPError, RuntimeError):
+            if token_sink.get() is not None:
+                raise
             pass
         self.active_name = self.fallback.name
         return await self.fallback.chat(messages)
@@ -283,6 +326,8 @@ class AutoBrain:
             self.active_name = self.ollama.name
             return await self.ollama.chat_deep(messages)
         except (httpx.HTTPError, RuntimeError):
+            if token_sink.get() is not None:
+                raise
             pass
         self.active_name = self.fallback.name
         return await self.fallback.chat_deep(messages)

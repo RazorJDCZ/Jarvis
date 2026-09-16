@@ -45,8 +45,14 @@ Asistente de voz privado y local para Windows. El proyecto está dividido en cin
   Appa, biblioteca privada, skills declarativas, permisos temporales, workspaces y juegos sin
   entregar al modelo una terminal ni acceso irrestricto al equipo.
 
-El modo manos libres detecta la frase de activación después de transcribir localmente cada
-intervención. Una etapa posterior podrá incorporar openWakeWord para reducir el consumo continuo.
+La pestaña **Asistente** incorpora ajustes, memoria editable, rutinas y diagnóstico de latencia.
+Las respuestas aparecen progresivamente y la voz comienza por frases. En manos libres puedes
+elegir «Jarvis» compatible o el detector ligero «Hey Jarvis» con pronunciación inglesa.
+Consulta [las siete mejoras y sus mediciones](docs/assistant-upgrade.md).
+
+**Correos Pendientes** conecta Gmail y Microsoft 365 con resúmenes locales, estados, borradores
+y tareas en Appa. Configura los clientes OAuth y conecta tus cuentas siguiendo la
+[guía de correo](docs/mail-integration.md); el acceso a los buzones requiere tu inicio de sesión.
 
 ## Instalación
 
@@ -101,17 +107,18 @@ scripts\install_ollama.cmd
 ```
 
 Jarvis iniciará ese Ollama automáticamente y lo apagará al cerrar `start.cmd`. También puede usar
-una instalación que ya responda en `http://127.0.0.1:11434`. En equipos de 16 GB, Qwen se carga
-solo cuando una conversación o una acción visual realmente lo necesita y se descarga al terminar;
-los comandos deterministas no lo cargan. Esta política evita competir por memoria con Whisper,
-Kokoro, juegos y navegadores. Se controla mediante `JARVIS_OLLAMA_KEEP_ALIVE=0s` y
-`JARVIS_OLLAMA_WARMUP_ENABLED=false`. La precarga puede habilitarse manualmente, pero Jarvis la
-omite si la memoria libre está por debajo de `JARVIS_OLLAMA_WARMUP_MIN_FREE_GB`.
+una instalación que ya responda en `http://127.0.0.1:11434`. Con
+`JARVIS_ADAPTIVE_RESOURCES=true`, Qwen se carga bajo demanda y puede permanecer tres minutos
+en memoria si quedan al menos 2,5 GB de RAM libre. Los comandos deterministas no lo cargan.
+La vigilancia de recursos lo libera cuando falta RAM o VRAM; «Ahorrar memoria» solicita su
+descarga al terminar. Sin adaptación se respeta `JARVIS_OLLAMA_KEEP_ALIVE`.
+La precarga de Qwen sigue desactivada; Whisper y Kokoro pueden prepararse al arrancar si hay RAM.
 
 Durante una consulta visual multimonitor, Qwen permanece cargado únicamente entre las capturas de
-esa consulta (`JARVIS_VISION_KEEP_ALIVE`) y se libera inmediatamente al finalizar. Antes de cada
-transcripción, Jarvis también solicita la descarga de cualquier Qwen residente para que Whisper
-tenga prioridad. Al cerrar `start.cmd`, se detienen de forma validada el servidor portátil y todos
+esa consulta (`JARVIS_VISION_KEEP_ALIVE`) y se libera inmediatamente al finalizar. Con adaptación,
+Whisper usa CUDA cuando dispone de espacio y CPU cuando Qwen ocupa la GPU, evitando recargar
+Qwen en cada turno de voz. Sin adaptación se conserva la descarga antes de transcribir.
+Al cerrar `start.cmd`, se detienen de forma validada el servidor portátil y todos
 sus runners; el siguiente arranque elimina runners huérfanos de la carpeta del proyecto.
 
 ## Uso

@@ -337,6 +337,8 @@
         </div>
 
         <nav class="deck-tabs" role="tablist" aria-label="Módulos de Control Deck">
+          <button class="deck-tab" id="deckTabAssistant" type="button" role="tab"
+            aria-selected="false" aria-controls="deckAssistant" data-deck-tab="assistant">ASISTENTE</button>
           <button
             class="deck-tab active"
             id="deckTabActivity"
@@ -384,6 +386,11 @@
         </nav>
 
         <div class="control-deck-body">
+          <section class="deck-panel" id="deckAssistant" role="tabpanel"
+            aria-labelledby="deckTabAssistant" data-deck-panel="assistant" hidden>
+            <div id="assistantContent"></div>
+            <div id="assistantMemory"></div>
+          </section>
           <section
             class="deck-panel"
             id="deckActivity"
@@ -584,5 +591,6 @@
 
     <div class="toast" id="toast" role="status"></div>
     <script src="/static/app.js?v=agent-v9" defer></script>
+    <script src="/static/assistant.js?v=assistant-v1" defer></script>
   </body>
 </html>

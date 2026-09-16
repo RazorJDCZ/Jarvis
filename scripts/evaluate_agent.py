@@ -23,7 +23,7 @@ FIXTURES = {
 
 def load_cases(fixture_name: str, limit: int) -> list[dict[str, str]]:
     fixture_dir = Path(__file__).parents[1] / "tests" / "fixtures"
-    names = ("core", "adversarial") if fixture_name == "all" else (fixture_name,)
+    names = tuple(FIXTURES) if fixture_name == "all" else (fixture_name,)
     cases: list[dict[str, str]] = []
     for name in names:
         cases.extend(json.loads((fixture_dir / FIXTURES[name]).read_text(encoding="utf-8")))
@@ -62,6 +62,22 @@ async def evaluate(model: str, cases: list[dict[str, str]], keep_alive: str) -> 
             else:
                 predicted = "none"
             passed = predicted == case["tool"]
+            if passed and "arguments" in case:
+                first = plan.steps[0] if isinstance(plan, ActionWorkflowPlan) else plan
+                passed = isinstance(first, ActionPlan) and all(
+                    first.arguments.get(k) == v for k, v in case["arguments"].items()
+                )
+            if passed and "steps" in case:
+                steps = plan.steps if isinstance(plan, ActionWorkflowPlan) else (plan,)
+                passed = len(steps) == len(case["steps"]) and all(
+                    isinstance(actual, ActionPlan)
+                    and actual.name.value == expected["tool"]
+                    and all(
+                        actual.arguments.get(k) == v
+                        for k, v in expected.get("arguments", {}).items()
+                    )
+                    for actual, expected in zip(steps, case["steps"], strict=True)
+                )
             correct += int(passed)
             duration = time.perf_counter() - before
             if not passed:

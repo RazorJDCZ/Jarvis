@@ -412,7 +412,7 @@ class MemoryStore:
     def list_entries(self, limit: int = 20) -> tuple[MemoryEntry, ...]:
         if not self.available:
             return ()
-        safe_limit = max(1, min(limit, 100))
+        safe_limit = max(1, min(limit, self.max_entries))
         try:
             with self._lock, self._connect() as connection:
                 rows = connection.execute(
@@ -423,6 +423,30 @@ class MemoryStore:
         except sqlite3.Error as exc:
             self.error = str(exc)[:300]
             return ()
+
+    def edit_entry(self, key: str, content: str | None, expected_updated_at: str) -> bool:
+        """Exact-key editing with optimistic concurrency; never fuzzy-delete a memory."""
+        if not self.available:
+            return False
+        with self._lock, self._connect() as connection:
+            if content is None:
+                cursor = connection.execute(
+                    "DELETE FROM memories WHERE memory_key=? AND updated_at=?",
+                    (key, expected_updated_at),
+                )
+            else:
+                cursor = connection.execute(
+                    "UPDATE memories SET content=?, normalized_content=?, updated_at=? "
+                    "WHERE memory_key=? AND updated_at=?",
+                    (
+                        _clean_text(content, 500),
+                        normalize_memory_text(content),
+                        datetime.now(UTC).isoformat(),
+                        key,
+                        expected_updated_at,
+                    ),
+                )
+            return cursor.rowcount == 1
 
     @classmethod
     def _tokens(cls, value: str) -> set[str]:

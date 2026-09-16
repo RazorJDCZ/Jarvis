@@ -118,6 +118,7 @@ class TTSRequest(BaseModel):
 
 
 class VoiceResponse(BaseModel):
+    trace_id: str | None = None
     transcript: str
     language: str | None = None
     accepted: bool = False

@@ -1,8 +1,9 @@
-const CACHE_NAME = "jarvis-agent-interface-v11";
+const CACHE_NAME = "jarvis-assistant-interface-v12";
 const STATIC_ASSETS = [
   "/",
   "/static/styles.css?v=agent-v9",
   "/static/app.js?v=agent-v9",
+  "/static/assistant.js?v=assistant-v1",
   "/static/icon.svg?v=agent-v9",
   "/manifest.webmanifest?v=agent-v9",
 ];

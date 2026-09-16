@@ -336,7 +336,7 @@ class AttachmentStore:
                     remaining = maximum - size
                     if remaining <= 0:
                         break
-                    parts.append(text[:remaining])
+                    parts.append(f"[Página {index + 1}]\n" + text[:remaining])
                     size += len(parts[-1])
                 return "\n".join(parts).strip()
             except AttachmentError:

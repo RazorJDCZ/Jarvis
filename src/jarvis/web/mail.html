@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Correos · Jarvis</title><link rel="stylesheet" href="/static/mail.css">
+  <script src="/static/mail.js" defer></script>
+</head>
+<body><main>
+  <a href="/">← Volver a Jarvis</a>
+  <header><p class="eyebrow">JARVIS + APPA</p><h1>Correos Pendientes</h1>
+    <p>Conecta tus cuentas desde esta PC. Jarvis prepara resúmenes locales y Appa organiza lo que necesitas atender.</p>
+  </header>
+  <p id="message" role="status" aria-live="polite"></p>
+  <section><h2>Tus cuentas</h2><div id="accounts"></div>
+    <div class="actions"><button data-connect="google">Conectar Gmail</button>
+      <button data-connect="microsoft">Conectar universidad · Microsoft 365</button>
+      <button id="sync">Revisar ahora</button></div>
+    <p id="coverage" class="muted"></p>
+    <p class="muted">Permisos de lectura. Los borradores se revisan en Appa; no se envían mensajes desde Jarvis.</p>
+  </section>
+  <details id="setup"><summary>Configurar la conexión por primera vez</summary>
+    <p>Esta instalación necesita sus propios identificadores de aplicación. No introduzcas aquí tu contraseña de correo.</p>
+    <div class="columns">
+      <form data-provider="google"><h2>Gmail</h2>
+        <p>En <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud</a>, habilita Gmail API, configura el consentimiento y crea un cliente OAuth de tipo <strong>Aplicación de escritorio</strong>. Si está en pruebas, añade tu Gmail como usuario de prueba.</p>
+        <label>Importar JSON del cliente de escritorio<input id="googleFile" type="file" accept=".json,application/json"></label>
+        <label>ID del cliente<input name="client_id" required autocomplete="off" maxlength="250"></label>
+        <label>Secreto del cliente<input name="client_secret" type="password" autocomplete="off" maxlength="300"></label>
+        <button type="submit">Guardar conexión de Gmail</button>
+      </form>
+      <form data-provider="microsoft"><h2>Universidad / Microsoft 365</h2>
+        <p>En <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra</a>, registra una aplicación de escritorio con cuentas de organizaciones y Microsoft personales. Añade la redirección <strong>http://localhost/callback</strong> en «Aplicaciones móviles y de escritorio».</p>
+        <p>Permisos delegados: <strong>Mail.Read</strong> y <strong>User.Read</strong>. No necesita secreto. La universidad puede requerir autorización del administrador.</p>
+        <label>ID de aplicación (cliente)<input name="client_id" required autocomplete="off" maxlength="250"></label>
+        <button type="submit">Guardar conexión de Microsoft</button>
+      </form>
+    </div>
+    <p class="muted">Windows cifra las credenciales para tu usuario. Al desconectar se elimina la copia local de esa cuenta y sus correos; puedes revocar también el permiso desde Google o Microsoft. Las tareas ya creadas en Appa se conservan.</p>
+  </details>
+  <section><div class="actions"><h2>Últimos pendientes</h2><button id="refresh">Actualizar vista</button></div>
+    <div id="items"></div><p class="muted">Gestiona estados, posposición, tareas y borradores en la sección Correos Pendientes de Appa.</p>
+  </section>
+</main></body></html>

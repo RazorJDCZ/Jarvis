@@ -20,6 +20,8 @@ from jarvis.actions.parser import DeterministicActionParser, normalize_request
 from jarvis.actions.retrieval import CapabilityRetriever
 from jarvis.config import Settings
 from jarvis.providers.ollama_runtime import OLLAMA_RUNTIME_LOCK
+from jarvis.services.performance import available_ram_gb, model_keep_alive
+from jarvis.services.preferences import PreferenceStore
 
 
 class LocalActionPlanner:
@@ -278,9 +280,7 @@ class LocalActionPlanner:
             "workspace:string. Corre o ejecuta la batería fija de tests/pruebas del workspace; "
             "riesgo alto."
         ),
-        "game.list": (
-            "sin argumentos. Solo lista juegos detectados; no inicia ninguno."
-        ),
+        "game.list": ("sin argumentos. Solo lista juegos detectados; no inicia ninguno."),
         "game.launch": (
             "game:string. Abre, inicia o arranca un juego instalado cuando el usuario quiere "
             "jugarlo; requiere confirmación."
@@ -602,9 +602,7 @@ class LocalActionPlanner:
             expected = definition.get("type")
             if expected == "string" and not isinstance(value, str):
                 return False
-            if expected == "integer" and (
-                isinstance(value, bool) or not isinstance(value, int)
-            ):
+            if expected == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
                 return False
             if expected == "boolean" and not isinstance(value, bool):
                 return False
@@ -646,6 +644,12 @@ class LocalActionPlanner:
         user_text: str,
         context: tuple[dict[str, str], ...],
     ) -> str:
+        preference = PreferenceStore(self.settings.data_dir / "preferences.json").get()
+        if preference.performance == "economy" or (
+            self.settings.adaptive_resources
+            and available_ram_gb() < self.settings.reasoning_min_free_gb
+        ):
+            return self.settings.agent_model
         if not self.settings.agent_reasoning_enabled or not self.settings.agent_reasoning_model:
             return self.settings.agent_model
         normalized = normalize_request(user_text)
@@ -667,6 +671,10 @@ class LocalActionPlanner:
             or any(marker in normalized for marker in complex_markers)
             or any(item.get("action") == "verified-observation" for item in context)
         )
+        if self.settings.adaptive_resources and preference.performance == "adaptive":
+            complex_request = sum(marker in normalized for marker in complex_markers) >= 2 or any(
+                item.get("action") == "verified-observation" for item in context
+            )
         if not complex_request:
             return self.settings.agent_model
         installed = await self._installed_models()
@@ -766,7 +774,7 @@ class LocalActionPlanner:
             "keep_alive": (
                 "0s"
                 if model == self.settings.agent_reasoning_model
-                else self.settings.agent_keep_alive
+                else model_keep_alive(self.settings, self.settings.agent_keep_alive)
             ),
             "options": {"temperature": 0, "num_ctx": 4_096, "num_predict": 400},
         }
@@ -816,9 +824,7 @@ class LocalActionPlanner:
                 )
                 if steps or not isinstance(question, str) or not 3 <= len(question.strip()) <= 240:
                     return None
-                return ClarificationNeeded(
-                    question.strip(), user_text.strip()[:1_000], 0.86
-                )
+                return ClarificationNeeded(question.strip(), user_text.strip()[:1_000], 0.86)
             action_value = reverse_names.get(raw_name) if isinstance(raw_name, str) else None
             if action_value is None or not isinstance(raw_arguments, dict):
                 return None
@@ -1057,8 +1063,8 @@ class LocalActionPlanner:
             limit=self.settings.agent_tool_limit,
         )
         model = await self._select_model(user_text, context)
-        native = await self._native_plan(user_text, context, selected_actions, model)
         weak_semantic_admission = not self.intent_gate.has_agent_intent(user_text)
+        native = await self._native_plan(user_text, context, selected_actions, model)
         if (
             native is not None
             and not weak_semantic_admission
@@ -1084,7 +1090,7 @@ class LocalActionPlanner:
             "keep_alive": (
                 "0s"
                 if model == self.settings.agent_reasoning_model
-                else self.settings.agent_keep_alive
+                else model_keep_alive(self.settings, self.settings.agent_keep_alive)
             ),
             "format": self._schema(selected_actions),
             "options": {"temperature": 0, "num_ctx": 4_096, "num_predict": 500},
@@ -1159,9 +1165,7 @@ class LocalActionPlanner:
                     step_name = ActionName(raw_step.get("action"))
                 except (TypeError, ValueError):
                     return native
-                normalized_arguments = self._normalize_arguments(
-                    step_name, raw_step["arguments"]
-                )
+                normalized_arguments = self._normalize_arguments(step_name, raw_step["arguments"])
                 if step_name.value not in selected_set or not self._arguments_match_schema(
                     step_name.value, normalized_arguments
                 ):
@@ -1193,9 +1197,7 @@ class LocalActionPlanner:
                     step_name = ActionName(raw_step.get("action"))
                 except (TypeError, ValueError):
                     return native
-                normalized_arguments = self._normalize_arguments(
-                    step_name, raw_step["arguments"]
-                )
+                normalized_arguments = self._normalize_arguments(step_name, raw_step["arguments"])
                 if step_name.value not in selected_set or not self._arguments_match_schema(
                     step_name.value, normalized_arguments
                 ):
