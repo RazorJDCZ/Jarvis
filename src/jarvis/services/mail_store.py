@@ -66,11 +66,27 @@ class MailStore:
                     summary_kind TEXT NOT NULL DEFAULT 'extract',
                     state TEXT NOT NULL DEFAULT 'review', snoozed_until REAL NOT NULL DEFAULT 0,
                     task_id TEXT NOT NULL DEFAULT '', draft TEXT NOT NULL DEFAULT '',
+                    message_id TEXT NOT NULL DEFAULT '', reply_to TEXT NOT NULL DEFAULT '',
+                    sent_version TEXT NOT NULL DEFAULT '', sent_at REAL NOT NULL DEFAULT 0,
                     UNIQUE(account_id, thread_id));
                 CREATE INDEX IF NOT EXISTS mail_received ON mail(received DESC);
                 CREATE TABLE IF NOT EXISTS mail_tasks (
                     mail_id TEXT PRIMARY KEY, request_key TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS mail_sync (
+                    account_id TEXT PRIMARY KEY, since REAL NOT NULL,
+                    page_token TEXT NOT NULL, started REAL NOT NULL,
+                    processed INTEGER NOT NULL DEFAULT 0);
             """)
+            self._ensure_column(db, "mail", "message_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(db, "mail", "reply_to", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(db, "mail", "sent_version", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(db, "mail", "sent_at", "REAL NOT NULL DEFAULT 0")
+
+    @staticmethod
+    def _ensure_column(db, table: str, column: str, declaration: str) -> None:
+        columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     @contextmanager
     def db(self):
@@ -110,6 +126,7 @@ class MailStore:
     def disconnect(self, identifier):
         with self.db() as db:
             db.execute("DELETE FROM secrets WHERE key=?", (identifier,))
+            db.execute("DELETE FROM mail_sync WHERE account_id=?", (identifier,))
             db.execute(
                 "DELETE FROM mail_tasks WHERE mail_id IN (SELECT id FROM mail WHERE account_id=?)",
                 (identifier,),
@@ -123,6 +140,28 @@ class MailStore:
                 "UPDATE accounts SET synced=COALESCE(?,synced),error=? WHERE id=?",
                 (synced, error, identifier),
             )
+
+    def sync_progress(self, identifier):
+        with self.db() as db:
+            row = db.execute(
+                "SELECT since,page_token,started,processed FROM mail_sync WHERE account_id=?",
+                (identifier,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_sync_progress(self, identifier, *, since, page_token, started, processed):
+        with self.db() as db:
+            db.execute(
+                "INSERT INTO mail_sync(account_id,since,page_token,started,processed) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET "
+                "since=excluded.since,page_token=excluded.page_token,"
+                "started=excluded.started,processed=excluded.processed",
+                (identifier, since, page_token, started, processed),
+            )
+
+    def clear_sync_progress(self, identifier):
+        with self.db() as db:
+            db.execute("DELETE FROM mail_sync WHERE account_id=?", (identifier,))
 
     def task_request(self, identifier, payload):
         # Persist both key and exact body before network I/O, including across restarts.
@@ -152,17 +191,36 @@ class MailStore:
             return False
         if old and old["received"] > message["received"]:
             return False
-        keys = ("thread_id", "version", "subject", "sender", "received", "url", "body")
+        keys = (
+            "thread_id",
+            "version",
+            "subject",
+            "sender",
+            "received",
+            "url",
+            "body",
+            "message_id",
+            "reply_to",
+        )
         with self.db() as db:
             db.execute(
                 """INSERT INTO mail
-                (id,account_id,thread_id,version,subject,sender,received,url,body,summary)
-                VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                (id,account_id,thread_id,version,subject,sender,received,url,body,summary,
+                 message_id,reply_to)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
                 version=excluded.version,subject=excluded.subject,sender=excluded.sender,
                 received=excluded.received,url=excluded.url,body=excluded.body,
+                message_id=excluded.message_id,reply_to=excluded.reply_to,
                 summary=excluded.summary,summary_kind='extract',priority='normal',reason='',
                 deadline='',draft='',state='review',snoozed_until=0""",
-                (identifier, account_id, *(message[k] for k in keys), message["body"][:700]),
+                (
+                    identifier,
+                    account_id,
+                    *(message.get(k, "") for k in keys[:7]),
+                    message["body"][:700],
+                    message.get("message_id", ""),
+                    message.get("reply_to", ""),
+                ),
             )
         return True
 
@@ -178,6 +236,37 @@ class MailStore:
             )
             return [{k: v for k, v in dict(r).items() if k != "body"} for r in rows]
 
+    def search(self, query: str, *, limit: int = 20, include_resolved: bool = True):
+        words = [word.casefold() for word in query.split() if word.strip()]
+        if not words or len(query) > 300:
+            raise ValueError("La búsqueda debe contener entre 1 y 300 caracteres")
+        safe_limit = max(1, min(int(limit), 50))
+        clauses = []
+        values: list[object] = []
+        for word in words[:8]:
+            clauses.append(
+                "(LOWER(m.subject) LIKE ? ESCAPE '\\' OR "
+                "LOWER(m.sender) LIKE ? ESCAPE '\\' OR "
+                "LOWER(m.summary) LIKE ? ESCAPE '\\' OR "
+                "LOWER(m.body) LIKE ? ESCAPE '\\' OR "
+                "LOWER(a.email) LIKE ? ESCAPE '\\')"
+            )
+            pattern = "%" + word.replace("%", "\\%").replace("_", "\\_") + "%"
+            values.extend([pattern] * 5)
+        resolved = "" if include_resolved else "AND m.state!='resolved'"
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT m.*,a.email,a.provider FROM mail m JOIN accounts a "
+                "ON m.account_id=a.id WHERE "
+                + " AND ".join(clauses)
+                + " "
+                + resolved
+                + " ORDER BY CASE m.priority WHEN 'high' THEN 0 ELSE 1 END,m.received DESC "
+                "LIMIT ?",
+                (*values, safe_limit),
+            ).fetchall()
+        return [{k: v for k, v in dict(row).items() if k != "body"} for row in rows]
+
     def update(self, identifier, **values):
         allowed = {
             "state",
@@ -189,6 +278,8 @@ class MailStore:
             "summary_kind",
             "draft",
             "task_id",
+            "sent_version",
+            "sent_at",
         }
         if not values or set(values) - allowed:
             raise ValueError("Campos de correo inválidos")

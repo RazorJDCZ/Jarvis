@@ -11,9 +11,18 @@ from jarvis.actions.models import (
     ActionWorkflowPlan,
     AgentGoalComplete,
     ClarificationNeeded,
+    ConversationalIntent,
 )
 from jarvis.actions.planner import LocalActionPlanner
-from jarvis.config import Settings
+from jarvis.config import Settings as JarvisSettings
+
+
+# These tests retain isolated coverage for the now-unreachable legacy transport parser.
+# Production Settings rejects this mode; current Codex planning has dedicated tests below.
+def Settings(**kwargs) -> JarvisSettings:
+    settings = JarvisSettings(brain_mode="codex", **kwargs)
+    object.__setattr__(settings, "brain_mode", "ollama")
+    return settings
 
 
 def patch_httpx(
@@ -404,7 +413,6 @@ async def test_planner_can_finish_an_active_goal_from_verified_evidence(
 @pytest.mark.parametrize(
     "payload",
     [
-        {"direct_request": False, "action": "none", "arguments": {}, "confidence": 1},
         {"direct_request": True, "action": "volume.set", "arguments": {}, "confidence": 0.2},
         {"direct_request": True, "action": "shell.run", "arguments": {}, "confidence": 1},
         {"direct_request": True, "action": "volume.set", "arguments": "bad", "confidence": 1},
@@ -511,9 +519,7 @@ async def test_native_payload_exposes_only_semantically_retrieved_tools(
         [
             {
                 "content": "",
-                "tool_calls": [
-                    {"function": {"name": "volume__get", "arguments": {}}}
-                ],
+                "tool_calls": [{"function": {"name": "volume__get", "arguments": {}}}],
             }
         ],
         requests,
@@ -522,19 +528,13 @@ async def test_native_payload_exposes_only_semantically_retrieved_tools(
         Settings(agent_tool_limit=8), tuple(LocalActionPlanner._TOOL_GUIDE)
     )
 
-    selected = planner.retriever.select(
-        "Dime en cuánto está el sonido del equipo", limit=8
-    )
+    selected = planner.retriever.select("Dime en cuánto está el sonido del equipo", limit=8)
     result = await planner._native_plan(
-        "Dime en cuánto está el sonido del equipo", (), selected, "qwen3.5:4b"
+        "Dime en cuánto está el sonido del equipo", (), selected, "embeddinggemma"
     )
 
     assert result.name is ActionName.VOLUME_GET
-    exposed = {
-        tool["function"]["name"]
-        for tool in requests[0]["tools"]
-        if isinstance(tool, dict)
-    }
+    exposed = {tool["function"]["name"] for tool in requests[0]["tools"] if isinstance(tool, dict)}
     assert exposed == {
         *(planner._function_name(name) for name in selected),
         "agent__complete",
@@ -565,9 +565,7 @@ async def test_native_tool_call_rejects_malformed_typed_arguments_and_uses_safe_
         [
             {
                 "content": "",
-                "tool_calls": [
-                    {"function": {"name": "volume__set", "arguments": bad_arguments}}
-                ],
+                "tool_calls": [{"function": {"name": "volume__set", "arguments": bad_arguments}}],
             },
             structured_message("volume.set", {"level": 30}),
         ],
@@ -593,9 +591,7 @@ async def test_native_tool_call_normalizes_safe_argument_aliases_before_validati
         [
             {
                 "content": "",
-                "tool_calls": [
-                    {"function": {"name": "volume__set", "arguments": {"value": 35}}}
-                ],
+                "tool_calls": [{"function": {"name": "volume__set", "arguments": {"value": 35}}}],
             }
         ],
     )
@@ -687,14 +683,12 @@ async def test_native_dependent_workflow_stops_after_observation_and_persists_go
         ("browser.search", "browser.read", "browser.open_result"),
     )
 
-    selected = planner.retriever.select(
-        "Investiga y compara cursos; luego abre el mejor", limit=8
-    )
+    selected = planner.retriever.select("Investiga y compara cursos; luego abre el mejor", limit=8)
     result = await planner._native_plan(
         "Investiga y compara cursos; luego abre el mejor",
         (),
         selected,
-        "qwen3.5:4b",
+        "embeddinggemma",
     )
 
     assert isinstance(result, ActionWorkflowPlan)
@@ -736,7 +730,7 @@ async def test_native_search_only_keeps_complex_research_goal_alive(
         "Investiga cursos de Python y recomiéndame el mejor",
         (),
         selected,
-        "qwen3.5:4b",
+        "embeddinggemma",
     )
 
     assert result.name is ActionName.BROWSER_SEARCH
@@ -762,13 +756,13 @@ async def test_native_agent_complete_requires_current_verified_observation(
     planner = LocalActionPlanner(Settings(), ("window.list",))
 
     rejected = await planner._native_plan(
-        "organiza mis ventanas", (), ("window.list",), "qwen3.5:4b"
+        "organiza mis ventanas", (), ("window.list",), "embeddinggemma"
     )
     completed = await planner._native_plan(
         "continúa el objetivo",
         ({"request": "objetivo", "action": "verified-observation", "outcome": "ok"},),
         ("window.list",),
-        "qwen3.5:4b",
+        "embeddinggemma",
     )
 
     assert rejected is None
@@ -808,15 +802,14 @@ async def test_native_agent_clarification_is_bounded_and_preserves_request(
 
 
 def test_every_native_tool_schema_is_closed_and_has_known_types() -> None:
-    allowed_types = {"string", "integer", "boolean", "object"}
+    allowed_types = {"string", "integer", "boolean", "object", "array"}
     for name in LocalActionPlanner._TOOL_GUIDE:
         schema = LocalActionPlanner._tool_parameters(name)
         assert schema["type"] == "object"
         assert schema["additionalProperties"] is False
         assert set(schema.get("required", ())).issubset(schema["properties"])
         assert all(
-            definition["type"] in allowed_types
-            for definition in schema["properties"].values()
+            definition["type"] in allowed_types for definition in schema["properties"].values()
         )
 
 
@@ -830,9 +823,7 @@ async def test_ambiguous_native_choice_is_replaced_by_structured_verifier(
         [
             {
                 "content": "",
-                "tool_calls": [
-                    {"function": {"name": "game__list", "arguments": {}}}
-                ],
+                "tool_calls": [{"function": {"name": "game__list", "arguments": {}}}],
             },
             structured_message("game.launch", {"game": "Minecraft"}),
         ],
@@ -889,9 +880,7 @@ async def test_weak_semantic_admission_is_verified_even_when_native_matches_rank
         [
             {
                 "content": "",
-                "tool_calls": [
-                    {"function": {"name": "screen__describe", "arguments": {}}}
-                ],
+                "tool_calls": [{"function": {"name": "screen__describe", "arguments": {}}}],
             },
             {
                 "content": json.dumps(
@@ -916,7 +905,7 @@ async def test_weak_semantic_admission_is_verified_even_when_native_matches_rank
 
     result = await planner.plan("El monitor es una tecnología interesante")
 
-    assert result is None
+    assert isinstance(result, ConversationalIntent)
     assert len(requests) == 2
 
 
@@ -933,9 +922,7 @@ async def test_structured_verifier_can_veto_ambiguous_native_action(
         [
             {
                 "content": "",
-                "tool_calls": [
-                    {"function": {"name": "game__list", "arguments": {}}}
-                ],
+                "tool_calls": [{"function": {"name": "game__list", "arguments": {}}}],
             },
             rejected,
         ],
@@ -944,4 +931,78 @@ async def test_structured_verifier_can_veto_ambiguous_native_action(
 
     result = await planner.plan("Hablemos sobre jugar Minecraft")
 
-    assert result is None
+    assert isinstance(result, ConversationalIntent)
+
+
+class FakeCodexPlannerClient:
+    def __init__(self, decision: dict[str, object]) -> None:
+        self.decision = decision
+        self.calls: list[dict[str, object]] = []
+
+    async def generate_json(self, **kwargs) -> dict[str, object]:
+        self.calls.append(kwargs)
+        return self.decision
+
+
+@pytest.mark.asyncio
+async def test_codex_planner_returns_typed_plan_with_codex_provenance() -> None:
+    client = FakeCodexPlannerClient(
+        {
+            "direct_request": True,
+            "needs_clarification": False,
+            "clarification_question": "",
+            "goal_complete": False,
+            "completion_message": "",
+            "continue_after_execution": False,
+            "action": "volume.set",
+            "arguments": {"level": 35},
+            "steps": [],
+            "confidence": 0.98,
+        }
+    )
+    planner = LocalActionPlanner(
+        JarvisSettings(
+            brain_mode="codex",
+            codex_model="gpt-5.6-luna",
+            codex_action_effort="high",
+        ),
+        ("volume.set", "volume.get"),
+        codex_client=client,  # type: ignore[arg-type]
+    )
+
+    result = await planner.plan("Pon el volumen al 35 por ciento")
+
+    assert result.name is ActionName.VOLUME_SET
+    assert result.arguments == {"level": 35}
+    assert result.source is ActionSource.CODEX
+    assert client.calls[0]["model"] == "gpt-5.6-luna"
+    assert client.calls[0]["effort"] == "high"
+    assert client.calls[0]["output_schema"]["additionalProperties"] is False
+    assert "tools" not in client.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_codex_planner_can_explicitly_keep_conversation_tool_free() -> None:
+    client = FakeCodexPlannerClient(
+        {
+            "direct_request": False,
+            "needs_clarification": False,
+            "clarification_question": "",
+            "goal_complete": False,
+            "completion_message": "",
+            "continue_after_execution": False,
+            "action": "none",
+            "arguments": {},
+            "steps": [],
+            "confidence": 0.99,
+        }
+    )
+    planner = LocalActionPlanner(
+        JarvisSettings(brain_mode="codex"),
+        ("screen.describe",),
+        codex_client=client,  # type: ignore[arg-type]
+    )
+
+    result = await planner.plan("Las pantallas modernas son interesantes")
+
+    assert isinstance(result, ConversationalIntent)

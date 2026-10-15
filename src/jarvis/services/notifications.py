@@ -83,15 +83,15 @@ class NotificationStore:
             db.close()
         return item
 
-    def pending(self, session: str) -> list[dict]:
+    def pending(self, session: str, *, after: float = 0, offset: int = 0) -> list[dict]:
         db = self.connect()
         try:
             return [
                 json.loads(row[0])
                 for row in db.execute(
                     "SELECT payload FROM notifications WHERE session=? AND acknowledged=0 "
-                    "ORDER BY created LIMIT 100",
-                    (session,),
+                    "AND created>=? ORDER BY created,id LIMIT 100 OFFSET ?",
+                    (session, after, offset),
                 )
             ]
         finally:

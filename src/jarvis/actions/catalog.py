@@ -31,6 +31,7 @@ from jarvis.actions.windows import (
 )
 from jarvis.capabilities.suite import CapabilitySuite
 from jarvis.config import Settings
+from jarvis.providers.codex_app_server import CodexAppServerClient
 
 
 class ActionSecurityError(ValueError):
@@ -209,9 +210,7 @@ class ActionCatalog:
         ),
         ActionName.TASK_COMPLETE: ActionSpec(ActionRisk.MEDIUM, "Marcar una tarea como completada"),
         ActionName.PROJECT_LIST: ActionSpec(ActionRisk.LOW, "Listar proyectos de Appa"),
-        ActionName.PROJECT_CREATE: ActionSpec(
-            ActionRisk.MEDIUM, "Crear un proyecto en Appa"
-        ),
+        ActionName.PROJECT_CREATE: ActionSpec(ActionRisk.MEDIUM, "Crear un proyecto en Appa"),
         ActionName.CALENDAR_LIST: ActionSpec(ActionRisk.LOW, "Consultar la agenda de Appa"),
         ActionName.CALENDAR_CREATE: ActionSpec(
             ActionRisk.MEDIUM, "Crear un evento en el calendario de Appa"
@@ -228,6 +227,15 @@ class ActionCatalog:
         ),
         ActionName.APPA_BRIEFING: ActionSpec(
             ActionRisk.LOW, "Consultar el contexto personal unificado de Appa"
+        ),
+        ActionName.MAIL_SEARCH: ActionSpec(
+            ActionRisk.LOW, "Buscar en la copia local autorizada del correo"
+        ),
+        ActionName.MAIL_REPLY: ActionSpec(
+            ActionRisk.HIGH, "Enviar una respuesta explícita desde Gmail"
+        ),
+        ActionName.GOOGLE_CALENDAR_UPDATE: ActionSpec(
+            ActionRisk.MEDIUM, "Editar un evento del calendario administrado por Jarvis"
         ),
         ActionName.REMINDER_LIST: ActionSpec(ActionRisk.LOW, "Listar recordatorios activos"),
         ActionName.REMINDER_CREATE: ActionSpec(
@@ -261,6 +269,15 @@ class ActionCatalog:
         ActionName.DEV_TEST: ActionSpec(
             ActionRisk.HIGH, "Ejecutar pruebas permitidas en un workspace autorizado"
         ),
+        ActionName.DEV_CREATE_FOLDER: ActionSpec(
+            ActionRisk.MEDIUM, "Crear una carpeta dentro de un workspace autorizado"
+        ),
+        ActionName.DEV_CREATE_PROJECT: ActionSpec(
+            ActionRisk.MEDIUM, "Crear la estructura inicial de un proyecto autorizado"
+        ),
+        ActionName.DEV_CODEX_TASK: ActionSpec(
+            ActionRisk.HIGH, "Permitir que Codex programe dentro de un proyecto confirmado"
+        ),
         ActionName.GAME_LIST: ActionSpec(
             ActionRisk.LOW, "Listar juegos detectados en bibliotecas autorizadas"
         ),
@@ -287,6 +304,7 @@ class ActionCatalog:
             ActionName.INBOX_LIST,
             ActionName.FOCUS_STATUS,
             ActionName.APPA_BRIEFING,
+            ActionName.MAIL_SEARCH,
             ActionName.REMINDER_LIST,
             ActionName.KNOWLEDGE_LIST,
             ActionName.KNOWLEDGE_SEARCH,
@@ -305,6 +323,7 @@ class ActionCatalog:
         search_url: str,
         settings: Settings | None = None,
         capabilities: CapabilitySuite | None = None,
+        codex_client: CodexAppServerClient | None = None,
     ) -> None:
         self.windows = WindowController()
         self.apps = AppController(self.windows)
@@ -319,9 +338,13 @@ class ActionCatalog:
             personal_profile=settings.browser_personal_profile if settings is not None else False,
             windows=self.windows,
         )
-        self.vision = LocalVisionController(settings) if settings is not None else None
+        self.vision = (
+            LocalVisionController(settings, codex_client=codex_client)
+            if settings is not None
+            else None
+        )
         self.capabilities = capabilities or (
-            CapabilitySuite(settings, vision=self.vision)
+            CapabilitySuite(settings, vision=self.vision, codex_client=codex_client)
             if settings is not None and settings.capabilities_enabled
             else None
         )
@@ -488,8 +511,35 @@ class ActionCatalog:
             if app not in self.apps.allowed_apps:
                 matches = self.apps.find_installed_apps(app)
                 if not matches:
+                    try:
+                        game_matches = (
+                            self.capabilities.find_games(app)
+                            if self.capabilities is not None
+                            else ()
+                        )
+                    except ValueError as exc:
+                        raise ActionSecurityError(str(exc)) from None
+                    if len(game_matches) > 1:
+                        options = ", ".join(match.name for match in game_matches[:5])
+                        raise ActionSecurityError(
+                            f"Encontré varios juegos: {options}. Indica el nombre completo."
+                        )
+                    if len(game_matches) == 1:
+                        game = game_matches[0]
+                        return PreparedAction(
+                            name=ActionName.GAME_LAUNCH,
+                            arguments={
+                                "game": game.game_id,
+                                "platform": game.platform,
+                                "display_name": game.name,
+                                "launch_target": game.launch_target,
+                            },
+                            risk=ActionRisk.MEDIUM,
+                            description=f"Abrir el juego instalado {game.name}",
+                            source=plan.source,
+                        )
                     raise ActionSecurityError(
-                        "No encontré una aplicación segura con ese nombre en el menú Inicio."
+                        "No encontré una aplicación segura con ese nombre en Windows."
                     )
                 if len(matches) > 1:
                     options = ", ".join(match.name for match in matches[:5])
@@ -503,6 +553,8 @@ class ActionCatalog:
                     "display_name": installed.name,
                     "target_path": installed.target_path,
                 }
+                if installed.launch_path:
+                    args["shortcut_path"] = installed.launch_path
                 description = f"Abrir la aplicación instalada {installed.name}"
             else:
                 args = {"app": app}
@@ -625,10 +677,7 @@ class ActionCatalog:
         elif plan.name is ActionName.TASK_CREATE:
             args = {
                 "title": self._required_safe_string(args, "title", 300),
-                "notes": self._optional_string(
-                    args, "notes", 4_000, allow_newlines=True
-                )
-                or "",
+                "notes": self._optional_string(args, "notes", 4_000, allow_newlines=True) or "",
             }
             due = self._optional_string(plan.arguments, "due", 120)
             if due is not None:
@@ -691,9 +740,7 @@ class ActionCatalog:
                 args["end_at"] = end_at
         elif plan.name is ActionName.INBOX_CAPTURE:
             args = {
-                "text": self._required_safe_string(
-                    args, "text", 4_000, allow_newlines=True
-                ),
+                "text": self._required_safe_string(args, "text", 4_000, allow_newlines=True),
             }
         elif plan.name is ActionName.FOCUS_START:
             args = {"duration_minutes": self._integer(args, "duration_minutes", 5, 180)}
@@ -701,6 +748,67 @@ class ActionCatalog:
                 value = self._optional_string(plan.arguments, key, maximum)
                 if value is not None:
                     args[key] = value
+        elif plan.name is ActionName.MAIL_SEARCH:
+            args = {"query": self._required_safe_string(args, "query", 300)}
+        elif plan.name is ActionName.MAIL_REPLY:
+            mail = getattr(self.capabilities, "mail", None)
+            if mail is None:
+                raise ActionSecurityError("El correo no está conectado al motor de acciones.")
+            selector = self._required_safe_string(args, "selector", 300)
+            body = self._required_safe_string(args, "body", 3_000, allow_newlines=True)
+            try:
+                item = mail.resolve(selector)
+                preview = mail.reply_preview(item["id"], body, item["version"])
+            except Exception as exc:
+                raise ActionSecurityError(str(exc)) from None
+            args = {
+                "mail_id": item["id"],
+                "version": item["version"],
+                "body": preview["body"],
+            }
+            description = (
+                f"Enviar desde {item['email']} a {preview['recipient']} una respuesta sobre "
+                f"{preview['subject']} con este texto exacto: {preview['body']}"
+            )
+        elif plan.name is ActionName.GOOGLE_CALENDAR_UPDATE:
+            organizer = getattr(self.capabilities, "organizer", None)
+            if organizer is None:
+                raise ActionSecurityError("Google Calendar no está conectado al motor de acciones.")
+            selector = self._required_safe_string(args, "selector", 500)
+            try:
+                event = organizer.resolve_google_event(selector)
+            except Exception as exc:
+                raise ActionSecurityError(str(exc)) from None
+            all_day = args.get("all_day", event.get("all_day", False))
+            if not isinstance(all_day, bool):
+                raise ActionSecurityError("El indicador de evento de día completo no es válido.")
+            reminders = args.get("reminders", event.get("reminders", []))
+            if not isinstance(reminders, list) or len(reminders) > 5:
+                raise ActionSecurityError("Los recordatorios del evento no son válidos.")
+            try:
+                reminders = [int(value) for value in reminders]
+            except (TypeError, ValueError):
+                raise ActionSecurityError("Los recordatorios del evento no son válidos.") from None
+            if any(value < 0 or value > 40320 for value in reminders):
+                raise ActionSecurityError("Los recordatorios del evento no son válidos.")
+            args = {
+                "event_id": event["id"],
+                "etag": event["etag"],
+                "title": self._optional_string(args, "title", 300) or event["title"],
+                "description": (
+                    self._optional_string(args, "description", 4_000, allow_newlines=True) or ""
+                )
+                if "description" in args
+                else event.get("description", ""),
+                "start_at": self._optional_string(args, "start_at", 40) or event["start_at"],
+                "end_at": self._optional_string(args, "end_at", 40) or event["end_at"],
+                "all_day": all_day,
+                "reminders": reminders,
+            }
+            description = (
+                f"Editar en Google Calendar el evento {event['title']}: "
+                f"título {args['title']}, inicio {args['start_at']}, fin {args['end_at']}"
+            )
         elif plan.name is ActionName.REMINDER_CREATE:
             recurrence = str(args.get("recurrence", "none")).strip().casefold()
             recurrence_aliases = {
@@ -732,14 +840,68 @@ class ActionCatalog:
             title = plan.arguments.get("title")
             if isinstance(title, str) and title.strip():
                 args["title"] = title.strip()[:200]
-        elif plan.name in {ActionName.DEV_INSPECT, ActionName.DEV_SEARCH, ActionName.DEV_TEST}:
+        elif plan.name in {
+            ActionName.DEV_INSPECT,
+            ActionName.DEV_SEARCH,
+            ActionName.DEV_TEST,
+            ActionName.DEV_CREATE_FOLDER,
+            ActionName.DEV_CREATE_PROJECT,
+            ActionName.DEV_CODEX_TASK,
+        }:
             args = {"workspace": self._string(args, "workspace", 100).casefold()}
             if plan.name is ActionName.DEV_INSPECT:
                 args["path"] = self._string(plan.arguments, "path", 500)
             elif plan.name is ActionName.DEV_SEARCH:
                 args["query"] = self._string(plan.arguments, "query", 300)
+            elif plan.name is ActionName.DEV_CREATE_FOLDER:
+                args["path"] = self._required_safe_string(plan.arguments, "path", 500)
+            elif plan.name is ActionName.DEV_CREATE_PROJECT:
+                args["name"] = self._required_safe_string(plan.arguments, "name", 80)
+                template = str(plan.arguments.get("template", "basic")).strip().casefold()
+                if template not in {"basic", "python", "web"}:
+                    raise ActionSecurityError("La plantilla debe ser basic, python o web.")
+                args["template"] = template
+                args["description"] = (
+                    self._optional_string(plan.arguments, "description", 1_000, allow_newlines=True)
+                    or ""
+                )
+            elif plan.name is ActionName.DEV_CODEX_TASK:
+                args["project"] = self._required_safe_string(plan.arguments, "project", 500)
+                args["instruction"] = self._required_safe_string(
+                    plan.arguments, "instruction", 12_000, allow_newlines=True
+                )
+                description = (
+                    "Permitir que Codex modifique el proyecto "
+                    + args["project"]
+                    + " para: "
+                    + args["instruction"][:300]
+                )
         elif plan.name is ActionName.GAME_LAUNCH:
-            args = {"game": self._string(args, "game", 200)}
+            requested_game = self._string(args, "game", 200)
+            if self.capabilities is None:
+                args = {"game": requested_game}
+            else:
+                try:
+                    game_matches = self.capabilities.find_games(requested_game)
+                except ValueError as exc:
+                    raise ActionSecurityError(str(exc)) from None
+                if len(game_matches) != 1:
+                    options = ", ".join(match.name for match in game_matches[:5])
+                    if options:
+                        raise ActionSecurityError(
+                            f"Encontré varios juegos: {options}. Indica el nombre completo."
+                        )
+                    raise ActionSecurityError(
+                        "No encontré ese juego en las bibliotecas configuradas."
+                    )
+                game = game_matches[0]
+                args = {
+                    "game": game.game_id,
+                    "platform": game.platform,
+                    "display_name": game.name,
+                    "launch_target": game.launch_target,
+                }
+                description = f"Abrir el juego instalado {game.name}"
         else:
             args = {}
 
@@ -752,10 +914,12 @@ class ActionCatalog:
                 )
 
         risk = spec.risk
-        if plan.name is ActionName.APP_OPEN and "app_id" in args:
+        if plan.name is ActionName.APP_OPEN and (
+            args.get("app_id") or args.get("shortcut_path")
+        ):
             risk = ActionRisk.MEDIUM
         if (
-            plan.source is ActionSource.LOCAL_MODEL
+            plan.source in {ActionSource.LOCAL_MODEL, ActionSource.CODEX}
             and risk is ActionRisk.LOW
             and plan.name not in self._MODEL_READ_ONLY
         ):
@@ -855,7 +1019,7 @@ class ActionCatalog:
             return await asyncio.to_thread(
                 self.apps.open,
                 args["app"],
-                "",
+                args.get("shortcut_path", ""),
                 args.get("app_id", ""),
                 args.get("display_name", ""),
                 args.get("target_path", ""),
@@ -1038,6 +1202,9 @@ class ActionCatalog:
             ActionName.FOCUS_STATUS,
             ActionName.FOCUS_START,
             ActionName.APPA_BRIEFING,
+            ActionName.MAIL_SEARCH,
+            ActionName.MAIL_REPLY,
+            ActionName.GOOGLE_CALENDAR_UPDATE,
             ActionName.REMINDER_LIST,
             ActionName.REMINDER_CREATE,
             ActionName.REMINDER_CANCEL,
@@ -1051,6 +1218,9 @@ class ActionCatalog:
             ActionName.DEV_INSPECT,
             ActionName.DEV_SEARCH,
             ActionName.DEV_TEST,
+            ActionName.DEV_CREATE_FOLDER,
+            ActionName.DEV_CREATE_PROJECT,
+            ActionName.DEV_CODEX_TASK,
             ActionName.GAME_LIST,
             ActionName.GAME_LAUNCH,
         }:

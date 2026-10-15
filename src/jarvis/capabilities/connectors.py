@@ -25,16 +25,13 @@ class ConnectorError(RuntimeError):
 
 
 _PRIORITIES = frozenset({"baja", "media", "alta"})
-_CATEGORIES = frozenset(
-    {"universidad", "personal", "trabajo", "finanzas", "salud", "otros"}
-)
+_CATEGORIES = frozenset({"universidad", "personal", "trabajo", "finanzas", "salud", "otros"})
 
 
 def _has_control(value: str, *, allow_layout: bool = False) -> bool:
     allowed = {"\n", "\t"} if allow_layout else set()
     return any(
-        unicodedata.category(character) == "Cc" and character not in allowed
-        for character in value
+        unicodedata.category(character) == "Cc" and character not in allowed for character in value
     )
 
 
@@ -334,8 +331,7 @@ class LocalTaskConnector:
                 """
             )
             columns = {
-                str(row[1])
-                for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+                str(row[1]) for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
             }
             additions = {
                 "priority": "TEXT NOT NULL DEFAULT 'media'",
@@ -432,9 +428,7 @@ class LocalTaskConnector:
         category = category.strip().casefold()
         if priority not in _PRIORITIES or category not in _CATEGORIES:
             raise ConnectorError("La prioridad o categor\u00eda de la tarea no es v\u00e1lida.")
-        reminder_at = AppaConnector._rfc3339(
-            reminder_at, "recordatorio", required=False
-        )
+        reminder_at = AppaConnector._rfc3339(reminder_at, "recordatorio", required=False)
         project_id = self._optional_text(project_id, 128, "proyecto")
         task_id = uuid4().hex
         created_at = datetime.now(UTC).isoformat()
@@ -580,17 +574,13 @@ class AppaConnector:
         ):
             raise ConnectorError("Appa devolvi\u00f3 una tarea incompleta.")
         for value in optional_strings:
-            if value is not None and (
-                len(value) > 128 or _has_control(value)
-            ):
+            if value is not None and (len(value) > 128 or _has_control(value)):
                 raise ConnectorError("Appa devolvi\u00f3 una tarea incompleta.")
         for value in (created_at, updated_at):
             if len(value) > 80 or _has_control(value):
                 raise ConnectorError("Appa devolvi\u00f3 una tarea incompleta.")
         normalized_due = AppaConnector._date_or_rfc3339(due, "fecha")
-        normalized_reminder = AppaConnector._rfc3339(
-            reminder_at, "recordatorio", required=False
-        )
+        normalized_reminder = AppaConnector._rfc3339(reminder_at, "recordatorio", required=False)
         return TaskItem(
             task_id=task_id,
             title=title,
@@ -635,11 +625,7 @@ class AppaConnector:
         value = payload.get(key)
         if value is None or value == "":
             return None
-        if (
-            not isinstance(value, str)
-            or len(value.strip()) > maximum
-            or _has_control(value)
-        ):
+        if not isinstance(value, str) or len(value.strip()) > maximum or _has_control(value):
             raise ConnectorError("Appa devolvi\u00f3 datos incompletos.")
         return value.strip() or None
 
@@ -693,9 +679,7 @@ class AppaConnector:
             or _has_control(description, allow_layout=True)
         ):
             raise ConnectorError("Appa devolvi\u00f3 un evento inv\u00e1lido.")
-        start_at = cls._rfc3339(
-            cls._required_text(item, "start_at", 80), "inicio", required=True
-        )
+        start_at = cls._rfc3339(cls._required_text(item, "start_at", 80), "inicio", required=True)
         end_at = cls._rfc3339(
             cls._optional_response_text(item, "end_at", 80), "fin", required=False
         )
@@ -831,8 +815,7 @@ class AppaConnector:
             or not isinstance(capabilities, list)
             or len(capabilities) > 64
             or any(
-                not isinstance(value, str)
-                or re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", value) is None
+                not isinstance(value, str) or re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", value) is None
                 for value in capabilities
             )
         ):
@@ -900,8 +883,7 @@ class AppaConnector:
             for item in self._collection(payload, "events")[:12]
         ]
         inbox = [
-            self._decode_inbox(item).as_dict()
-            for item in self._collection(payload, "inbox")[:8]
+            self._decode_inbox(item).as_dict() for item in self._collection(payload, "inbox")[:8]
         ]
         raw_focus = payload.get("focus")
         focus = self._decode_focus(raw_focus).as_dict() if raw_focus is not None else None
@@ -1130,11 +1112,7 @@ class AppaConnector:
 
     async def capture_inbox(self, value: str) -> InboxItem:
         text = value.strip()
-        if (
-            not text
-            or len(text) > 4_000
-            or _has_control(text, allow_layout=True)
-        ):
+        if not text or len(text) > 4_000 or _has_control(text, allow_layout=True):
             raise ConnectorError("La captura para Appa no es v\u00e1lida.")
         await self._require_capabilities("inbox.write")
         response = await self._request(
@@ -1199,6 +1177,28 @@ class AppaConnector:
         )
         return self._decode_focus(self._json(response))
 
+    async def send_notification(
+        self,
+        title: str,
+        body: str,
+        notification_id: str,
+    ) -> None:
+        title = LocalTaskConnector._clean(title, 120, "título del aviso")
+        body = LocalTaskConnector._clean(body, 500, "contenido del aviso")
+        notification_id = notification_id.strip()
+        if self._TASK_ID.fullmatch(notification_id) is None:
+            raise ConnectorError("El identificador del aviso no es válido.")
+        await self._require_capabilities("notifications.write")
+        response = await self._request(
+            "POST",
+            "/notifications",
+            json_body={"title": title, "body": body},
+            extra_headers={"Idempotency-Key": notification_id},
+        )
+        payload = self._json(response)
+        if not isinstance(payload, dict) or payload.get("delivered") is not True:
+            raise ConnectorError("Appa no confirmó la entrega del aviso.")
+
 
 class UnavailableTaskConnector:
     name = "appa"
@@ -1217,9 +1217,7 @@ class UnavailableTaskConnector:
     def _raise(self) -> NoReturn:
         raise ConnectorError(self.detail)
 
-    async def list_tasks(
-        self, session_id: str, include_completed: bool = False
-    ) -> list[TaskItem]:
+    async def list_tasks(self, session_id: str, include_completed: bool = False) -> list[TaskItem]:
         del session_id, include_completed
         self._raise()
 
@@ -1322,9 +1320,7 @@ class ConnectorRegistry:
                 return self._bridge_connector
             self._bridge_fingerprint = comparison
             if fingerprint_error is not None:
-                self._replace_bridge_connector(
-                    UnavailableTaskConnector(fingerprint_error)
-                )
+                self._replace_bridge_connector(UnavailableTaskConnector(fingerprint_error))
                 return self._bridge_connector
             if fingerprint is None:
                 marker_exists = bool(
@@ -1344,9 +1340,7 @@ class ConnectorRegistry:
             try:
                 descriptor = load_appa_bridge_descriptor(path)
                 if not descriptor.enabled:
-                    raise ConnectorError(
-                        "El puente privado de Appa est\u00e1 desactivado en Appa."
-                    )
+                    raise ConnectorError("El puente privado de Appa est\u00e1 desactivado en Appa.")
                 if self.local.has_tasks():
                     raise ConnectorError(
                         "Hay tareas previas en el almac\u00e9n local de Jarvis. "

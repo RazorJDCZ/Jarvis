@@ -14,10 +14,12 @@ from jarvis.actions.models import (
     ActionStatus,
     AgentGoalComplete,
     ClarificationNeeded,
+    ConversationalIntent,
     ExecutionResult,
     PreparedAction,
     PreparedWorkflow,
 )
+from jarvis.actions.planner import LocalActionPlanner
 from jarvis.actions.windows import InstalledApp
 from jarvis.config import Settings
 
@@ -255,6 +257,107 @@ async def test_unresolved_computer_goal_asks_instead_of_falling_into_chat(tmp_pa
     assert result.status is ActionStatus.REJECTED
     assert result.details["clarification_required"] is True
     assert result.message.endswith("¿Qué debería quedar listo al terminar?")
+
+
+@pytest.mark.asyncio
+async def test_weak_tool_match_without_a_plan_returns_to_conversation(tmp_path: Path) -> None:
+    planner = SemanticFixedPlanner(None)
+    engine, catalog = build_engine(tmp_path, planner=planner)
+
+    assert await engine.try_handle("talk", "El monitor es una tecnología interesante") is None
+    assert len(planner.calls) == 1
+    assert catalog.executed == []
+    assert "talk" not in engine._clarifications
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "No Jarvis, te estoy preguntando cómo estás.",
+        "Solo quiero conversar contigo un rato.",
+        "¿Cómo te has sentido?",  # Model can reject a new topic beyond the fast social guard.
+        "Explícame cómo funcionan los planetas.",
+    ],
+)
+async def test_conversation_can_leave_an_action_clarification(tmp_path: Path, message: str) -> None:
+    planner = SequencedPlanner(
+        [
+            ClarificationNeeded("¿Qué ventanas organizo?"),
+            ConversationalIntent(),
+        ]
+    )
+    engine, catalog = build_engine(tmp_path, planner=planner)
+    assert (
+        await engine.try_handle("talk", "Organiza las ventanas para estudiar")
+    ).action_id is None
+
+    assert await engine.try_handle("talk", message) is None
+    assert "talk" not in engine._clarifications
+    assert catalog.executed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote", [False, True])
+async def test_reported_greeting_and_correction_reach_brain_with_history(
+    tmp_path: Path, remote: bool
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from jarvis.services.conversation import ConversationService
+
+    engine, catalog = build_engine(tmp_path, memory_enabled=False, semantic_enabled=False)
+    planner = LocalActionPlanner(engine.settings, catalog.action_names)
+    planner.plan = AsyncMock(return_value=None)
+    engine.planner = planner
+    brain = AsyncMock()
+    brain.name = "test-conversational-model"
+    brain.chat.side_effect = [
+        "Me alegra retomar la charla.",
+        "Sí, te entendí; estamos conversando.",
+    ]
+    verifier = AsyncMock()
+    verifier.verify.return_value = None
+    conversation = ConversationService(engine.settings, brain, engine, verifier=verifier)
+    messages = [
+        "Hola Jarvis, ¿cómo vas que te cuentas? Hace mucho que no hablamos cómo se ha estado.",
+        "No Jarvis, te estoy preguntando cómo estás.",
+    ]
+    for message in messages:
+        reply = await conversation.reply("talk", message, remote=remote)
+        assert reply.provider == brain.name
+        assert reply.action is None
+    planner.plan.assert_not_awaited()
+    assert brain.chat.await_count == 2
+    last_context = brain.chat.call_args.args[0]
+    assert any(m["role"] == "user" and m["content"] == messages[0] for m in last_context)
+    assert last_context[-1]["content"] == messages[1]
+    assert catalog.executed == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Hola Jarvis, ¿cómo vas que te cuentas? Hace mucho que no hablamos cómo se ha estado.",
+        "No Jarvis, te estoy preguntando cómo estás.",
+        "Hoy tuve un día pesado, quiero hablar contigo.",
+        "¿Qué tal tu día?",
+        "¿Cómo estás?",
+        "Gracias por escucharme.",
+        "Me gusta cómo te ves.",
+        "Estoy triste por lo que pasó con mis amigos.",
+    ],
+)
+def test_social_language_does_not_admit_speculative_tools(message: str) -> None:
+    planner = LocalActionPlanner(Settings(), tuple(a.value for a in ActionName))
+    assert not planner.likely_tool_request(message)
+    assert not planner.intent_gate.has_agent_intent(message)
+
+
+def test_semantic_admission_keeps_unparsed_tool_requests() -> None:
+    planner = LocalActionPlanner(Settings(), tuple(a.value for a in ActionName))
+    assert planner.likely_tool_request("Pon en marcha Spotify para escuchar algo")
+    assert planner.intent_gate.has_agent_intent("Hola, ¿cómo estás? Abre la calculadora")
 
 
 @pytest.mark.asyncio
@@ -535,7 +638,10 @@ async def test_manually_closed_dialog_does_not_block_future_commands(tmp_path: P
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("confirmation", ["sí", "claro que sí", "dale", "autorizo"])
+@pytest.mark.parametrize(
+    "confirmation",
+    ["sí", "claro que sí", "dale", "autorizo", "Confirma."],
+)
 async def test_natural_voice_confirmation_variants(
     tmp_path: Path,
     confirmation: str,
@@ -726,10 +832,7 @@ async def test_new_read_only_request_cannot_leave_an_old_mutation_armed(tmp_path
     assert stale_api_confirmation.status is ActionStatus.REJECTED
     assert len(action_catalog.executed) == 1
     assert action_catalog.executed[0].name is ActionName.VOLUME_GET
-    assert any(
-        entry["status"] == ActionStatus.CANCELLED.value
-        for entry in engine.recent_audit(10)
-    )
+    assert any(entry["status"] == ActionStatus.CANCELLED.value for entry in engine.recent_audit(10))
 
 
 @pytest.mark.asyncio

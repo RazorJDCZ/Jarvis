@@ -160,6 +160,9 @@ const appState = {
   operationGeneration: 0,
   activeControllers: new Set(),
   ttsController: null,
+  ttsControllers: new Set(),
+  neuralAudioElement: null,
+  audioPlaybackUnlocked: false,
   attachments: [],
   uploadingAttachments: 0,
   activeDeckTab: "activity",
@@ -1517,7 +1520,7 @@ function showCoreUnavailable() {
   cancelActiveClientWork();
   appState.remoteAuthenticated = false;
   elements.remoteGateEyebrow.textContent = local
-    ? "JARVIS // LOCAL CORE OFFLINE"
+    ? "JARVIS // CORE OFFLINE"
     : "JARVIS // PRIVATE LINK OFFLINE";
   elements.remoteGateTitle.textContent = local
     ? "Jarvis no está en ejecución"
@@ -1951,6 +1954,35 @@ function chooseSpanishVoice() {
   );
 }
 
+const SILENT_AUDIO_DATA_URI =
+  "data:audio/wav;base64,UklGRmQBAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
+function neuralAudioElement() {
+  if (!appState.neuralAudioElement) {
+    const audio = new Audio();
+    audio.preload = "auto";
+    audio.playsInline = true;
+    appState.neuralAudioElement = audio;
+  }
+  return appState.neuralAudioElement;
+}
+
+async function unlockNeuralAudioPlayback() {
+  if (appState.audioPlaybackUnlocked || appState.speaking) return;
+  const audio = neuralAudioElement();
+  audio.src = SILENT_AUDIO_DATA_URI;
+  audio.volume = 0.01;
+  try {
+    await audio.play();
+    audio.pause();
+    audio.currentTime = 0;
+    audio.volume = 1;
+    appState.audioPlaybackUnlocked = true;
+  } catch (error) {
+    console.debug("Neural audio still needs a direct user gesture", error);
+  }
+}
+
 function finishSpeaking() {
   appState.interruptionPaused = false;
   appState.speaking = false;
@@ -1963,14 +1995,22 @@ function finishSpeaking() {
 
 function stopSpeaking() {
   appState.speechGeneration += 1;
+  for (const controller of appState.ttsControllers) {
+    controller.abort();
+    appState.activeControllers.delete(controller);
+  }
+  appState.ttsControllers.clear();
   if (appState.ttsController) {
     appState.ttsController.abort();
     appState.ttsController = null;
   }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   if (appState.audioPlayer) {
+    appState.audioPlayer.onended = null;
+    appState.audioPlayer.onerror = null;
     appState.audioPlayer.pause();
-    appState.audioPlayer.src = "";
+    appState.audioPlayer.removeAttribute("src");
+    appState.audioPlayer.load();
     appState.audioPlayer = null;
   }
   if (appState.audioUrl) {
@@ -2015,7 +2055,7 @@ function speakWithBrowser(text) {
   }
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = "es-ES";
-  utterance.rate = 0.96;
+  utterance.rate = 1.2;
   utterance.pitch = 0.92;
   utterance.volume = 0.96;
   const voice = chooseSpanishVoice();
@@ -2026,12 +2066,35 @@ function speakWithBrowser(text) {
   if (appState.interruptionPaused) window.speechSynthesis.pause();
 }
 
-async function speak(text) {
+async function prepareSpeech(text) {
+  if (!appState.ttsAvailable || !text) return null;
+  const controller = new AbortController();
+  appState.ttsControllers.add(controller);
+  appState.activeControllers.add(controller);
+  try {
+    const response = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(await readError(response));
+    return { blob: await response.blob() };
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
+    return { error };
+  } finally {
+    appState.ttsControllers.delete(controller);
+    appState.activeControllers.delete(controller);
+  }
+}
+
+async function speak(text, preparedAudio = null) {
   if (appState.muted || !text) {
     finishSpeaking();
     return;
   }
-  stopSpeaking();
+  if (appState.speaking) stopSpeaking();
   const speechGeneration = appState.speechGeneration;
   appState.speaking = true;
   appState.busy = true;
@@ -2039,20 +2102,28 @@ async function speak(text) {
 
   if (appState.ttsAvailable) {
     try {
-      const controller = new AbortController();
-      appState.ttsController = controller;
-      const response = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-        signal: controller.signal,
-      });
-      appState.ttsController = null;
-      if (!response.ok) throw new Error(await readError(response));
-      const audioBlob = await response.blob();
+      if (preparedAudio?.error) throw preparedAudio.error;
+      let audioBlob = preparedAudio?.blob || null;
+      if (!audioBlob) {
+        const controller = new AbortController();
+        appState.ttsController = controller;
+        const response = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+          signal: controller.signal,
+        });
+        appState.ttsController = null;
+        if (!response.ok) throw new Error(await readError(response));
+        audioBlob = await response.blob();
+      }
       if (speechGeneration !== appState.speechGeneration) return;
       appState.audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(appState.audioUrl);
+      const audio = neuralAudioElement();
+      audio.pause();
+      audio.src = appState.audioUrl;
+      audio.volume = 1;
+      audio.playbackRate = 1;
       appState.audioPlayer = audio;
       audio.onended = () => {
         URL.revokeObjectURL(appState.audioUrl);
@@ -2061,17 +2132,30 @@ async function speak(text) {
         finishSpeaking();
       };
       audio.onerror = () => {
+        audio.onerror = null;
+        audio.onended = null;
+        audio.pause();
+        appState.audioPlayer = null;
+        if (appState.audioUrl) URL.revokeObjectURL(appState.audioUrl);
+        appState.audioUrl = null;
         appState.ttsAvailable = false;
+        if (appState.remote) {
+          showToast("El teléfono bloqueó la voz neural; usando temporalmente su voz integrada.", 6000);
+        }
         speakWithBrowser(text);
       };
       if (appState.interruptionPaused) return;
       await audio.play();
+      appState.audioPlaybackUnlocked = true;
       return;
     } catch (error) {
       appState.ttsController = null;
       if (speechGeneration !== appState.speechGeneration) return;
       console.warn("Local neural voice unavailable, falling back to browser voice", error);
       appState.ttsAvailable = false;
+      if (appState.remote) {
+        showToast("No pude reproducir la voz neural; usando temporalmente la voz del teléfono.", 6000);
+      }
     }
   }
   if (speechGeneration !== appState.speechGeneration) return;
@@ -2454,6 +2538,14 @@ elements.micButton.addEventListener("pointerdown", (pointerEvent) => {
   appState.manualIntent = true;
   elements.micButton.setPointerCapture?.(pointerEvent.pointerId);
   beginManualCapture();
+});
+
+document.addEventListener("pointerdown", () => void unlockNeuralAudioPlayback(), {
+  capture: true,
+  passive: true,
+});
+document.addEventListener("keydown", () => void unlockNeuralAudioPlayback(), {
+  capture: true,
 });
 for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"]) {
   elements.micButton.addEventListener(eventName, endManualCapture);
@@ -2910,9 +3002,12 @@ function startNeuralField() {
 }
 
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () =>
-    navigator.serviceWorker.register("/service-worker.js", { updateViaCache: "none" }),
-  );
+  window.addEventListener("load", async () => {
+    const registration = await navigator.serviceWorker.register("/service-worker.js", {
+      updateViaCache: "none",
+    });
+    if (registration?.update) await registration.update();
+  });
 }
 
 function startCore() {

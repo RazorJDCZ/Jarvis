@@ -11,8 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 class Preferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
     performance: Literal["adaptive", "economy", "quality"] = "adaptive"
-    voice: Literal["em_alex", "em_santa", "ef_dora"] = "em_alex"
-    voice_speed: float = Field(default=1.0, ge=0.75, le=1.25)
+    voice: Literal["am_onyx", "em_alex", "em_santa", "ef_dora"] = "am_onyx"
+    voice_speed: float = Field(default=1.20, ge=0.75, le=1.25)
     proactive: bool = False
     briefing_hour: int = Field(default=8, ge=0, le=23)
     quiet_start: int = Field(default=22, ge=0, le=23)

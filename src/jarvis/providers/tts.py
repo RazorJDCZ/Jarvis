@@ -3,12 +3,71 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import io
+import sys
 import wave
+from array import array
 from typing import Any
 
 from jarvis.config import Settings
 from jarvis.schemas import ProviderStatus
 from jarvis.services.preferences import PreferenceStore
+from jarvis.text import strip_emojis
+
+
+def compress_speech_pauses(audio: bytes, max_pause_seconds: float = 0.14) -> bytes:
+    """Shorten long near-silent runs without changing pitch or spoken samples."""
+
+    try:
+        with wave.open(io.BytesIO(audio), "rb") as source:
+            params = source.getparams()
+            if params.sampwidth != 2 or params.comptype != "NONE" or params.nchannels < 1:
+                return audio
+            frames = source.readframes(params.nframes)
+    except (EOFError, ValueError, wave.Error):
+        return audio
+    samples = array("h")
+    samples.frombytes(frames)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    channels = params.nchannels
+    frame_count = len(samples) // channels
+    if not frame_count:
+        return audio
+    peak = max(abs(sample) for sample in samples)
+    threshold = max(96, min(500, int(peak * 0.012)))
+    maximum = max(1, int(params.framerate * max_pause_seconds))
+    ranges = []
+    start = None
+    for frame in range(frame_count):
+        offset = frame * channels
+        silent = all(abs(samples[offset + channel]) <= threshold for channel in range(channels))
+        if silent and start is None:
+            start = frame
+        elif not silent and start is not None:
+            ranges.append((start, frame))
+            start = None
+    if start is not None:
+        ranges.append((start, frame_count))
+    long_ranges = [(start, end) for start, end in ranges if end - start > maximum]
+    if not long_ranges:
+        return audio
+    output = array("h")
+    cursor = 0
+    for start, end in long_ranges:
+        output.extend(samples[cursor * channels : start * channels])
+        keep_before = maximum // 2
+        keep_after = maximum - keep_before
+        output.extend(samples[start * channels : (start + keep_before) * channels])
+        output.extend(samples[(end - keep_after) * channels : end * channels])
+        cursor = end
+    output.extend(samples[cursor * channels :])
+    if sys.byteorder != "little":
+        output.byteswap()
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as target:
+        target.setparams(params)
+        target.writeframes(output.tobytes())
+    return buffer.getvalue()
 
 
 class PiperTTS:
@@ -46,7 +105,7 @@ class PiperTTS:
             return ProviderStatus(
                 available=True,
                 name=f"Kokoro 82M / {self.settings.kokoro_voice}",
-                detail="Voz masculina neural local de alta naturalidad; Piper queda como respaldo",
+                detail="Voz masculina grave Onyx; síntesis neural local con Piper como respaldo",
             )
         if self._piper_ready():
             return ProviderStatus(
@@ -109,7 +168,15 @@ class PiperTTS:
                 preferences.voice if preference_store.path.exists() else self.settings.kokoro_voice
             )
             if voice not in available_voices:
-                voice = "em_alex" if "em_alex" in available_voices else "em_santa"
+                configured = self.settings.kokoro_voice
+                if configured in available_voices:
+                    voice = configured
+                elif "am_onyx" in available_voices:
+                    voice = "am_onyx"
+                elif "em_santa" in available_voices:
+                    voice = "em_santa"
+                else:
+                    voice = "em_alex"
             samples, sample_rate = engine.create(
                 text,
                 voice=voice,
@@ -167,9 +234,12 @@ class PiperTTS:
             raise RuntimeError(status.detail)
 
     async def synthesize(self, text: str) -> bytes:
-        task = asyncio.create_task(self._synthesize(text))
+        clean_text = strip_emojis(text)
+        if not clean_text:
+            raise RuntimeError("No hay texto pronunciable")
+        task = asyncio.create_task(self._synthesize(clean_text))
         try:
-            return await asyncio.shield(task)
+            return compress_speech_pauses(await asyncio.shield(task))
         except asyncio.CancelledError:
             await task
             raise

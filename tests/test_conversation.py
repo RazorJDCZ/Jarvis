@@ -35,6 +35,12 @@ class PointedQuestionBrain(RecordingBrain):
         return "Suena como un plan tranquilo. ¿A qué juego están pensando jugar?"
 
 
+class EmojiBrain(RecordingBrain):
+    async def chat(self, messages: list[dict[str, str]]) -> str:
+        self.calls.append(messages)
+        return "Listo 😏. Todo salió bien ✅"
+
+
 class RecordingActions:
     def __init__(self, outcome: ActionOutcome | None = None) -> None:
         self.outcome = outcome
@@ -250,6 +256,50 @@ async def test_safe_command_bypasses_brain_and_can_reset_history() -> None:
     assert len(brain.calls) == 1
     assert "a" not in service._history
     assert actions.reset_sessions == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_informal_conversation_uses_playful_but_non_hostile_personality() -> None:
+    brain = RecordingBrain()
+    service = ConversationService(
+        Settings(
+            safe_actions_enabled=False,
+            information_verification_enabled=False,
+            memory_enabled=False,
+        ),
+        brain,
+        RecordingActions(),
+        verifier=FixedVerifier(None),
+        profile_store=FixedProfileStore(),
+    )
+
+    await service.reply("personality", "qué tal")
+
+    prompt = brain.calls[0][0]["content"]
+    assert "Sé juguetón, rápido de ingenio" in prompt
+    assert "sarcasmo ligero o humor seco" in prompt
+    assert "nunca debe ir contra Juan Diego" in prompt
+    assert "No uses emojis" in prompt
+
+
+@pytest.mark.asyncio
+async def test_model_emojis_are_removed_from_reply_and_history() -> None:
+    service = ConversationService(
+        Settings(
+            safe_actions_enabled=False,
+            information_verification_enabled=False,
+            memory_enabled=False,
+        ),
+        EmojiBrain(),
+        RecordingActions(),
+        verifier=FixedVerifier(None),
+        profile_store=FixedProfileStore(),
+    )
+
+    reply = await service.reply("emoji", "hola")
+
+    assert reply.text == "Listo. Todo salió bien"
+    assert service._history["emoji"][-1]["content"] == reply.text
 
 
 @pytest.mark.asyncio

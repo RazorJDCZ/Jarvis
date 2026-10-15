@@ -32,6 +32,7 @@ class InstalledApp:
     name: str
     app_id: str
     target_path: str = ""
+    launch_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -818,6 +819,17 @@ class AppController:
             )
             if str(path) and path.exists()
         )
+        desktop_candidates: list[Path] = []
+        for environment_name in ("USERPROFILE", "OneDrive", "PUBLIC"):
+            base = os.environ.get(environment_name, "").strip()
+            if base:
+                desktop_candidates.append(Path(base) / "Desktop")
+        self._desktop_roots = tuple(
+            dict.fromkeys(path for path in desktop_candidates if path.exists())
+        )
+        self._launcher_roots = tuple(
+            dict.fromkeys((*self._start_menu_roots, *self._desktop_roots))
+        )
 
     @property
     def allowed_apps(self) -> frozenset[str]:
@@ -835,7 +847,7 @@ class AppController:
             return False
         target = app.target_path.strip()
         if not target:
-            return bool(app.app_id.strip())
+            return bool(app.app_id.strip() or app.launch_path.strip())
         if target.casefold().startswith(("http://", "https://", "file:")):
             return False
         if re.fullmatch(r"steam://rungameid/\d{1,12}", target, flags=re.IGNORECASE):
@@ -860,6 +872,94 @@ class AppController:
 
         return Dispatch("Shell.Application").Namespace("shell:AppsFolder")
 
+    @staticmethod
+    def _shortcut_target(shortcut: Path) -> str:
+        try:
+            from win32com.client import Dispatch
+
+            value = Dispatch("WScript.Shell").CreateShortcut(str(shortcut)).TargetPath
+            return str(value or "").strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _within_roots(path: Path, roots: tuple[Path, ...]) -> bool:
+        for root in roots:
+            try:
+                if path.is_relative_to(root.resolve(strict=True)):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def _trusted_launcher(self, launcher: Path) -> bool:
+        try:
+            resolved = launcher.resolve(strict=True)
+        except OSError:
+            return False
+        suffix = resolved.suffix.casefold()
+        if suffix == ".exe":
+            if not self._within_roots(resolved, self._desktop_roots):
+                return False
+            candidate = InstalledApp(
+                name=resolved.stem,
+                app_id="",
+                target_path=str(resolved),
+                launch_path=str(resolved),
+            )
+            return self._safe_installed_app(candidate)
+        launcher_roots = tuple(
+            dict.fromkeys((*self._start_menu_roots, *self._desktop_roots))
+        )
+        if suffix != ".lnk" or not self._within_roots(resolved, launcher_roots):
+            return False
+        target = self._shortcut_target(resolved)
+        if not target:
+            return False
+        candidate = InstalledApp(
+            name=resolved.stem,
+            app_id="",
+            target_path=target,
+            launch_path=str(resolved),
+        )
+        return self._safe_installed_app(candidate)
+
+    def _file_launchers(self) -> tuple[InstalledApp, ...]:
+        launchers: list[InstalledApp] = []
+        seen_paths: set[str] = set()
+        sources = (
+            *((root, True) for root in self._start_menu_roots),
+            *((root, False) for root in self._desktop_roots),
+        )
+        for root, recursive in sources:
+            patterns = ("*.lnk",) if recursive else ("*.lnk", "*.exe")
+            for pattern in patterns:
+                try:
+                    paths = root.rglob(pattern) if recursive else root.glob(pattern)
+                    for launcher in paths:
+                        identity = str(launcher).casefold()
+                        if identity in seen_paths or self._blocked_shortcut(launcher.stem):
+                            continue
+                        seen_paths.add(identity)
+                        if not self._trusted_launcher(launcher):
+                            continue
+                        target = (
+                            self._shortcut_target(launcher)
+                            if launcher.suffix.casefold() == ".lnk"
+                            else str(launcher.resolve(strict=True))
+                        )
+                        app = InstalledApp(
+                            name=launcher.stem,
+                            app_id="",
+                            target_path=target,
+                            launch_path=str(launcher.resolve(strict=True)),
+                        )
+                        if self._safe_installed_app(app):
+                            launchers.append(app)
+                except OSError:
+                    continue
+        return tuple(launchers)
+
     def installed_apps(self) -> tuple[InstalledApp, ...]:
         if self._inventory_cache is not None and time.monotonic() - self._inventory_cached_at < 60:
             return self._inventory_cache
@@ -867,25 +967,33 @@ class AppController:
             folder = self._apps_folder()
             items = folder.Items()
         except Exception:
-            return ()
+            items = None
         apps: list[InstalledApp] = []
         seen: set[tuple[str, str]] = set()
-        for index in range(items.Count):
-            try:
-                item = items.Item(index)
-                app = InstalledApp(
-                    name=str(item.Name).strip(),
-                    app_id=str(item.Path).strip(),
-                    target_path=str(
-                        item.ExtendedProperty("System.Link.TargetParsingPath") or ""
-                    ).strip(),
-                )
-            except Exception:
+        if items is not None:
+            for index in range(items.Count):
+                try:
+                    item = items.Item(index)
+                    app = InstalledApp(
+                        name=str(item.Name).strip(),
+                        app_id=str(item.Path).strip(),
+                        target_path=str(
+                            item.ExtendedProperty("System.Link.TargetParsingPath") or ""
+                        ).strip(),
+                    )
+                except Exception:
+                    continue
+                identity = (_normalize(app.name), app.app_id.casefold())
+                if identity in seen or not self._safe_installed_app(app):
+                    continue
+                seen.add(identity)
+                apps.append(app)
+        known_names = {_normalize(app.name) for app in apps}
+        for app in self._file_launchers():
+            normalized_name = _normalize(app.name)
+            if normalized_name in known_names:
                 continue
-            identity = (_normalize(app.name), app.app_id.casefold())
-            if identity in seen or not self._safe_installed_app(app):
-                continue
-            seen.add(identity)
+            known_names.add(normalized_name)
             apps.append(app)
         inventory = tuple(sorted(apps, key=lambda app: _normalize(app.name)))
         self._inventory_cache = inventory
@@ -914,7 +1022,7 @@ class AppController:
         return ExecutionResult(
             True,
             (
-                f"Puedo abrir {len(names)} aplicaciones seguras del menú Inicio. "
+                f"Puedo abrir {len(names)} aplicaciones seguras registradas en Windows. "
                 f"Algunas son: {preview}."
             ),
             {"count": len(names), "applications": names},
@@ -937,39 +1045,32 @@ class AppController:
     def resolve_shortcut(self, requested_name: str) -> Path | None:
         needle = _normalize(requested_name)
         candidates: list[tuple[int, Path]] = []
-        for root in self._start_menu_roots:
-            for shortcut in root.rglob("*.lnk"):
-                if self._blocked_shortcut(shortcut.stem):
-                    continue
-                normalized_name = _normalize(shortcut.stem)
-                if needle not in normalized_name and normalized_name not in needle:
-                    continue
-                score = (
-                    3
-                    if normalized_name == needle
-                    else 2
-                    if normalized_name.startswith(needle)
-                    else 1
-                )
-                candidates.append((score, shortcut))
+        sources = (
+            *((root, True) for root in self._start_menu_roots),
+            *((root, False) for root in self._desktop_roots),
+        )
+        for root, recursive in sources:
+            patterns = ("*.lnk",) if recursive else ("*.lnk", "*.exe")
+            for pattern in patterns:
+                paths = root.rglob(pattern) if recursive else root.glob(pattern)
+                for shortcut in paths:
+                    if self._blocked_shortcut(shortcut.stem):
+                        continue
+                    normalized_name = _normalize(shortcut.stem)
+                    if needle not in normalized_name and normalized_name not in needle:
+                        continue
+                    score = (
+                        3
+                        if normalized_name == needle
+                        else 2
+                        if normalized_name.startswith(needle)
+                        else 1
+                    )
+                    candidates.append((score, shortcut))
         return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
     def _trusted_shortcut(self, shortcut: Path) -> bool:
-        try:
-            resolved = shortcut.resolve(strict=True)
-        except OSError:
-            return False
-        if resolved.suffix.casefold() != ".lnk" or not any(
-            resolved.is_relative_to(root.resolve()) for root in self._start_menu_roots
-        ):
-            return False
-        try:
-            from win32com.client import Dispatch
-
-            target = Dispatch("WScript.Shell").CreateShortcut(str(resolved)).TargetPath
-        except Exception:
-            return False
-        return not target or Path(target).name.casefold() not in self._BLOCKED_TARGETS
+        return shortcut.suffix.casefold() == ".lnk" and self._trusted_launcher(shortcut)
 
     def _wait_for_window(self, aliases: tuple[str, ...], timeout: float = 5.0):
         deadline = time.monotonic() + timeout
@@ -1064,18 +1165,41 @@ class AppController:
         spec = self.APPS.get(app_name)
         if spec is None:
             shortcut = Path(shortcut_path) if shortcut_path else self.resolve_shortcut(app_name)
-            if shortcut is None or not self._trusted_shortcut(shortcut):
+            if shortcut is None or not self._trusted_launcher(shortcut):
                 return ExecutionResult(False, "La aplicación no está permitida o ya no existe.")
+            actual_target = (
+                self._shortcut_target(shortcut)
+                if shortcut.suffix.casefold() == ".lnk"
+                else str(shortcut.resolve(strict=True))
+            )
+            if target_path and actual_target.casefold() != target_path.casefold():
+                return ExecutionResult(False, "La aplicación cambió desde que la seleccionaste.")
+            resolved_name = display_name or shortcut.stem
+            aliases = tuple(dict.fromkeys((resolved_name, app_name, shortcut.stem)))
+            existing = self.windows.find(aliases=aliases)
+            if existing is not None:
+                focused = self.windows.focus(aliases=aliases)
+                if focused.success:
+                    return ExecutionResult(
+                        True,
+                        f"{resolved_name} ya estaba abierta; la traje al frente.",
+                        {"verified": True, "already_open": True},
+                    )
             try:
                 os.startfile(shortcut)  # type: ignore[attr-defined]  # nosec B606
             except OSError as exc:
-                return ExecutionResult(False, f"Windows no pudo abrir {shortcut.stem}: {exc}")
+                return ExecutionResult(False, f"Windows no pudo abrir {resolved_name}: {exc}")
             time.sleep(0.55)
-            focused = self.windows.focus(title=shortcut.stem)
+            focused = self.windows.focus(aliases=aliases)
             return ExecutionResult(
                 True,
-                f"Abrí la aplicación instalada {shortcut.stem}.",
-                {"verified": focused.success, "shortcut": str(shortcut)},
+                f"Abrí la aplicación instalada {resolved_name}.",
+                {
+                    "verified": focused.success,
+                    "application": resolved_name,
+                    "launcher": str(shortcut),
+                    "source": "windows-launcher",
+                },
             )
         existing = self.windows.find(aliases=spec.window_aliases)
         if existing is not None:

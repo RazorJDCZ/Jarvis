@@ -410,6 +410,9 @@ def test_installed_application_inventory_is_cached_for_repeated_language_matches
         return folder
 
     controller = AppController(WindowController())
+    controller._start_menu_roots = ()
+    controller._desktop_roots = ()
+    controller._launcher_roots = ()
     monkeypatch.setattr(controller, "_apps_folder", apps_folder)
 
     assert controller.find_installed_apps("discord")
@@ -500,6 +503,9 @@ def test_windows_apps_inventory_includes_apps_and_filters_execution_surfaces(
         FakeAppItem("Ejecutar", "Windows.Run"),
     ]
     controller = AppController(WindowController())
+    controller._start_menu_roots = ()
+    controller._desktop_roots = ()
+    controller._launcher_roots = ()
     monkeypatch.setattr(controller, "_apps_folder", lambda: FakeAppsFolder(items))
 
     apps = controller.installed_apps()
@@ -594,6 +600,70 @@ def test_start_menu_shortcut_target_is_validated(
     controller._start_menu_roots = (tmp_path,)
 
     assert controller._trusted_shortcut(shortcut) is trusted
+
+
+def test_desktop_portable_application_is_discovered_and_matched(tmp_path: Path) -> None:
+    executable = tmp_path / "Appa Jarvis.exe"
+    executable.write_bytes(b"portable-app")
+    controller = AppController(WindowController())
+    controller._start_menu_roots = ()
+    controller._desktop_roots = (tmp_path,)
+    controller._launcher_roots = (tmp_path,)
+    controller._apps_folder = lambda: (_ for _ in ()).throw(OSError("unavailable"))  # type: ignore[method-assign]
+
+    matches = controller.find_installed_apps("appa")
+
+    assert len(matches) == 1
+    assert matches[0].name == "Appa Jarvis"
+    assert matches[0].app_id == ""
+    assert matches[0].launch_path == str(executable.resolve())
+    assert matches[0].target_path == str(executable.resolve())
+
+
+def test_desktop_execution_surfaces_and_installers_are_not_discovered(tmp_path: Path) -> None:
+    (tmp_path / "PowerShell.exe").write_bytes(b"blocked")
+    (tmp_path / "Example Setup.exe").write_bytes(b"blocked")
+    controller = AppController(WindowController())
+    controller._start_menu_roots = ()
+    controller._desktop_roots = (tmp_path,)
+    controller._launcher_roots = (tmp_path,)
+    controller._apps_folder = lambda: (_ for _ in ()).throw(OSError("unavailable"))  # type: ignore[method-assign]
+
+    assert controller.installed_apps() == ()
+
+
+def test_desktop_application_is_revalidated_before_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "Appa Jarvis.exe"
+    executable.write_bytes(b"portable-app")
+    windows = WindowController()
+    monkeypatch.setattr(windows, "find", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        windows,
+        "focus",
+        lambda **_kwargs: ExecutionResult(True, "focused"),
+    )
+    opened: list[Path] = []
+    monkeypatch.setattr("jarvis.actions.windows.os.startfile", opened.append)
+    monkeypatch.setattr("jarvis.actions.windows.time.sleep", lambda _seconds: None)
+    controller = AppController(windows)
+    controller._start_menu_roots = ()
+    controller._desktop_roots = (tmp_path,)
+    controller._launcher_roots = (tmp_path,)
+
+    result = controller.open(
+        "appa",
+        shortcut_path=str(executable),
+        display_name="Appa Jarvis",
+        target_path=str(executable.resolve()),
+    )
+
+    assert result.success is True
+    assert result.details["verified"] is True
+    assert result.details["source"] == "windows-launcher"
+    assert opened == [executable]
 
 
 def test_clipboard_round_trip_uses_text_api(monkeypatch: pytest.MonkeyPatch) -> None:

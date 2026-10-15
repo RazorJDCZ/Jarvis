@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#100309">
+  <title>Mi día · Jarvis</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest?v=agent-v9">
+  <link rel="stylesheet" href="/static/styles.css?v=agent-v10">
+  <link rel="stylesheet" href="/static/organizer.css?v=2">
+  <script src="/static/organizer.js?v=2" defer></script>
+</head>
+<body class="organizer-view">
+  <div class="ambient-grid" aria-hidden="true"></div><div class="atmosphere" aria-hidden="true"></div>
+  <div class="viewport-frame" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <a class="day-skip" href="#dayMain">Ir a mi día</a>
+  <header class="day-topbar">
+    <a href="/" class="brand-block day-brand" aria-label="Volver al asistente Jarvis">
+      <div class="brand-mark" aria-hidden="true"><span class="brand-orbit"></span>
+        <svg class="spider-mark spider-mark-small" viewBox="0 0 100 100">
+          <path class="spider-legs" d="M40 38 25 25 9 30M38 46 20 43 6 52M39 55 21 64 10 77M42 62 31 78 27 92M60 38 75 25 91 30M62 46 80 43 94 52M61 55 79 64 90 77M58 62 69 78 73 92" />
+          <path class="spider-body" d="M50 19 60 31 57 45 63 58 50 81 37 58 43 45 40 31Z" />
+          <circle class="spider-node" cx="50" cy="32" r="5" />
+        </svg>
+      </div>
+      <div><p class="eyebrow">PRIVATE INTELLIGENCE SYSTEM</p><p class="day-brand-name">JARVIS <span>NEURAL INTERFACE</span></p></div>
+    </a>
+    <nav class="day-view-switch" aria-label="Vista de Jarvis"><a href="/">Asistente</a><a href="/organizer" aria-current="page">Mi día</a></nav>
+    <span class="day-system"><i></i> PERSONAL OPERATIONS</span>
+  </header>
+  <main class="day-main" id="dayMain">
+    <div class="day-heading">
+      <div><p class="day-kicker">JARVIS / ORGANIZADOR PERSONAL</p><h1>Mi día<span>.</span></h1><p class="day-intro">Tus próximas fechas, pendientes e ideas. Todo en su lugar.</p></div>
+      <div class="day-date"><span id="dayDate">TU ESPACIO PERSONAL</span><small id="syncStatus">Consultando tu información…</small><button id="refresh" type="button" aria-label="Actualizar agenda"><span aria-hidden="true">↻</span> Actualizar</button></div>
+    </div>
+    <nav class="day-navigation" aria-label="Secciones de mi día">
+      <a href="#overview" class="selected">01 <span>Resumen</span></a><a href="#agenda">02 <span>Agenda</span></a><a href="#ideas">03 <span>Ideas</span></a><a href="#connections">04 <span>Conexiones</span></a>
+    </nav>
+    <p id="message" role="status" aria-live="polite"></p>
+    <div class="day-metrics" aria-label="Resumen de pendientes">
+      <a href="#agenda"><span>EN AGENDA</span><strong id="eventCount">—</strong><small>Próximos compromisos <i>↗</i></small></a>
+      <a href="#pendingPanel"><span>TAREAS</span><strong id="taskCount">—</strong><small>Lo que queda por hacer <i>↗</i></small></a>
+      <a href="#pendingPanel"><span>CORREOS</span><strong id="mailCount">—</strong><small>Pendientes de revisar <i>↗</i></small></a>
+      <a href="#ideas"><span>IDEAS GUARDADAS</span><strong id="captureCount">—</strong><small>Para retomarlas después <i>↗</i></small></a>
+    </div>
+    <div class="day-grid" id="overview">
+      <section class="day-panel day-focus">
+        <div class="day-panel-heading"><div><span class="day-index">01</span><h2>En foco</h2></div><span class="day-caption">TUS TRES PRIORIDADES</span></div>
+        <div class="day-panel-body" id="priorities"><p class="day-empty">Preparando tu resumen…</p></div>
+        <div class="day-panel-foot"><span class="day-dot"></span>Un paso a la vez. Empieza por lo importante.</div>
+      </section>
+      <section class="day-panel day-ideas" id="ideas">
+        <div class="day-panel-heading"><div><span class="day-index">02</span><h2>Captura rápida</h2></div><span class="day-caption">IDEAS / RECORDATORIOS</span></div>
+        <div class="day-panel-body">
+          <form id="capture"><label>Idea o pendiente<textarea name="text" required maxlength="2000" placeholder="¿Qué no quieres olvidar?"></textarea></label>
+            <label class="day-optional">Recordarme <small>Opcional · hora de este dispositivo</small><input name="due" type="datetime-local"></label>
+            <div class="day-actions"><button class="day-primary">Guardar</button><button type="button" id="dictate">Dictar</button><span class="day-form-note">Primero se guarda en tu dispositivo.</span></div>
+          </form>
+          <div id="captures" class="day-captures"></div>
+        </div>
+      </section>
+      <section class="day-panel day-agenda" id="agenda">
+        <div class="day-panel-heading"><div><span class="day-index">03</span><h2>Agenda próxima</h2></div><span class="day-caption">APPA + GOOGLE CALENDAR</span></div>
+        <div class="day-panel-body" id="events"><p class="day-empty">Consultando tu agenda…</p></div>
+      </section>
+      <section class="day-panel day-pending" id="pendingPanel">
+        <div class="day-panel-heading"><div><span class="day-index">04</span><h2>Tareas y correos</h2></div><a class="day-text-link" href="/mail">Ver correos ↗</a></div>
+        <div class="day-panel-body" id="pending"><p class="day-empty">Consultando pendientes…</p></div>
+      </section>
+      <section class="day-panel day-proposals">
+        <div class="day-panel-heading"><div><span class="day-index">05</span><h2>Fechas para revisar</h2></div><span class="day-caption">TÚ DECIDES QUÉ AGENDAR</span></div>
+        <div class="day-panel-body"><p class="day-help">Revisa las fechas que llegan por correo y las sesiones de estudio antes de guardarlas en Calendar. Los formularios usan la hora de Ecuador continental.</p><div id="proposals"></div></div>
+      </section>
+    </div>
+    <details class="day-panel day-study">
+      <summary><span><span class="day-index">06</span><strong>Preparar estudio</strong></span><span class="day-caption">ENCUENTRA TIEMPO PARA AVANZAR <i>+</i></span></summary>
+      <div class="day-panel-body"><p class="day-help">Organiza tu preparación antes de una entrega o examen, respetando tu agenda.</p>
+        <form id="study" class="day-form-grid"><label class="day-wide">Materia o entrega<input name="title" required maxlength="200" placeholder="Por ejemplo: examen de cálculo"></label><label>Fecha límite<input name="deadline" type="date" required></label><label>Sesiones<input name="sessions" type="number" value="3" min="1" max="20"></label><label>Minutos por sesión<input name="minutes" type="number" value="45" min="15" max="180"></label><label>Desde las<input name="start_hour" type="number" value="16" min="0" max="22"></label><label>Hasta las<input name="end_hour" type="number" value="20" min="1" max="23"></label><div class="day-wide day-actions"><button class="day-primary">Proponer sesiones</button><p class="day-form-note">Lunes a viernes. Podrás revisar cada sesión antes de guardarla.</p></div></form>
+      </div>
+    </details>
+    <div class="day-section-title" id="connections"><div><p class="day-kicker">CONEXIONES Y PREFERENCIAS</p><h2>Tu asistente, a tu manera.</h2></div><span>Configura una vez. Ajusta cuando lo necesites.</span></div>
+    <div class="day-settings">
+      <details class="day-panel"><summary><span><span class="day-setting-icon" aria-hidden="true">◷</span><strong>Google Calendar</strong></span><i>+</i></summary><div class="day-panel-body"><p id="calendarStatus">Consultando conexión…</p><p class="day-help">Conecta tu agenda para reunir tus compromisos aquí.</p><div class="day-actions"><button id="connect" class="day-primary">Conectar Google Calendar</button><button id="disconnect">Desconectar</button></div><details class="day-instructions"><summary>Cómo preparar la conexión</summary><p>Habilita Google Calendar API en el mismo proyecto de Google Cloud del correo. Usaremos el cliente de escritorio configurado en <a href="/mail">Correos</a>. Calendar solicita permiso independiente para consultar tu agenda y administrar el calendario «Jarvis».</p></details></div></details>
+      <details class="day-panel"><summary><span><span class="day-setting-icon" aria-hidden="true">⌁</span><strong>Avisos en este dispositivo</strong></span><i>+</i></summary><div class="day-panel-body"><p class="day-help">Recibe avisos aunque cierres la página. Jarvis y tu PC deben seguir encendidos y conectados. El aviso oculta el contenido de tus correos.</p><p class="day-help">En iPhone, añade primero Jarvis a la pantalla de inicio.</p><div class="day-actions"><button id="push" class="day-primary">Activar avisos</button><button id="pushTest">Enviar prueba</button><button id="pushOff">Desactivar</button></div><p id="pushStatus" role="status"></p></div></details>
+      <details class="day-panel"><summary><span><span class="day-setting-icon" aria-hidden="true">◎</span><strong>Seguimiento de correos</strong></span><i>+</i></summary><div class="day-panel-body"><p class="day-help">Avisos para «Por responder» y «Esperando respuesta», respetando tu horario de silencio.</p><form id="followups"><label class="day-toggle">Activar seguimiento<input name="enabled" type="checkbox" checked></label><div class="day-form-grid"><label>Avisar tras estos días<input name="after_days" type="number" value="3" min="1" max="30"></label><label>Repetir cada tantas horas<input name="repeat_hours" type="number" value="24" min="24" max="720"></label></div><button>Guardar seguimiento</button></form></div></details>
+      <details class="day-panel"><summary><span><span class="day-setting-icon" aria-hidden="true">◇</span><strong>Respaldo y recuperación</strong></span><i>+</i></summary><div class="day-panel-body"><p id="backupStatus">Consultando respaldo…</p><p class="day-help">Respaldos diarios cifrados para tu usuario de Windows. Se conservan los últimos 14; la restauración se hace con Jarvis detenido.</p><button id="backup">Crear respaldo ahora</button></div></details>
+    </div>
+    <footer class="day-footer"><span>JARVIS / PERSONAL OPERATIONS</span><a href="/">← Volver al asistente</a><span>QUITO · UTC−5</span></footer>
+  </main>
+</body></html>

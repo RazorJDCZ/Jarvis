@@ -29,9 +29,16 @@ async function receiveAssistantStream(url, options) {
   const cancelled = () => controller.signal.aborted || generation !== appState.operationGeneration;
   const enqueue = (sentence) => {
     if (!sentence.trim() || appState.muted) return;
+    // Synthesize upcoming speech while the previous fragment is playing. This removes the
+    // artificial multi-second gap that otherwise appears after every streamed sentence.
+    const preparedAudio = appState.ttsAvailable
+      ? prepareSpeech(sentence).catch((error) => ({ error }))
+      : Promise.resolve(null);
     speechQueue = speechQueue.then(async () => {
       if (cancelled()) return;
-      await speak(sentence);
+      const prepared = await preparedAudio;
+      if (cancelled()) return;
+      await speak(sentence, prepared);
       const speechGeneration = appState.speechGeneration;
       let recorded = false;
       while (appState.speaking && !cancelled() && speechGeneration === appState.speechGeneration) {
@@ -172,8 +179,8 @@ async function loadAssistantPanel() {
     return input;
   };
   select("Rendimiento de la PC", "performance", [["adaptive", "Adaptativo"], ["economy", "Ahorrar memoria"], ["quality", "Priorizar calidad cuando haya recursos"]], preferences.performance);
-  select("Voz", "voice", [["em_alex", "Alex"], ["em_santa", "Santa"], ["ef_dora", "Dora"]], preferences.voice);
-  select("Velocidad de voz", "voice_speed", [["0.85", "Pausada"], ["1", "Normal"], ["1.15", "Ágil"]], String(preferences.voice_speed));
+  select("Voz", "voice", [["am_onyx", "Onyx · masculina grave"], ["em_santa", "Santa · masculina cálida"], ["em_alex", "Alex · masculina clara"], ["ef_dora", "Dora · femenina"]], preferences.voice);
+  select("Velocidad de voz", "voice_speed", [["0.90", "Pausada"], ["1", "Normal"], ["1.10", "Natural"], ["1.20", "Ágil"]], String(preferences.voice_speed));
   select("Resumen diario y avisos anticipados", "proactive", [["false", "Desactivados"], ["true", "Activados"]], String(preferences.proactive));
   const hours = Array.from({ length: 24 }, (_, hour) => [String(hour), `${String(hour).padStart(2, "0")}:00`]);
   for (const [key, label] of [["briefing_hour", "Resumen a partir de"], ["quiet_start", "No molestar desde"], ["quiet_end", "No molestar hasta"]]) {

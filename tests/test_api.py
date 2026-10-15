@@ -16,6 +16,8 @@ def fallback_settings(**overrides: object) -> Settings:
         safe_actions_enabled=False,
         action_model_planning=False,
         memory_enabled=False,
+        adaptive_resources=False,
+        voice_preload=False,
         **overrides,
     )
 
@@ -27,6 +29,7 @@ def test_health_and_ui_are_available() -> None:
         index = client.get("/")
         manifest = client.get("/manifest.webmanifest")
         service_worker = client.get("/service-worker.js")
+        app_script = client.get("/static/app.js")
         stylesheet = client.get("/static/styles.css")
         icon = client.get("/static/icon.svg")
         openapi = client.get("/api/openapi.json")
@@ -41,17 +44,26 @@ def test_health_and_ui_are_available() -> None:
     assert "JARVIS // Neural Interface" in index.text
     assert 'id="neuralField"' in index.text
     assert 'id="monitorFocus"' in index.text
+    assert "CODEX // CHATGPT" in index.text
+    assert "HYBRID PRIVATE" in index.text
     assert "agent-v9" in index.text
+    assert "agent-v11" in index.text
+    assert "assistant-v4" in index.text
     assert manifest.status_code == 200
     assert service_worker.status_code == 200
     assert "javascript" in service_worker.headers["content-type"]
+    assert "jarvis-assistant-interface-v18" in service_worker.text
+    assert "client.navigate(client.url)" in service_worker.text
+    assert app_script.status_code == 200
+    assert "unlockNeuralAudioPlayback" in app_script.text
+    assert "neuralAudioElement" in app_script.text
     assert "height: clamp(610px" in stylesheet.text
     assert "overflow-y: auto" in stylesheet.text
     assert "scrollbar-gutter: stable" in stylesheet.text
     assert "@media (prefers-reduced-motion: reduce)" in stylesheet.text
     assert icon.status_code == 200
     assert openapi.status_code == 200
-    assert openapi.json()["info"]["title"] == "Jarvis Local Core"
+    assert openapi.json()["info"]["title"] == "Jarvis Hybrid Core"
     assert index.headers["x-content-type-options"] == "nosniff"
     assert index.headers["cache-control"] == "no-cache, no-store, must-revalidate"
     assert "frame-ancestors 'none'" in index.headers["content-security-policy"]
@@ -135,6 +147,7 @@ def test_memory_persists_across_app_restart_and_is_reported_in_health(tmp_path: 
         action_model_planning=False,
         information_verification_enabled=False,
         memory_enabled=True,
+        voice_preload=False,
     )
     first_app = create_app(settings)
     with TestClient(first_app) as client:
@@ -185,6 +198,7 @@ def test_low_risk_action_returns_verified_metadata(tmp_path: Path) -> None:
             project_root=tmp_path,
             brain_mode="fallback",
             action_model_planning=False,
+            voice_preload=False,
         )
     )
     app.state.action_engine.catalog.execute = AsyncMock(
@@ -211,6 +225,7 @@ def test_volume_question_never_reaches_conversational_brain(tmp_path: Path) -> N
             brain_mode="fallback",
             action_model_planning=False,
             memory_enabled=False,
+            voice_preload=False,
         )
     )
     app.state.action_engine.catalog.execute = AsyncMock(
@@ -236,6 +251,7 @@ def test_sensitive_action_requires_and_accepts_confirmation(tmp_path: Path) -> N
             project_root=tmp_path,
             brain_mode="fallback",
             action_model_planning=False,
+            voice_preload=False,
         )
     )
     app.state.action_engine.catalog.execute = AsyncMock(
@@ -271,6 +287,7 @@ def test_action_decision_cannot_cross_sessions(tmp_path: Path) -> None:
             project_root=tmp_path,
             brain_mode="fallback",
             action_model_planning=False,
+            voice_preload=False,
         )
     )
     with TestClient(app) as client:
@@ -297,6 +314,7 @@ def test_dialog_choice_endpoint_requires_and_executes_explicit_option(tmp_path: 
             project_root=tmp_path,
             brain_mode="fallback",
             action_model_planning=False,
+            voice_preload=False,
         )
     )
     pending = app.state.action_engine._request_dialog(

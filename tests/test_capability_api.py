@@ -21,6 +21,7 @@ def api_settings(tmp_path: Path, **overrides: object) -> Settings:
         "information_verification_enabled": False,
         "action_model_planning": False,
         "ollama_warmup_enabled": False,
+        "voice_preload": False,
         "attachment_max_bytes": 1_024,
         "steam_roots": str(tmp_path / "no-steam"),
         "epic_manifest_roots": str(tmp_path / "no-epic"),

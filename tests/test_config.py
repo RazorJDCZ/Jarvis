@@ -66,6 +66,34 @@ def test_ipv6_loopback_origin_uses_brackets() -> None:
     assert http_origin("::1", 8765) == "http://[::1]:8765"
 
 
+def test_codex_configuration_defaults_to_account_models() -> None:
+    settings = Settings(brain_mode="codex")
+
+    assert settings.codex_model == "gpt-5.6-luna"
+    assert settings.codex_deep_model == "gpt-5.6-luna"
+    assert settings.codex_effort == "high"
+    assert settings.codex_action_effort == "high"
+    assert settings.codex_coding_permissions == "jarvis-project-only"
+
+
+@pytest.mark.parametrize("mode", ["cloud", "local", ""])
+def test_unknown_brain_modes_are_rejected(mode: str) -> None:
+    with pytest.raises(ValueError, match="BRAIN_MODE"):
+        Settings(brain_mode=mode)
+
+
+@pytest.mark.parametrize("effort", ["", "extreme", "HIGH "])
+def test_invalid_codex_effort_is_rejected(effort: str) -> None:
+    with pytest.raises(ValueError, match="razonamiento de Codex"):
+        Settings(codex_effort=effort)
+
+
+@pytest.mark.parametrize("profile", ["", ":workspace", "bad profile", "../escape"])
+def test_invalid_codex_coding_permission_profile_is_rejected(profile: str) -> None:
+    with pytest.raises(ValueError, match="perfil de permisos"):
+        Settings(codex_coding_permissions=profile)
+
+
 @pytest.mark.parametrize("rounds", [0, 5])
 def test_agent_round_limit_is_strictly_bounded(rounds: int) -> None:
     with pytest.raises(ValueError, match="rondas"):
@@ -132,6 +160,9 @@ def test_personality_prompt_separates_profile_memory_recent_dialogue_and_evidenc
     )
 
     assert "gentil, servicial, sereno" in prompt
+    assert "juguetón, rápido de ingenio" in prompt
+    assert "El sarcasmo jamás se dirige contra Juan Diego" in prompt
+    assert "confirmaciones de acciones ni mensajes de error" in prompt
     assert "una sola pregunta puntual" in prompt
     assert "<RECUERDOS_LOCALES>" in prompt
     assert "<CONVERSACION_RECIENTE>" in prompt

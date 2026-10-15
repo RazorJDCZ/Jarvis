@@ -113,7 +113,7 @@ async def evaluate(model: str, cases: list[dict[str, str]], keep_alive: str) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evalúa el agente sin ejecutar acciones.")
-    parser.add_argument("--model", default="qwen3.5:4b")
+    parser.add_argument("--model", required=True)
     parser.add_argument(
         "--fixture",
         choices=("core", "adversarial", "regressions", "negative", "final", "all"),

@@ -36,6 +36,7 @@ def settings(tmp_path, **kwargs):
         safe_actions_enabled=False,
         action_model_planning=False,
         appa_auto_discover=False,
+        voice_preload=False,
         **kwargs,
     )
 
@@ -92,6 +93,22 @@ async def test_stream_emits_text_before_completion_and_records_timing():
     await events.aclose()
     assert "first_text" in log.recent("phone")[0]["timings_ms"]
     assert not log.recent("other")
+
+
+@pytest.mark.asyncio
+async def test_stream_never_emits_model_emojis():
+    async def operation():
+        await token_sink.get()("Listo 😏.")
+        return ChatResponse(response="Listo.", provider="test")
+
+    events = response_events(operation, PerformanceLog(), "phone")
+    await anext(events)
+    token = json.loads(await anext(events))
+    done = json.loads(await anext(events))
+    await events.aclose()
+
+    assert token == {"event": "token", "text": "Listo."}
+    assert done["response"] == "Listo."
 
 
 @pytest.mark.asyncio

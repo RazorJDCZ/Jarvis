@@ -30,6 +30,7 @@ APPA_CAPABILITIES = [
     "focus.read",
     "focus.write",
     "context.read",
+    "notifications.write",
 ]
 
 
@@ -403,6 +404,9 @@ async def test_appa_extended_contract_is_typed_idempotent_and_local_only(
                     "completed": False,
                 },
             )
+        if path == "/notifications":
+            assert payload == {"title": "Jarvis", "body": "Tienes un recordatorio."}
+            return httpx.Response(201, json={"delivered": True})
         raise AssertionError(f"Ruta inesperada: {request.method} {request.url.path}")
 
     patch_appa_transport(monkeypatch, handler)
@@ -424,10 +428,15 @@ async def test_appa_extended_contract_is_typed_idempotent_and_local_only(
     assert (await appa.capture_inbox("Idea privada")).source == "jarvis"
     assert await appa.focus_status() is None
     assert (await appa.start_focus(25, task_title="Preparar demo")).status == "active"
+    await appa.send_notification("Jarvis", "Tienes un recordatorio.", "notification-1234")
 
     mutations = [request for request in requests if request.method == "POST"]
-    assert len(mutations) == 4
+    assert len(mutations) == 5
     assert all(request.headers.get("Idempotency-Key") for request in mutations)
+    notification = next(
+        request for request in mutations if request.url.path.endswith("/notifications")
+    )
+    assert notification.headers["Idempotency-Key"] == "notification-1234"
     assert all(request.url.host == "127.0.0.1" for request in requests)
     await appa.close()
 

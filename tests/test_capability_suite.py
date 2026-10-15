@@ -31,6 +31,14 @@ class NeverClipboard:
         raise AssertionError("El portapapeles real no debe tocarse en estas pruebas")
 
 
+class TextClipboard:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def read(self) -> ExecutionResult:
+        return ExecutionResult(True, "Leído", {"text": self.text})
+
+
 class FakeApps:
     def __init__(self) -> None:
         self.launches: list[tuple[str, str]] = []
@@ -255,6 +263,33 @@ def test_new_natural_commands_are_typed_and_deterministic(
     assert parsed is not None
     assert parsed.name is name
     assert parsed.arguments == arguments
+
+
+@pytest.mark.asyncio
+async def test_clipboard_analysis_uses_luna_high_and_strips_emojis(tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeCodex:
+        async def generate_text(self, **kwargs):
+            calls.append(kwargs)
+            return "Resumen correcto 😏"
+
+    suite = CapabilitySuite(
+        settings(tmp_path),
+        vision=NeverVision(),
+        codex_client=FakeCodex(),
+    )
+
+    result = await suite._clipboard_analysis(
+        TextClipboard("Texto de prueba"),
+        "summarize",
+    )
+
+    assert result.success is True
+    assert result.message == "Resumen correcto"
+    assert calls[0]["model"] == "gpt-5.6-luna"
+    assert calls[0]["effort"] == "high"
+    assert "contenido no confiable" in calls[0]["developer_instructions"]
 
 
 @pytest.mark.asyncio
@@ -570,9 +605,23 @@ async def test_suite_dev_and_game_execution_use_injected_fakes_only(
         clipboard=clipboard,
         catalog=catalog,
     )
+    changed_game = await suite.execute(
+        "owner",
+        ActionName.GAME_LAUNCH,
+        {
+            "game": "123",
+            "platform": "steam",
+            "display_name": "Minecraft",
+            "launch_target": "steam://rungameid/999",
+        },
+        clipboard=clipboard,
+        catalog=catalog,
+    )
 
     assert tests.success and developer.calls == 1
     assert game.success
+    assert changed_game.success is False
+    assert "cambió" in changed_game.message
     assert catalog.apps.launches == [("steam://rungameid/123", "Minecraft")]
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -56,8 +57,15 @@ class TestRunResult:
         return not self.timed_out and self.returncode == 0
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectCreationResult:
+    path: str
+    template: str
+    files: tuple[str, ...]
+
+
 class DeveloperWorkspace:
-    """Read-only developer workspace with an explicitly bounded test runner."""
+    """Bounded developer workspace with explicit creation and test operations."""
 
     ALLOWED_TEST_COMMANDS = frozenset(
         {
@@ -114,6 +122,16 @@ class DeveloperWorkspace:
         }
     )
     _BLOCKED_SUFFIXES = frozenset({".key", ".p12", ".pfx", ".pem"})
+    _WINDOWS_RESERVED = frozenset(
+        {
+            "con",
+            "prn",
+            "aux",
+            "nul",
+            *(f"com{i}" for i in range(1, 10)),
+            *(f"lpt{i}" for i in range(1, 10)),
+        }
+    )
 
     def __init__(
         self,
@@ -216,6 +234,137 @@ class DeveloperWorkspace:
         if directory is False and not resolved.is_file():
             raise WorkspaceSecurityError("La ruta no es un archivo")
         return resolved
+
+    def directory(self, root_name: str, relative_path: str = "") -> Path:
+        """Return a revalidated existing directory for a trusted downstream sandbox."""
+        return self._resolve(root_name, relative_path, directory=True)
+
+    @classmethod
+    def _valid_new_part(cls, part: str) -> bool:
+        normalized = part.casefold().rstrip(". ")
+        return bool(
+            part
+            and part not in {".", ".."}
+            and part == part.rstrip(". ")
+            and not cls._blocked_name(part)
+            and normalized not in cls._WINDOWS_RESERVED
+            and not any(character in part for character in '<>:"/\\|?*\0\r\n\t')
+        )
+
+    def _new_path(self, root_name: str, relative_path: str) -> tuple[Path, Path]:
+        root = self._root(root_name).path
+        relative = Path(relative_path)
+        if (
+            not relative_path.strip()
+            or len(relative_path) > 500
+            or relative.is_absolute()
+            or relative.anchor
+            or relative.drive
+            or len(relative.parts) > 8
+            or any(not self._valid_new_part(part) for part in relative.parts)
+        ):
+            raise WorkspaceSecurityError("La nueva ruta no es válida dentro del workspace")
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.exists() and self._is_link_or_reparse(current):
+                raise WorkspaceSecurityError("No se permiten enlaces dentro del workspace")
+        candidate = current.resolve(strict=False)
+        if not candidate.is_relative_to(root):
+            raise WorkspaceSecurityError("La ruta escapa de la raíz autorizada")
+        return root, candidate
+
+    def create_folder(self, root_name: str, relative_path: str) -> WorkspaceEntry:
+        root, target = self._new_path(root_name, relative_path)
+        if target.exists():
+            if not target.is_dir():
+                raise WorkspaceSecurityError("Ya existe un archivo con ese nombre")
+            raise WorkspaceSecurityError("La carpeta ya existe")
+        try:
+            target.mkdir(parents=True, exist_ok=False)
+            resolved = target.resolve(strict=True)
+        except OSError as exc:
+            raise WorkspaceSecurityError("No se pudo crear la carpeta") from exc
+        if not resolved.is_relative_to(root) or self._is_link_or_reparse(resolved):
+            raise WorkspaceSecurityError("La carpeta creada no superó la validación final")
+        return WorkspaceEntry(self._relative(root, resolved), True, 0)
+
+    def create_project(
+        self,
+        root_name: str,
+        name: str,
+        *,
+        template: str = "basic",
+        description: str = "",
+    ) -> ProjectCreationResult:
+        if not self._valid_new_part(name) or len(name) > 80:
+            raise WorkspaceSecurityError("El nombre del proyecto no es válido")
+        template = template.casefold().strip()
+        if template not in {"basic", "python", "web"}:
+            raise WorkspaceSecurityError("La plantilla debe ser basic, python o web")
+        if len(description) > 1000 or "\0" in description:
+            raise WorkspaceSecurityError("La descripción del proyecto no es válida")
+        root, target = self._new_path(root_name, name)
+        if target.exists():
+            raise WorkspaceSecurityError("Ya existe una carpeta con ese nombre")
+        title = name.replace("-", " ").replace("_", " ").strip().title()
+        summary = description.strip() or "Proyecto creado por Jarvis."
+        files: dict[str, str] = {
+            "README.md": f"# {title}\n\n{summary}\n",
+            ".gitignore": ".env\n.venv/\nnode_modules/\n__pycache__/\ndist/\nbuild/\n",
+        }
+        if template == "python":
+            module = re.sub(r"[^a-z0-9_]", "_", name.casefold().replace("-", "_"))
+            module = re.sub(r"_+", "_", module).strip("_") or "app"
+            package_name = re.sub(r"[^a-z0-9._-]+", "-", name.casefold()).strip(".-_")
+            package_name = package_name or "project"
+            files.update(
+                {
+                    "pyproject.toml": (
+                        "[project]\n"
+                        f'name = "{package_name}"\n'
+                        'version = "0.1.0"\n'
+                        'requires-python = ">=3.12"\n\n'
+                        '[tool.pytest.ini_options]\npythonpath = ["src"]\n'
+                    ),
+                    f"src/{module}/__init__.py": "",
+                    "tests/__init__.py": "",
+                }
+            )
+        elif template == "web":
+            package_name = re.sub(r"[^a-z0-9-]", "-", name.casefold().replace("_", "-"))
+            files.update(
+                {
+                    "package.json": (
+                        "{\n"
+                        f'  "name": "{package_name}",\n'
+                        '  "version": "0.1.0",\n'
+                        '  "private": true,\n'
+                        '  "scripts": {"start": "npx vite"}\n'
+                        "}\n"
+                    ),
+                    "index.html": (
+                        '<!doctype html>\n<html lang="es"><head><meta charset="UTF-8">'
+                        f'<title>{title}</title></head><body><main id="app"></main>'
+                        '<script type="module" src="/src/main.js"></script></body></html>\n'
+                    ),
+                    "src/main.js": f'document.querySelector("#app").textContent = "{title}";\n',
+                }
+            )
+        try:
+            target.mkdir(parents=False, exist_ok=False)
+            for relative_name, content in files.items():
+                destination = target / Path(relative_name)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(content, encoding="utf-8", newline="\n")
+            resolved = target.resolve(strict=True)
+        except OSError as exc:
+            raise WorkspaceSecurityError(
+                "No se pudo completar el proyecto; revisa la carpeta antes de reintentarlo"
+            ) from exc
+        if not resolved.is_relative_to(root) or self._is_link_or_reparse(resolved):
+            raise WorkspaceSecurityError("El proyecto creado no superó la validación final")
+        return ProjectCreationResult(self._relative(root, resolved), template, tuple(sorted(files)))
 
     def _safe_walk(self, root: Path, start: Path) -> Iterable[Path]:
         stack = [start]
@@ -461,6 +610,7 @@ class DeveloperWorkspace:
 
 __all__ = [
     "DeveloperWorkspace",
+    "ProjectCreationResult",
     "SearchMatch",
     "TestRunResult",
     "WorkspaceDocument",

@@ -70,6 +70,9 @@ class ActionName(StrEnum):
     FOCUS_STATUS = "focus.status"
     FOCUS_START = "focus.start"
     APPA_BRIEFING = "appa.briefing"
+    MAIL_SEARCH = "mail.search"
+    MAIL_REPLY = "mail.reply"
+    GOOGLE_CALENDAR_UPDATE = "google_calendar.update"
     REMINDER_LIST = "reminder.list"
     REMINDER_CREATE = "reminder.create"
     REMINDER_CANCEL = "reminder.cancel"
@@ -83,6 +86,9 @@ class ActionName(StrEnum):
     DEV_INSPECT = "dev.inspect"
     DEV_SEARCH = "dev.search"
     DEV_TEST = "dev.test"
+    DEV_CREATE_FOLDER = "dev.create_folder"
+    DEV_CREATE_PROJECT = "dev.create_project"
+    DEV_CODEX_TASK = "dev.codex_task"
     GAME_LIST = "game.list"
     GAME_LAUNCH = "game.launch"
     DIALOG_CHOOSE = "dialog.choose"
@@ -108,6 +114,7 @@ class ActionStatus(StrEnum):
 class ActionSource(StrEnum):
     DETERMINISTIC = "deterministic"
     LOCAL_MODEL = "local-model"
+    CODEX = "codex"
     CONFIRMATION = "confirmation"
     API = "api"
 
@@ -139,6 +146,11 @@ class ClarificationNeeded:
     question: str
     original_request: str = ""
     confidence: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationalIntent:
+    """The planner explicitly ruled out a tool request, rather than failing to plan."""
 
 
 @dataclass(frozen=True, slots=True)

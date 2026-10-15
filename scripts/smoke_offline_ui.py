@@ -41,6 +41,11 @@ def start_server(project_root: Path, port: int) -> tuple[uvicorn.Server, threadi
         brain_mode="fallback",
         action_model_planning=False,
         memory_enabled=False,
+        capabilities_enabled=False,
+        semantic_enabled=False,
+        vision_actions_enabled=False,
+        voice_preload=False,
+        adaptive_resources=False,
         remote_access_enabled=False,
     )
     server = uvicorn.Server(

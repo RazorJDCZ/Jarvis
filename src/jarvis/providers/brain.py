@@ -8,6 +8,7 @@ from typing import Protocol
 import httpx
 
 from jarvis.config import Settings
+from jarvis.providers.codex_app_server import CodexAppServerClient, CodexAppServerError
 from jarvis.providers.ollama_runtime import OLLAMA_RUNTIME_LOCK
 from jarvis.schemas import ProviderStatus
 from jarvis.services.performance import active_timing, model_keep_alive, stage, token_sink
@@ -22,6 +23,8 @@ class Brain(Protocol):
     async def warmup(self) -> bool: ...
 
     async def release(self) -> bool: ...
+
+    async def close(self) -> None: ...
 
     async def chat(self, messages: list[dict[str, str]]) -> str: ...
 
@@ -121,8 +124,8 @@ class OllamaBrain:
                 "model": self.settings.ollama_model,
                 "messages": messages,
                 "stream": token_sink.get() is not None,
-                # Qwen's hidden thinking can consume the entire local token budget and
-                # leave the spoken answer truncated. Deep mode instead uses a lower-
+                # Hidden reasoning can consume the entire local token budget and leave
+                # the spoken answer truncated. Deep mode instead uses a lower-
                 # variance, larger final-answer budget guided by the analytical prompt.
                 "think": False,
                 "keep_alive": model_keep_alive(self.settings, self.settings.ollama_keep_alive),
@@ -248,6 +251,114 @@ class OllamaBrain:
             except (httpx.HTTPError, AttributeError, TypeError, ValueError):
                 return False
 
+    async def close(self) -> None:
+        await self.release()
+
+
+class CodexBrain:
+    """ChatGPT-authenticated Codex reasoning behind Jarvis's existing interfaces."""
+
+    name = "codex"
+
+    def __init__(
+        self,
+        settings: Settings,
+        client: CodexAppServerClient | None = None,
+    ) -> None:
+        self.settings = settings
+        self.client = client or CodexAppServerClient(settings)
+
+    async def status(self) -> ProviderStatus:
+        summary = await self.client.account_summary()
+        if summary["available"]:
+            plan = str(summary.get("plan_type") or "ChatGPT")
+            model = str(summary.get("model") or self.settings.codex_model)
+            return ProviderStatus(
+                available=True,
+                name=f"Codex / {model}",
+                detail=f"Cuenta de ChatGPT {plan} conectada; razonamiento en la nube",
+            )
+        return ProviderStatus(
+            available=False,
+            name="Codex",
+            detail=str(summary.get("detail") or "Sesion de ChatGPT no disponible"),
+        )
+
+    async def warmup(self) -> bool:
+        await self.client.start()
+        return True
+
+    async def release(self) -> bool:
+        # Codex does not occupy local GPU/RAM. Voice resource pressure must not tear down
+        # the authenticated bridge between every utterance.
+        return True
+
+    async def close(self) -> None:
+        await self.client.close()
+
+    async def chat(self, messages: list[dict[str, str]]) -> str:
+        return await self._chat(messages, deep_analysis=False)
+
+    async def chat_deep(self, messages: list[dict[str, str]]) -> str:
+        return await self._chat(messages, deep_analysis=True)
+
+    async def _chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        deep_analysis: bool,
+    ) -> str:
+        if not messages:
+            raise CodexAppServerError("Jarvis no preparo contexto para Codex")
+        system_parts = [
+            item.get("content", "")
+            for item in messages
+            if item.get("role") == "system" and item.get("content")
+        ]
+        conversation = [
+            {
+                "role": item.get("role", "user"),
+                "content": item.get("content", "")[:20_000],
+            }
+            for item in messages
+            if item.get("role") != "system" and item.get("content")
+        ]
+        if not conversation:
+            raise CodexAppServerError("Jarvis no preparo una solicitud para Codex")
+        current = conversation[-1]
+        previous = conversation[:-1]
+        developer_instructions = "\n\n".join(system_parts).strip()
+        developer_instructions += (
+            "\n\nTrabaja con iniciativa dentro de la solicitud. Infere detalles rutinarios del "
+            "contexto y pregunta solo cuando una decision material no pueda tomarse con seguridad. "
+            "Entrega unicamente la respuesta dirigida al usuario, sin preambulos internos."
+        )
+        user_input = (
+            "<historial_conversacion>\n"
+            f"{json.dumps(previous, ensure_ascii=False)}\n"
+            "</historial_conversacion>\n"
+            f"<mensaje_actual rol={json.dumps(current['role'])}>\n"
+            f"{current['content']}\n"
+            "</mensaje_actual>"
+        )
+        callback = token_sink.get()
+        with stage("model"):
+            return await self.client.generate_text(
+                developer_instructions=developer_instructions,
+                user_input=user_input,
+                model=(
+                    self.settings.codex_deep_model
+                    if deep_analysis
+                    else self.settings.codex_model
+                ),
+                effort=(
+                    self.settings.codex_deep_effort
+                    if deep_analysis
+                    else self.settings.codex_effort
+                ),
+                callback=callback,
+            )
+
 
 class FallbackBrain:
     """Small deterministic fallback so the UI remains testable without a model."""
@@ -258,7 +369,7 @@ class FallbackBrain:
         return ProviderStatus(
             available=True,
             name="Nucleo de respaldo",
-            detail="Conversacion limitada; Ollama no esta listo",
+            detail="Conversacion limitada; Codex no esta conectado",
         )
 
     async def warmup(self) -> bool:
@@ -267,24 +378,25 @@ class FallbackBrain:
     async def release(self) -> bool:
         return True
 
+    async def close(self) -> None:
+        return None
+
     async def chat(self, messages: list[dict[str, str]]) -> str:
         text = messages[-1]["content"].strip()
         normalized = text.casefold()
         if any(word in normalized for word in ("hola", "buenas", "buenos dias")):
             return "Hola, Juan Diego. Aquí estoy, tranquilo y listo."
         if "quien eres" in normalized or "quién eres" in normalized:
-            return (
-                "Soy Jarvis, tu asistente local. De momento puedo escucharte y conversar contigo."
-            )
+            return "Soy Jarvis, tu asistente personal. Puedo escucharte y conversar contigo."
         if "hora" in normalized:
             return f"Son las {datetime.now().strftime('%H:%M')}."
         if "estado" in normalized or "sistema" in normalized:
             return (
-                "El nucleo esta funcionando. Para conversar sin limites falta iniciar Ollama "
-                "y descargar el modelo configurado."
+                "El nucleo esta funcionando en modo limitado. Falta reconectar Codex con tu "
+                "sesion de ChatGPT."
             )
         return (
-            f"Te escuché decir: {text}. El núcleo conversacional local no está disponible ahora, "
+            f"Te escuché decir: {text}. El núcleo de Codex no está disponible ahora, "
             "pero sigo listo para tus acciones y comandos seguros."
         )
 
@@ -295,62 +407,71 @@ class FallbackBrain:
 class AutoBrain:
     name = "auto"
 
-    def __init__(self, settings: Settings) -> None:
-        self.ollama = OllamaBrain(settings)
+    def __init__(
+        self,
+        settings: Settings,
+        client: CodexAppServerClient | None = None,
+    ) -> None:
+        self.codex = CodexBrain(settings, client)
+        self.client = self.codex.client
         self.fallback = FallbackBrain()
         self.active_name = self.fallback.name
 
     async def status(self) -> ProviderStatus:
-        ollama_status = await self.ollama.status()
-        if ollama_status.available:
-            self.active_name = self.ollama.name
-            return ollama_status
+        codex_status = await self.codex.status()
+        if codex_status.available:
+            self.active_name = self.codex.name
+            return codex_status
         self.active_name = self.fallback.name
         fallback_status = await self.fallback.status()
-        fallback_status.detail = ollama_status.detail
+        fallback_status.detail = codex_status.detail
         return fallback_status
 
     async def chat(self, messages: list[dict[str, str]]) -> str:
         try:
-            self.active_name = self.ollama.name
-            return await self.ollama.chat(messages)
-        except (httpx.HTTPError, RuntimeError):
+            self.active_name = self.codex.name
+            return await self.codex.chat(messages)
+        except (CodexAppServerError, OSError, TimeoutError):
             if token_sink.get() is not None:
                 raise
-            pass
         self.active_name = self.fallback.name
         return await self.fallback.chat(messages)
 
     async def chat_deep(self, messages: list[dict[str, str]]) -> str:
         try:
-            self.active_name = self.ollama.name
-            return await self.ollama.chat_deep(messages)
-        except (httpx.HTTPError, RuntimeError):
+            self.active_name = self.codex.name
+            return await self.codex.chat_deep(messages)
+        except (CodexAppServerError, OSError, TimeoutError):
             if token_sink.get() is not None:
                 raise
-            pass
         self.active_name = self.fallback.name
         return await self.fallback.chat_deep(messages)
 
     async def warmup(self) -> bool:
         try:
-            ready = await self.ollama.warmup()
+            ready = await self.codex.warmup()
             if not ready:
                 self.active_name = self.fallback.name
                 return False
-            self.active_name = self.ollama.name
+            self.active_name = self.codex.name
             return True
-        except (httpx.HTTPError, RuntimeError):
+        except (CodexAppServerError, OSError, TimeoutError):
             self.active_name = self.fallback.name
             return False
 
     async def release(self) -> bool:
-        return await self.ollama.release()
+        return True
+
+    async def close(self) -> None:
+        await self.codex.close()
 
 
-def build_brain(settings: Settings) -> Brain:
+def build_brain(
+    settings: Settings,
+    client: CodexAppServerClient | None = None,
+) -> Brain:
     if settings.brain_mode == "fallback":
         return FallbackBrain()
-    if settings.brain_mode == "ollama":
-        return OllamaBrain(settings)
-    return AutoBrain(settings)
+    if settings.brain_mode == "codex":
+        return CodexBrain(settings, client)
+    return AutoBrain(settings, client)

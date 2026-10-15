@@ -86,6 +86,8 @@ host = f'[{s.host}]' if ':' in s.host else s.host
 print(json.dumps({
     'jarvis_url': f'http://{host}:{s.port}',
     'ollama_url': s.ollama_url,
+    'brain_mode': s.brain_mode,
+    'ollama_required': s.semantic_enabled,
     'remote_enabled': s.remote_access_enabled,
     'remote_origin': s.remote_origin,
 }))
@@ -97,18 +99,39 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($RuntimeConfigJson)) {
 $RuntimeConfig = $RuntimeConfigJson | ConvertFrom-Json
 $JarvisUrl = $RuntimeConfig.jarvis_url
 $OllamaUrl = $RuntimeConfig.ollama_url
+$BrainMode = [string]$RuntimeConfig.brain_mode
+$OllamaRequired = [bool]$RuntimeConfig.ollama_required
 $RemoteEnabled = [bool]$RuntimeConfig.remote_enabled
 $RemoteOrigin = [string]$RuntimeConfig.remote_origin
+$JarvisAlreadyReady = $false
+try {
+    $ExistingResponse = Invoke-WebRequest -Uri "$JarvisUrl/api/health" -UseBasicParsing -TimeoutSec 2
+    $JarvisAlreadyReady = $ExistingResponse.StatusCode -eq 200
+} catch {
+    $JarvisAlreadyReady = $false
+}
+if ($JarvisAlreadyReady) {
+    if (-not $NoBrowser) { Start-Process $JarvisUrl }
+    Write-Host "Jarvis ya esta activo en $JarvisUrl" -ForegroundColor Cyan
+    return
+}
 $PortableOllamaAllowed = $OllamaUrl -in @('http://127.0.0.1:11434', 'http://localhost:11434')
 $OllamaReady = $false
-try {
-    Invoke-WebRequest -Uri "$OllamaUrl/api/tags" -UseBasicParsing -TimeoutSec 1 | Out-Null
-    $OllamaReady = $true
-} catch {
-    $OllamaReady = $false
+if ($OllamaRequired) {
+    try {
+        Invoke-WebRequest -Uri "$OllamaUrl/api/tags" -UseBasicParsing -TimeoutSec 1 | Out-Null
+        $OllamaReady = $true
+    } catch {
+        $OllamaReady = $false
+    }
 }
 
-if (-not $OllamaReady -and $PortableOllamaAllowed -and (Test-Path -LiteralPath $PortableOllama)) {
+if (
+    $OllamaRequired -and
+    -not $OllamaReady -and
+    $PortableOllamaAllowed -and
+    (Test-Path -LiteralPath $PortableOllama)
+) {
     Stop-StalePortableOllamaRunners
     New-Item -ItemType Directory -Force -Path $OllamaModels | Out-Null
     $env:OLLAMA_MODELS = $OllamaModels
@@ -139,7 +162,7 @@ if (-not $NoBrowser) {
     } -ArgumentList $JarvisUrl | Out-Null
 }
 
-Write-Host "JARVIS Local Core iniciando en $JarvisUrl" -ForegroundColor Cyan
+Write-Host "JARVIS iniciando en $JarvisUrl // razonamiento: $BrainMode" -ForegroundColor Cyan
 if ($RemoteEnabled) {
     Write-Host "Enlace móvil privado: $RemoteOrigin" -ForegroundColor DarkCyan
 }

@@ -90,12 +90,24 @@ if (-not $SkipVoice -and -not $SkipWhisperModel -and -not (Test-Path -LiteralPat
     & $VenvPython -c "from faster_whisper.utils import download_model; download_model('small', output_dir=r'$WhisperDirectory')"
 }
 
-Write-Host '[4/4] Comprobando Ollama...' -ForegroundColor Cyan
-if ((Get-Command ollama -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $ProjectRoot '.tools\ollama\ollama.exe'))) {
-    Write-Host 'Ollama detectado.' -ForegroundColor Green
+Write-Host '[4/4] Comprobando Codex y busqueda semantica opcional...' -ForegroundColor Cyan
+$CodexCommand = Get-Command codex -ErrorAction SilentlyContinue
+if ($null -eq $CodexCommand) {
+    Write-Host 'Codex no aparece en PATH. Instala o abre la extension oficial de Codex.' -ForegroundColor Yellow
 } else {
-    Write-Host 'Ollama no esta instalado. La interfaz funcionara con el nucleo de respaldo.' -ForegroundColor Yellow
-    Write-Host 'Para conversacion completa ejecuta: scripts\install_ollama.cmd'
+    $CodexStatus = & $CodexCommand.Source login status 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0 -and $CodexStatus -match 'Logged in') {
+        Write-Host 'Cuenta de ChatGPT conectada a Codex.' -ForegroundColor Green
+    } else {
+        Write-Host 'Codex esta instalado, pero falta iniciar sesion: codex login' -ForegroundColor Yellow
+    }
+}
+
+if ((Get-Command ollama -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $ProjectRoot '.tools\ollama\ollama.exe'))) {
+    Write-Host 'Ollama detectado para el indice semantico local opcional.' -ForegroundColor Green
+} else {
+    Write-Host 'Ollama no esta instalado. Codex, correo, vision y acciones seguiran funcionando.' -ForegroundColor Yellow
+    Write-Host 'Para embeddings locales ejecuta: scripts\install_ollama.cmd'
 }
 
 Write-Host ''

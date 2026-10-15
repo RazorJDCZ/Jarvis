@@ -298,6 +298,27 @@ h1 span {
   font-variant-numeric: tabular-nums;
 }
 
+.topbar-tools { display: flex; justify-content: flex-end; align-items: center; gap: 26px; }
+.organizer-launch {
+  display: flex; align-items: center; gap: 11px; min-height: 44px; padding: 9px 13px;
+  color: var(--text); text-decoration: none; border: 1px solid var(--line);
+  background: linear-gradient(120deg, rgba(255,54,88,.09), rgba(4,9,18,.8));
+  box-shadow: inset 2px 0 var(--primary); transition: border-color 160ms, background 160ms;
+}
+.organizer-launch svg { width: 19px; height: 19px; fill: none; stroke: var(--primary); stroke-width: 1.4; }
+.organizer-launch strong, .organizer-launch small { display: block; }
+.organizer-launch strong { font-size: 10px; font-weight: 500; letter-spacing: .16em; }
+.organizer-launch small { margin-top: 4px; color: #b88f9e; font-size: 9px; }
+.organizer-launch i { margin-left: 8px; color: var(--primary); font-style: normal; }
+.organizer-launch:hover { border-color: var(--line-hot); background: rgba(255,54,88,.13); }
+.organizer-launch:focus-visible { outline: 2px solid var(--secondary); outline-offset: 4px; }
+@media (max-width: 680px) {
+  .topbar-tools { gap: 12px; }
+  .organizer-launch { gap: 7px; padding: 8px 10px; }
+  .organizer-launch small, .organizer-launch i { display: none; }
+}
+@media (max-width: 480px) { .topbar-tools .system-clock { display: none; } }
+
 .system-clock span {
   display: block;
   color: var(--cyan-bright);

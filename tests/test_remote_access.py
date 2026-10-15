@@ -20,6 +20,7 @@ def remote_settings(tmp_path, **overrides: object) -> Settings:
         "brain_mode": "fallback",
         "action_model_planning": False,
         "memory_enabled": False,
+        "voice_preload": False,
         "remote_access_enabled": True,
         "remote_origin": "https://jarvis.test-tail.ts.net",
         "remote_allowed_login": "owner@example.com",

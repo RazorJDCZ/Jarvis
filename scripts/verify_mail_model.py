@@ -1,4 +1,4 @@
-"""Local-model verification using synthetic email only; no account access or mail delivery."""
+"""Codex/Luna verification using synthetic email only; no account access or delivery."""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-import httpx
-
 from jarvis.config import PROJECT_ROOT, Settings
+from jarvis.providers.codex_app_server import CodexAppServerClient
 from jarvis.services.mail import MailService
 
 
 async def main():
     with tempfile.TemporaryDirectory(prefix="jarvis-mail-model-") as folder:
-        service = MailService(replace(Settings(), project_root=Path(folder)), None)
-        async with httpx.AsyncClient(trust_env=False, timeout=60) as client:
-            service.client = client
+        config = replace(Settings(), project_root=Path(folder))
+        codex = CodexAppServerClient(config)
+        service = MailService(config, None, codex)
+        try:
             item = {
                 "subject": "Informe de redes",
                 "sender": "Docente",
@@ -49,6 +49,8 @@ async def main():
             target = PROJECT_ROOT / ".data" / "mail-model-verification.json"
             target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             print(json.dumps(report, ensure_ascii=False))
+        finally:
+            await codex.close()
 
 
 if __name__ == "__main__":

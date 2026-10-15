@@ -1,6 +1,10 @@
-# JARVIS Local Core
+# JARVIS Hybrid Core
 
-Asistente de voz privado y local para Windows. El proyecto está dividido en cinco etapas:
+La nueva vista **Hoy**, Google Calendar, avisos móviles, estudio y recuperación se describen
+en [la guía del organizador personal](docs/personal-organizer.md).
+
+Asistente de voz privado para Windows, con razonamiento Codex mediante la cuenta de ChatGPT y
+ejecución local controlada. El proyecto está dividido en cinco etapas:
 
 1. MVP de voz — completado.
 2. Motor de acciones — completado.
@@ -11,22 +15,23 @@ Asistente de voz privado y local para Windows. El proyecto está dividido en cin
 
 ## Qué hace esta versión
 
-- Conversa por texto o voz con Qwen mediante Ollama, sin pagar por cada solicitud.
-- Transcribe localmente con Faster Whisper y habla con la voz masculina `em_alex` de Kokoro 82M;
-  Piper y las voces de Windows quedan como respaldos automáticos.
+- Conversa por texto o voz con Codex usando la sesión de ChatGPT ya iniciada, sin almacenar una
+  API key en Jarvis.
+- Transcribe localmente con Faster Whisper y habla con la voz masculina grave `am_onyx` de Kokoro
+  82M a velocidad natural ágil; Piper y las voces de Windows quedan como respaldos automáticos.
 - Ofrece modo pulsar-para-hablar y manos libres con la frase “Jarvis”.
-- Ejecuta 78 acciones tipadas sobre Windows, aplicaciones, pantalla, navegadores y capacidades
+- Ejecuta 85 acciones tipadas sobre Windows, aplicaciones, pantalla, navegadores y capacidades
   locales controladas.
-- Usa una vía determinista rápida para acciones evidentes y un núcleo semántico local para entender
+- Usa una vía determinista rápida para acciones evidentes y Codex para entender
   metas expresadas con contexto, cortesía, motivación, pronombres o lenguaje indirecto; no exige una
   frase exacta ni que el usuario reformule su intención como “comando”.
-- Puede preparar hasta cinco acciones y resolver metas dependientes mediante un ciclo acotado de
+- Puede preparar hasta seis acciones y resolver metas dependientes mediante un ciclo acotado de
   planificar, ejecutar, verificar, observar y volver a planear. Nunca decide con una observación que
   todavía no existe y cada cambio sensible conserva su confirmación.
 - Si falta un dato esencial o las herramientas no pueden materializar la meta, hace una sola
   pregunta concreta y conserva la solicitud original para entender la respuesta breve.
 - Enumera monitores y permite describir, consultar o localizar elementos en uno específico mediante
-  el modelo visual local de Ollama; las capturas transitorias se mantienen en memoria.
+  `gpt-5.6-luna`; cada captura usa un archivo temporal que se elimina al terminar la petición.
 - Conserva durante cinco minutos el foco visual de cada conversación para entender continuaciones
   como “¿qué dice ese error?”, pero siempre vuelve a capturar la pantalla antes de responder.
 - Muestra confirmaciones de seguridad en la interfaz y también acepta “confirma” o “cancela”.
@@ -35,7 +40,8 @@ Asistente de voz privado y local para Windows. El proyecto está dividido en cin
 - Verifica clima y temperatura con Open-Meteo y aporta evidencia de Wikipedia a las preguntas
   factuales antes de responder; si una fuente falla, no inventa el dato.
 - Conserva el contexto personal confirmado por el usuario en `.data/user_profile.json`, un archivo
-  local excluido de Git. Las preguntas personales no salen del equipo.
+  local excluido de Git. Solo los fragmentos necesarios para responder se incluyen en la solicitud
+  efímera que Jarvis envía a Codex.
 - Aprende selectivamente preferencias, relaciones, estudios, proyectos y objetivos en una base
   SQLite local. Recupera solo los recuerdos relevantes y conserva una ventana limitada de diálogo
   reciente para continuar después de reiniciar.
@@ -50,8 +56,10 @@ Las respuestas aparecen progresivamente y la voz comienza por frases. En manos l
 elegir «Jarvis» compatible o el detector ligero «Hey Jarvis» con pronunciación inglesa.
 Consulta [las siete mejoras y sus mediciones](docs/assistant-upgrade.md).
 
-**Correos Pendientes** conecta Gmail y Microsoft 365 con resúmenes locales, estados, borradores
-y tareas en Appa. Configura los clientes OAuth y conecta tus cuentas siguiendo la
+**Correos Pendientes** conecta Gmail y Microsoft 365 con búsqueda, resúmenes y borradores producidos
+por `gpt-5.6-luna`, además de estados y tareas en Appa. Gmail puede enviar únicamente una respuesta
+ligada al correo y texto que confirmes dos veces; Outlook permanece en lectura. Configura los clientes OAuth y conecta tus
+cuentas siguiendo la
 [guía de correo](docs/mail-integration.md); el acceso a los buzones requiere tu inicio de sesión.
 
 ## Instalación
@@ -66,7 +74,8 @@ El instalador crea `.venv`, instala las dependencias dentro del proyecto, descar
 catálogo de voces (aproximadamente 338 MB), una voz Piper de respaldo (aproximadamente 77 MB) y
 Whisper `small` (aproximadamente 464 MB). Todo el audio se genera localmente y sin costo. No cambia
 la política de ejecución de PowerShell. Si ya instalaste una versión anterior, vuelve a ejecutar
-`setup.cmd` para incorporar las dependencias nuevas.
+`setup.cmd` para incorporar las dependencias nuevas. El último paso comprueba que Codex esté
+instalado y que exista una sesión de ChatGPT activa; si falta, ejecuta `codex login` una vez.
 
 Después inicia la aplicación con:
 
@@ -97,27 +106,32 @@ revocar teléfonos en cualquier momento; `scripts\disable_remote_access.cmd` eli
 privada completa. La guía operativa y el modelo de seguridad están en
 [docs/mobile-access.md](docs/mobile-access.md).
 
-### Modelo conversacional
+### Razonamiento y percepción con Codex
 
-La interfaz arranca sin Ollama usando un núcleo limitado. Para instalar la edición portátil dentro
-del proyecto y descargar el modelo recomendado, ejecuta:
+El núcleo conversacional y el planificador usan `codex app-server` por entrada/salida estándar.
+La autenticación proviene de la cuenta de ChatGPT iniciada en Codex: Jarvis no solicita ni guarda
+una API key. Cada inferencia normal se abre como hilo efímero y de solo lectura. Codex no recibe las
+herramientas internas, la terminal ni acceso directo a Windows; devuelve texto o un plan JSON que
+el motor local valida antes de hacer nada. Una tarea de programación confirmada abre un sandbox
+separado con escritura solo en el proyecto elegido y sin red. `gpt-5.6-luna` con razonamiento `high` atiende
+conversación, planificación y análisis profundo para reducir consumo frente a modelos mayores.
+
+El análisis conversacional, los planes de acciones, el correo, el portapapeles y la visión usan la
+misma sesión de Codex con `gpt-5.6-luna` en `high`. Los correos, el texto analizado y las capturas
+seleccionadas salen de la computadora hacia OpenAI para esas inferencias. Codex no recibe las
+herramientas internas: solo devuelve texto o datos estructurados que Jarvis valida localmente.
+
+Ollama queda como componente opcional únicamente para los embeddings semánticos locales con
+`embeddinggemma`; no interviene en el razonamiento. Para instalar su edición portátil, ejecuta:
 
 ```text
 scripts\install_ollama.cmd
 ```
 
-Jarvis iniciará ese Ollama automáticamente y lo apagará al cerrar `start.cmd`. También puede usar
-una instalación que ya responda en `http://127.0.0.1:11434`. Con
-`JARVIS_ADAPTIVE_RESOURCES=true`, Qwen se carga bajo demanda y puede permanecer tres minutos
-en memoria si quedan al menos 2,5 GB de RAM libre. Los comandos deterministas no lo cargan.
-La vigilancia de recursos lo libera cuando falta RAM o VRAM; «Ahorrar memoria» solicita su
-descarga al terminar. Sin adaptación se respeta `JARVIS_OLLAMA_KEEP_ALIVE`.
-La precarga de Qwen sigue desactivada; Whisper y Kokoro pueden prepararse al arrancar si hay RAM.
-
-Durante una consulta visual multimonitor, Qwen permanece cargado únicamente entre las capturas de
-esa consulta (`JARVIS_VISION_KEEP_ALIVE`) y se libera inmediatamente al finalizar. Con adaptación,
-Whisper usa CUDA cuando dispone de espacio y CPU cuando Qwen ocupa la GPU, evitando recargar
-Qwen en cada turno de voz. Sin adaptación se conserva la descarga antes de transcribir.
+Jarvis solo iniciará Ollama si el índice semántico está activo y lo apagará al cerrar
+`start.cmd`. También puede usar una instalación que ya responda en `http://127.0.0.1:11434`. Con
+`JARVIS_ADAPTIVE_RESOURCES=true`, Whisper y Kokoro administran sus recursos locales de forma
+adaptativa. La precarga de Ollama permanece desactivada.
 Al cerrar `start.cmd`, se detienen de forma validada el servidor portátil y todos
 sus runners; el siguiente arranque elimina runners huérfanos de la carpeta del proyecto.
 
@@ -188,7 +202,7 @@ Si se configura `JARVIS_BROWSER_PERSONAL_PROFILE=false`, vuelve al perfil persis
 - “¿Qué temperatura hace en Quito?” y “¿Cómo estará el clima mañana en Vancouver?” consultan
   Open-Meteo directamente y mencionan la hora o fecha del dato.
 - Las preguntas factuales generales reciben extractos de Wikipedia delimitados como evidencia no
-  confiable antes de llegar a Qwen. El modelo debe citar la fuente brevemente y no rellenar vacíos.
+  confiable antes de llegar a Codex. El modelo debe citar la fuente brevemente y no rellenar vacíos.
 - Noticias, precios, marcadores y otros datos en vivo no compatibles se rechazan con honestidad.
 - El perfil privado se encuentra en `.data/user_profile.json`; puede editarse sin tocar el código y
   nunca se envía a Open-Meteo ni Wikipedia. Admite identidad, estudios, trabajo, objetivos,
@@ -217,7 +231,7 @@ La memoria se guarda en `.data/memory.sqlite3`, excluida de Git. Usa SQLite con 
 deduplicación por clave, límites de tamaño y borrado seguro. No guarda preguntas, órdenes,
 estados pasajeros ni mensajes que parezcan contener contraseñas, tokens, códigos o datos bancarios.
 Los recuerdos se recuperan por relevancia y las conversaciones recientes solo se inyectan al abrir
-una sesión nueva, evitando llenar innecesariamente el contexto de Qwen.
+una sesión nueva, evitando llenar innecesariamente el contexto de Codex.
 
 Comandos de voz útiles:
 
@@ -230,8 +244,10 @@ Comandos de voz útiles:
 
 Jarvis también aprende frases claras como “me gusta tocar el ukelele”, “vivo en Quito”, “estudio
 Ingeniería…” o “estoy desarrollando mi propio Jarvis”. La personalidad está orientada a voz:
-gentil, servicial, serena y ligeramente ingeniosa, con una sola pregunta puntual únicamente cuando
-la conversación realmente la amerita. Las consultas de opinión o análisis reciben normalmente de
+gentil, servicial y serena, pero también juguetona, de humor seco y con sarcasmo ligero. Puede hacer
+una pulla breve sobre situaciones absurdas, tareas repetitivas, software o sobre sí mismo, pero no
+se burla de Juan Diego ni usa sarcasmo en temas sensibles, errores, seguridad o confirmaciones. Solo
+hace una pregunta puntual cuando la conversación realmente la amerita. Las consultas de opinión o análisis reciben normalmente de
 tres a seis oraciones sustantivas. Si el tema permite un desarrollo mucho mayor, Jarvis ofrece el
 modo de análisis profundo: “sí, profundiza” retoma la pregunta original con una respuesta extensa y
 “no, dame la versión normal” conserva el formato habitual. Pedir “analízalo a fondo” activa el modo
@@ -266,7 +282,7 @@ hechos, conexiones permitidas, riesgos prácticos y límites de lo que el perfil
 - Puedes decir “describe el monitor 2”, “mira la pantalla principal”, “¿qué hay en el monitor de la
   derecha?” o “encuentra Aceptar en la pantalla de la izquierda”.
 - “Describe lo que ves”, “¿qué aparece en la pantalla?” y “encuentra el botón Continuar” usan
-  visión local y requieren confirmación porque la pantalla puede contener información privada.
+  visión con Luna y requieren confirmación porque la pantalla puede contener información privada.
 - Después de una observación, preguntas breves como “¿qué dice ese error?” continúan en el mismo
   monitor. El foco está aislado por sesión, expira y nunca reutiliza coordenadas de una captura vieja.
 - “Haz clic visualmente en Continuar” intenta primero usar el árbol accesible de Windows. Si el
@@ -281,16 +297,16 @@ hechos, conexiones permitidas, riesgos prácticos y límites de lo que el perfil
 - También se aceptan formas naturales como “¿me abres YouTube?”, “búscame restaurantes cerca”,
   “quiero que abras la calculadora” o “deja el sonido aproximadamente a la mitad”.
 
-La visión funciona únicamente contra Ollama en `127.0.0.1` o `localhost`. El texto visible se trata
+La visión envía a Luna únicamente la captura confirmada para ese turno. El texto visible se trata
 como datos no confiables: una instrucción escrita dentro de una página o imagen nunca puede ampliar
-los permisos del motor.
+los permisos del motor, y el archivo temporal se elimina al terminar.
 
 ### Sistema, portapapeles y archivos
 
 - “Estado del sistema” informa CPU, memoria, disco y batería cuando están disponibles.
 - “Lee el portapapeles” y `copia "Texto" al portapapeles` requieren confirmación.
 - “Resume mi portapapeles”, “explícalo”, “corrígelo” o “tradúcelo al inglés” lo analiza de forma
-  efímera con Ollama local sin incorporarlo a memoria.
+  efímera con Luna sin incorporarlo a memoria y bloquea contenido que parece una credencial.
 - “Abre la carpeta Descargas”.
 - `abre el archivo "D:\Datos\reporte.pdf"` requiere confirmación. Solo se permiten formatos
   comunes de documentos sin macros, texto, imagen, audio, video y archivos ZIP.
@@ -310,10 +326,15 @@ los permisos del motor.
   prioridad, categoría y proyecto sin enviar texto ambiguo al backend.
 - Appa también aporta proyectos, calendario, inbox y sesiones focus por voz. Las creaciones se
   confirman y todo permanece en loopback, incluso cuando Appa está oculta en la bandeja.
+- Los eventos del calendario Google creado por Jarvis se pueden editar desde Hoy o por voz; Appa
+  usa el ETag para no pisar cambios hechos en otro dispositivo.
 - “Lista mis skills” y “ejecuta la receta diagnóstico rápido” usan recetas declarativas que vuelven
   a pasar por el catálogo y las confirmaciones normales.
 - “Lista los proyectos autorizados”, “busca … en el proyecto Jarvis” y “ejecuta las pruebas del
   proyecto Jarvis” trabajan dentro de raíces explícitas; las pruebas son de riesgo alto.
+- Jarvis puede crear carpetas y plantillas de proyecto dentro de `D:\Verano_2026`. También puede
+  encargar a Codex una tarea de programación dentro de un proyecto exacto tras confirmación de
+  riesgo alto; ese turno no tiene red ni acceso de escritura fuera de la carpeta confirmada.
 - “Lista mis juegos” e “inicia el juego…” detectan manifiestos locales de Steam/Epic y confirman
   antes de abrir.
 - El botón de cámara solicita permiso para una única captura, detiene el stream y envía la imagen
@@ -325,25 +346,29 @@ La referencia completa de acciones, riesgos y límites está en
 [docs/action-engine.md](docs/action-engine.md). La guía del nuevo centro local, Appa, adjuntos,
 workspaces y sus límites está en [docs/capabilities.md](docs/capabilities.md).
 
-## Agente local 1.0
+## Agente híbrido 1.0
 
-La toma de decisiones combina llamadas nativas a herramientas, selección semántica del catálogo,
-estado verificable con caducidad y metas persistentes. Qwen 4B atiende lo cotidiano y Qwen 9B se
-activa sólo para razonamiento complejo. Appa aporta en una sola lectura el contexto real de tareas,
-proyectos, agenda, inbox y focus. Consulta [docs/agent-architecture.md](docs/agent-architecture.md).
+La toma de decisiones combina rutas deterministas, planificación estructurada de Codex, selección
+del catálogo, estado verificable con caducidad y metas persistentes. Appa aporta en una sola lectura
+el contexto real de tareas, proyectos, agenda, inbox y focus. Consulta
+[la integración de Codex](docs/codex-integration.md) y
+[la arquitectura del agente](docs/agent-architecture.md).
 
 ## Seguridad
 
 - No existe ninguna acción de PowerShell, CMD, terminal ni comandos arbitrarios.
 - El modelo nunca recibe acceso directo a Windows: únicamente propone nombres y argumentos del
   catálogo cerrado. El motor vuelve a validar tipos, rangos, permisos, riesgo y estado real.
+- Conversación, memoria recuperada, observaciones y planes pueden enviarse a OpenAI para razonar.
+  Audio, bases locales, credenciales, tokens OAuth y la ejecución de acciones permanecen en Jarvis;
+  ninguna credencial se incluye deliberadamente en el prompt.
 - Apagar, reiniciar, borrar, formatear, comprar, pagar o transferir están bloqueados.
 - Los controles cuyo nombre indica compra, transferencia o eliminación tampoco se activan.
 - Los clics visuales estimados por píxeles nunca se realizan en el mismo paso que la detección: se
   mueve el cursor y se exige una confirmación adicional.
 - Cada acción pertenece a un catálogo cerrado y valida tipo, longitud, rango y formato de sus
   argumentos antes de ejecutarse.
-- Las mutaciones sugeridas por el modelo local se elevan automáticamente a confirmación aunque la
+- Las mutaciones sugeridas por Codex se elevan automáticamente a confirmación aunque la
   acción normalmente sea de riesgo bajo.
 - Las confirmaciones están vinculadas a la sesión, tienen identificadores impredecibles, expiran y
   no pueden reutilizarse desde otra sesión. Una solicitud nueva cancela la confirmación anterior,
@@ -367,11 +392,13 @@ proyectos, agenda, inbox y focus. Consulta [docs/agent-architecture.md](docs/age
   y límites de tamaño.
 - Los audios temporales se eliminan al terminar la transcripción. `.env`, modelos, temporales,
   auditoría y el entorno virtual están excluidos de Git.
-- El análisis visual rechaza servidores externos y no guarda su captura transitoria en disco.
+- El análisis visual entrega la captura a Codex mediante una entrada de imagen; el archivo temporal
+  local se elimina siempre al finalizar, incluso ante errores.
 - Los adjuntos se validan por tamaño, extensión, MIME y firma, se renombran y aíslan por sesión;
   caducan automáticamente y nunca pueden convertirse en instrucciones para el agente.
 - Las herramientas de desarrollo permanecen dentro de workspaces autorizados, bloquean secretos,
-  enlaces y rutas internas de Git, y no aceptan comandos ni argumentos libres.
+  enlaces y rutas internas de Git. Las operaciones normales no aceptan comandos libres; una tarea
+  Codex confirmada queda encerrada en el sandbox de escritura del proyecto exacto.
 - Un permiso solo se recuerda después de una ejecución exitosa, nunca para riesgo alto y, desde el
   teléfono, queda ligado a ese dispositivo autenticado.
 
@@ -383,7 +410,11 @@ localmente en `/api/actions/audit`; texto escrito, portapapeles y contenido visi
 `setup.cmd` crea `.env` a partir de `.env.example`. Las opciones principales son:
 
 ```dotenv
-JARVIS_OLLAMA_MODEL=qwen3.5:4b
+JARVIS_BRAIN_MODE=codex
+JARVIS_CODEX_MODEL=gpt-5.6-luna
+JARVIS_CODEX_DEEP_MODEL=gpt-5.6-luna
+JARVIS_CODEX_EFFORT=high
+JARVIS_CODEX_ACTION_EFFORT=high
 JARVIS_STT_MODEL=small
 JARVIS_STT_DEVICE=cpu
 JARVIS_STT_COMPUTE_TYPE=int8
@@ -401,7 +432,7 @@ JARVIS_ATTACHMENT_RETENTION_HOURS=24
 JARVIS_APPA_AUTO_DISCOVER=true
 JARVIS_APPA_BRIDGE_CONFIG=
 JARVIS_APPA_URL=
-JARVIS_WORKSPACE_ROOTS=
+JARVIS_WORKSPACE_ROOTS=D:\Verano_2026
 ```
 
 `JARVIS_BROWSER_SEARCH_URL` debe ser HTTP/HTTPS y contener exactamente `{query}`. Puedes apagar todo
@@ -416,6 +447,7 @@ El paquete de capacidades también puede desactivarse de una vez con
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe scripts\measure_codex_tokens.py --runs 1
 node --check src\jarvis\web\app.js
 ```
 
@@ -435,9 +467,9 @@ está disponible localmente en `http://127.0.0.1:8765/api/openapi.json`.
 - **ACTIONS aparece limitado:** instala Microsoft Edge y verifica
   `JARVIS_SAFE_ACTIONS_ENABLED=true`.
 - **El micrófono no abre:** permite el acceso a `127.0.0.1` en Edge o Chrome.
-- **CORE aparece limitado:** instala/inicia Ollama y ejecuta `ollama pull qwen3.5:4b`.
-- **VISION aparece limitado:** confirma que Ollama sea local y que el modelo publicado por
-  `/api/show` incluya la capacidad `vision`. En equipos sin GPU, una consulta visual puede tardar.
+- **CORE aparece limitado:** abre Codex, ejecuta `codex login` y comprueba `codex login status`.
+- **VISION aparece limitado:** comprueba `codex login status` y que `gpt-5.6-luna` esté disponible
+  en la cuenta iniciada.
 - **Kokoro o Piper no aparecen disponibles:** repite `setup.cmd`; las voces de Windows seguirán
   disponibles como último respaldo.
 - **Manos libres se activa solo:** desactívalo, reduce el ruido y vuelve a activarlo para recalibrar.

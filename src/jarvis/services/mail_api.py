@@ -26,6 +26,24 @@ class MailUpdate(BaseModel):
     version: str | None = Field(default=None, max_length=2000)
 
 
+class MailSearch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query: str = Field(min_length=1, max_length=300)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class ReplyAuthorization(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    body: str = Field(min_length=1, max_length=3000)
+    version: str = Field(min_length=1, max_length=2000)
+
+
+class ReplySend(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    authorization: str = Field(min_length=32, max_length=200)
+    body: str = Field(min_length=1, max_length=3000)
+
+
 def mail_router(service, require_local, web_dir):
     router = APIRouter()
 
@@ -40,6 +58,13 @@ def mail_router(service, require_local, web_dir):
     @router.get("/api/mail/items")
     async def items(include_resolved: bool = False):
         return {"items": service.store.list(include_resolved)}
+
+    @router.post("/api/mail/search")
+    async def search(payload: MailSearch):
+        try:
+            return service.search(payload.query, payload.limit)
+        except MailError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @router.put("/api/mail/config")
     async def configure(request: Request, payload: ClientSettings):
@@ -113,6 +138,27 @@ def mail_router(service, require_local, web_dir):
         except MailError as exc:
             raise HTTPException(409, str(exc)) from None
         except Exception:
-            raise HTTPException(503, "El modelo local no pudo preparar el borrador") from None
+            raise HTTPException(503, "Codex Luna no pudo preparar el borrador") from None
+
+    @router.post("/api/mail/items/{identifier}/reply/authorize")
+    async def authorize_reply(request: Request, identifier: str, payload: ReplyAuthorization):
+        require_local(request)
+        find(identifier)
+        try:
+            return service.authorize_reply(identifier, payload.body, payload.version)
+        except MailError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @router.post("/api/mail/items/{identifier}/reply/send")
+    async def send_reply(request: Request, identifier: str, payload: ReplySend):
+        require_local(request)
+        find(identifier)
+        try:
+            result = await service.send_authorized_reply(
+                payload.authorization, payload.body, identifier
+            )
+        except MailError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return result
 
     return router

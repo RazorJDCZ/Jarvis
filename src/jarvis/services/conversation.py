@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 
 from jarvis.actions.engine import ActionEngine
 from jarvis.actions.models import ActionOutcome
-from jarvis.actions.parser import normalize_request
+from jarvis.actions.parser import DeterministicActionParser, normalize_request
 from jarvis.config import (
     Settings,
     build_private_person_prompt,
@@ -19,7 +19,9 @@ from jarvis.services.analysis import AnalysisChoice, AnalysisCoordinator
 from jarvis.services.commands import SafeCommandRouter
 from jarvis.services.information import InformationVerifier
 from jarvis.services.memory import MemoryService
+from jarvis.services.performance import token_sink
 from jarvis.services.profile import LocalProfileStore
+from jarvis.text import strip_emojis
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +315,9 @@ class ConversationService:
                 traces.add_span(trace_id, "request.failed", "failed", type(exc).__name__)
                 traces.finish(trace_id, "failed")
             raise
+        cleaned_text = strip_emojis(reply.text)
+        if cleaned_text != reply.text:
+            reply = replace(reply, text=cleaned_text)
         if traces is not None and trace_id is not None:
             traces.add_span(
                 trace_id,
@@ -358,13 +363,53 @@ class ConversationService:
                     "analysis-confirmation",
                 )
 
+        organizer = getattr(self, "organizer", None)
+        capture = re.fullmatch(
+            r"(?:jarvis[, ]+)?(?:anota esta idea|guarda esta idea|captura esta idea)"
+            r"\s*[: ,]\s*(.{1,2000})",
+            message.strip(),
+            re.IGNORECASE | re.DOTALL,
+        )
+        if organizer is not None and capture and not attachment_ids:
+            from uuid import uuid4
+
+            item = organizer.capture(capture[1], session_id, uuid4().hex)
+            return ConversationReply("Anotado: " + item["text"], "local-capture")
+        if organizer is not None and re.fullmatch(
+            r"[¿? ]*(?:qué tengo hoy|que tengo hoy|resumen de hoy|"
+            r"organiza mi día|organiza mi dia)[.?!¿ ]*",
+            message.strip(),
+            re.IGNORECASE,
+        ):
+            today = organizer.today(session_id)
+            titles = [p["title"] for p in today["priorities"]]
+            return ConversationReply(
+                "Tus prioridades sugeridas: " + "; ".join(titles)
+                if titles
+                else "No tengo prioridades registradas. Puedes revisar Hoy en Appa.",
+                "local-today",
+            )
         mail = getattr(self, "mail", None)
+        normalized_message = normalize_request(message)
+        if (
+            mail is not None
+            and re.search(r"\b(?:correo|correos|email|emails)\b", normalized_message)
+            and (
+                re.search(
+                    r"\b(?:donde|en que|como)\b.*\b(?:guard|almacen|contexto|base de datos)",
+                    normalized_message,
+                )
+                or re.search(r"\b(?:contexto|base de datos|sqlite)\b", normalized_message)
+            )
+        ):
+            self._supersede_pending_action(session_id)
+            return ConversationReply(mail.storage_explanation(), "local-mail")
         if mail is not None and re.fullmatch(
             r"(?:jarvis )?(?:resume|resumeme|revisa|muestra|muestrame|leeme|dime|que|tengo) "
             r"(?:mis |los |el |un |un resumen de |resumen de )?"
             r"(?:correos|correo|emails|email)(?: importantes| pendientes| nuevos| de hoy)?"
             r"(?: tengo| hay)?(?: pendientes| importantes| nuevos)?",
-            normalize_request(message),
+            normalized_message,
         ):
             self._supersede_pending_action(session_id)
             return ConversationReply(mail.briefing(), "local-mail")
@@ -550,6 +595,31 @@ class ConversationService:
                 recent_context=recent_context,
                 deep_analysis=deep_analysis,
             )
+        if (
+            not private_subject
+            and not analytical
+            and not attachment_ids
+            and DeterministicActionParser().is_conversational_turn(message)
+        ):
+            # Keep small talk grounded in this conversation. Long technical instructions
+            # and unrelated profile notes primed the compact model to give diagnostics
+            # or invent a personal explanation for a simple greeting.
+            system_prompt = (
+                "Eres JARVIS, el asistente personal de Juan Diego. Están conversando de manera "
+                "informal en español. Contesta directamente a lo que acaba de decir, con "
+                "calidez y lenguaje cotidiano, en una o dos frases cortas. Sé juguetón, rápido "
+                "de ingenio y usa sarcasmo ligero o humor seco cuando encaje; una pulla breve es "
+                "suficiente y nunca debe ir contra Juan Diego, sus errores o algo que le duela. "
+                "Puedes ser cercano sin hablar como terapeuta ni ofrecerte a trabajar en cada "
+                "respuesta. "
+                "No uses emojis, pictogramas ni emoticonos; esta respuesta se leerá en voz alta. "
+                "Usa el historial para seguir el hilo. Si corrige un malentendido, reconócelo "
+                "brevemente y responde a lo que quiso decir; no expliques tus instrucciones. "
+                "No inventes recuerdos, causas de su estado de ánimo, experiencias propias ni "
+                "actividad mientras él no estaba. No des informes del sistema ni afirmes haber "
+                "comprobado o hecho nada. No repitas la respuesta anterior ni añadas ofertas "
+                "de ayuda. Haz una pregunta solo si nace de lo que acaba de contar."
+            )
         if attachment_context:
             system_prompt += (
                 "\n\nLos siguientes adjuntos fueron seleccionados expl\u00edcitamente para esta "
@@ -567,8 +637,6 @@ class ConversationService:
             messages = [{"role": "system", "content": system_prompt}, *history]
         deep_chat = getattr(self.brain, "chat_deep", None)
         # Private-person responses must pass their existing sanitizers before disclosure.
-        from jarvis.services.performance import token_sink
-
         stream_token = token_sink.set(None) if private_person else None
         try:
             raw_response = (
@@ -579,7 +647,7 @@ class ConversationService:
         finally:
             if stream_token is not None:
                 token_sink.reset(stream_token)
-        response = self._trim_generic_follow_up(raw_response)
+        response = strip_emojis(self._trim_generic_follow_up(raw_response))
         if private_person:
             if analytical and not deep_analysis:
                 response = self._sanitize_private_person_analysis(response)

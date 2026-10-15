@@ -19,6 +19,7 @@ from jarvis.actions.models import ActionOutcome
 from jarvis.capabilities.api import create_capability_router
 from jarvis.config import Settings
 from jarvis.providers.brain import build_brain
+from jarvis.providers.codex_app_server import CodexAppServerClient
 from jarvis.providers.stt import WhisperTranscriber
 from jarvis.providers.tts import PiperTTS
 from jarvis.providers.wake_detector import LightweightWakeDetector
@@ -43,7 +44,10 @@ from jarvis.services.feedback import FeedbackStore
 from jarvis.services.interruptions import VoiceInterruptionMatcher
 from jarvis.services.mail import MailService
 from jarvis.services.mail_api import mail_router
+from jarvis.services.organizer import Organizer
+from jarvis.services.organizer_api import organizer_router
 from jarvis.services.performance import PerformanceLog, available_ram_gb, response_events, stage
+from jarvis.services.recovery import Recovery
 from jarvis.services.remote_access import (
     RemoteAccessError,
     RemoteAccessService,
@@ -51,6 +55,7 @@ from jarvis.services.remote_access import (
     RemoteIdentity,
 )
 from jarvis.services.wake import WakeGate
+from jarvis.services.web_push import WebPush
 from jarvis.state import StateHub
 
 _SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -95,8 +100,9 @@ def _header_host(value: str) -> str:
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
     state_hub = StateHub()
-    brain = build_brain(config)
-    action_engine = ActionEngine(config)
+    codex_client = CodexAppServerClient(config) if config.brain_mode in {"auto", "codex"} else None
+    brain = build_brain(config, codex_client)
+    action_engine = ActionEngine(config, codex_client=codex_client)
     conversation = ConversationService(config, brain, action_engine)
     transcriber = WhisperTranscriber(config)
     tts = PiperTTS(config)
@@ -106,16 +112,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     feedback = FeedbackStore(config.data_dir / "agent-feedback.sqlite3")
     performance = PerformanceLog()
     wake_detector = LightweightWakeDetector(config.project_root / "models" / "wake")
-    mail = MailService(config, action_engine.capabilities)
+    mail = MailService(config, action_engine.capabilities, codex_client)
     conversation.mail = mail
+    organizer = Organizer(config, mail, action_engine.capabilities)
+    organizer.recovery = Recovery(config)
+    organizer.push = WebPush(organizer, remote_access)
+    conversation.organizer = organizer
     if action_engine.capabilities is not None:
         action_engine.capabilities.mail = mail
+        action_engine.capabilities.organizer = organizer
 
     async def warm_brain() -> bool:
         try:
             return await brain.warmup()
         except Exception:
-            # Startup must remain usable when Ollama is offline; AutoBrain will keep the
+            # Startup must remain usable when Codex is offline; AutoBrain will keep the
             # deterministic fallback available and the next chat can retry.
             return False
 
@@ -144,16 +155,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         (config.data_dir / "tmp").mkdir(parents=True, exist_ok=True)
         await action_engine.start()
         await mail.start()
+        await organizer.start()
+        await organizer.push.start()
         voice_preload_task = asyncio.create_task(preload_voice())
         resource_task = asyncio.create_task(resource_guard())
         warmup_task = (
-            asyncio.create_task(warm_brain(), name="jarvis-ollama-warmup")
-            if config.ollama_warmup_enabled
+            asyncio.create_task(warm_brain(), name="jarvis-reasoning-warmup")
+            if config.brain_mode in {"auto", "codex"}
             else None
         )
         try:
             yield
         finally:
+            await organizer.push.close()
+            await organizer.close()
             await mail.close()
             for background in (voice_preload_task, resource_task):
                 background.cancel()
@@ -163,12 +178,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     warmup_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await warmup_task
-            await brain.release()
+            close_brain = getattr(brain, "close", None)
+            if callable(close_brain):
+                await close_brain()
+            else:
+                await brain.release()
             await action_engine.close()
             await state_hub.close()
 
     app = FastAPI(
-        title="Jarvis Local Core",
+        title="Jarvis Hybrid Core",
         version=__version__,
         lifespan=lifespan,
         docs_url=None,
@@ -177,6 +196,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = config
     app.state.brain = brain
+    app.state.codex = codex_client
     app.state.state_hub = state_hub
     app.state.conversation = conversation
     app.state.transcriber = transcriber
@@ -187,6 +207,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.feedback = feedback
     app.state.performance = performance
     app.state.mail = mail
+    app.state.organizer = organizer
     trusted_origins = {
         f"http://127.0.0.1:{config.port}",
         f"http://localhost:{config.port}",
@@ -262,6 +283,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from jarvis.services.assistant_api import assistant_router
 
     app.include_router(mail_router(mail, require_local_console, config.web_dir))
+    app.include_router(
+        organizer_router(organizer, require_local_console, effective_session_id, config.web_dir)
+    )
 
     app.include_router(
         assistant_router(
@@ -606,6 +630,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         conversation.reset(effective_session)
         await state_hub.set("standby", "Conversacion reiniciada")
         return Response(status_code=204)
+
+    @app.post("/api/organizer/transcribe")
+    async def transcribe_capture(audio: Annotated[UploadFile, File()]):
+        content = await audio.read(config.max_audio_bytes + 1)
+        if not content or len(content) > config.max_audio_bytes:
+            raise HTTPException(413, "Audio vacío o demasiado grande")
+        mail.activity()
+        temporary = config.data_dir / "tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            suffix=safe_audio_suffix(audio.filename), dir=temporary, delete=False
+        ) as f:
+            f.write(content)
+            path = Path(f.name)
+        try:
+            text, _ = await transcriber.transcribe(path)
+            return {"text": text[:2000]}
+        except Exception:
+            raise HTTPException(503, "No se pudo transcribir. Puedes escribir la captura") from None
+        finally:
+            path.unlink(missing_ok=True)
 
     @app.post("/api/voice/utterance", response_model=VoiceResponse)
     async def voice_utterance(

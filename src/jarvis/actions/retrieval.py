@@ -26,6 +26,18 @@ def _features(value: str) -> Counter[str]:
 class CapabilityRetriever:
     """Select a small relevant tool set without trusting the model with the full catalog."""
 
+    # Ranking tools and deciding whether tools are needed are different problems.
+    # Function words, fuzzy character matches and calendar pinning ("hoy", "dia")
+    # are useful for retrieval but must not turn ordinary speech into an action.
+    _ADMISSION_STOPWORDS = frozenset(
+        "a al algo algun alguna algunos algunas ante asi aun aunque buen buenos como con "  # noqa: SIM905
+        "cual cuando de del desde donde el ella ellas ellos en entre era es esa esas ese esos "
+        "esta estas este esto estos estoy ha hace hacia hasta hay hola hoy jarvis la las le "
+        "les lo los mas me mi mis mucho muy nada ni no nos o otra otro para pero poco por "
+        "porque que quien se si sin sobre su sus te tengo ti tiene todo tu tus un una uno "
+        "unos unas va vas vez ya y yo the a an to of is are how you your i my please".split()
+    )
+
     _DOMAIN_HINTS = {
         "app.": "aplicacion programa software instalado abrir ejecutar lanzar",
         "browser.": "navegador chrome edge brave web pagina sitio internet google buscar pestaña",
@@ -50,11 +62,16 @@ class CapabilityRetriever:
             "appa resumen dia productividad agenda tareas proyectos inbox focus prioridad "
             "planificar"
         ),
+        "mail.": "correo gmail email buscar remitente asunto responder enviar borrador autorizado",
+        "google_calendar.": "google calendar agenda evento editar reprogramar cambiar fecha hora",
         "reminder.": "recordatorio aviso alarma recordar programar",
         "knowledge.": "biblioteca conocimiento documento buscar fuente cita privado",
         "attachment.": "adjunto archivo cargado sesion",
         "permission.": "permiso autorizacion recordar olvidar seguridad",
-        "dev.": "codigo programar desarrollo workspace repositorio pruebas archivo buscar",
+        "dev.": (
+            "codigo programar desarrollo codex workspace repositorio pruebas archivo buscar "
+            "crear carpeta proyecto implementar corregir"
+        ),
         "game.": "juego videojuego steam epic jugar biblioteca",
     }
 
@@ -74,7 +91,11 @@ class CapabilityRetriever:
         "hoy": ("appa.briefing", "task.list", "calendar.list", "reminder.list"),
         "dia": ("appa.briefing", "task.list", "calendar.list"),
         "volumen": ("volume.get", "volume.set", "volume.change", "volume.mute"),
-        "correo": ("browser.open", "browser.search", "browser.read", "browser.fill"),
+        "sonido": ("volume.get", "volume.set", "volume.change", "volume.mute"),
+        "correo": ("mail.search", "mail.reply", "browser.open", "browser.read"),
+        "gmail": ("mail.search", "mail.reply", "browser.open"),
+        "codex": ("dev.codex_task", "dev.list", "dev.create_project"),
+        "carpeta": ("dev.create_folder", "path.open_folder", "dev.list"),
         "encuentra": ("screen.find", "ui.inspect", "browser.read", "browser.search"),
         "recu*": ("reminder.create", "reminder.list", "calendar.create", "task.create"),
     }
@@ -123,12 +144,32 @@ class CapabilityRetriever:
                 for name in pinned:
                     if name in score_by_name:
                         score_by_name[name] += 6
-        if re.search(
-            r"(?:https?://|www\.)\S+", request, flags=re.IGNORECASE
-        ) and "browser.open" in score_by_name:
+        if (
+            re.search(r"(?:https?://|www\.)\S+", request, flags=re.IGNORECASE)
+            and "browser.open" in score_by_name
+        ):
             score_by_name["browser.open"] += 12
         scores = sorted(score_by_name.items(), key=lambda item: (-item[1], item[0]))
         return tuple(scores)
+
+    def admission_score(self, request: str) -> float:
+        """Require meaningful whole-word evidence before speculative tool planning."""
+        query = {
+            feature: weight
+            for feature, weight in _features(request).items()
+            if not feature.startswith("#")
+            and any(word not in self._ADMISSION_STOPWORDS for word in feature.split("_"))
+        }
+        return max(
+            (
+                sum(
+                    min(weight, document.get(feature, 0)) * self._idf.get(feature, 1.0)
+                    for feature, weight in query.items()
+                )
+                for document in self._documents.values()
+            ),
+            default=0.0,
+        )
 
     def select(self, request: str, *, limit: int = 18) -> tuple[str, ...]:
         safe_limit = max(8, min(limit, len(self.action_names)))

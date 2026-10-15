@@ -63,12 +63,12 @@ if (-not $ServerReady) {
 }
 
 try {
-    Write-Host 'Descargando Qwen 3.5 4B (aprox. 3.4 GB)...' -ForegroundColor Cyan
-    & $OllamaExe pull 'qwen3.5:4b'
+    Write-Host 'Descargando embeddinggemma para el indice semantico local...' -ForegroundColor Cyan
+    & $OllamaExe pull 'embeddinggemma'
     if ($LASTEXITCODE -ne 0) {
-        throw 'No se pudo descargar qwen3.5:4b.'
+        throw 'No se pudo descargar embeddinggemma.'
     }
-    Write-Host 'Ollama y Qwen estan listos dentro del proyecto.' -ForegroundColor Green
+    Write-Host 'Ollama y embeddinggemma estan listos dentro del proyecto.' -ForegroundColor Green
 } finally {
     if ($null -ne $OllamaProcess -and -not $OllamaProcess.HasExited) {
         Stop-Process -Id $OllamaProcess.Id

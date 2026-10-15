@@ -6,11 +6,11 @@
     <meta name="theme-color" content="#100309" />
     <meta
       name="description"
-      content="Interfaz privada del núcleo de inteligencia local Jarvis"
+      content="Interfaz privada de Jarvis con razonamiento Codex y ejecución local"
     />
     <link rel="manifest" href="/manifest.webmanifest?v=agent-v9" />
     <link rel="icon" href="/static/icon.svg?v=agent-v9" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=agent-v9" />
+    <link rel="stylesheet" href="/static/styles.css?v=agent-v10" />
     <title>JARVIS // Neural Interface</title>
   </head>
   <body data-state="standby">
@@ -44,9 +44,16 @@
         <span id="remoteLinkChip"><i></i> LOOPBACK LINK</span>
       </div>
 
-      <div class="system-clock" aria-label="Hora local">
+      <div class="topbar-tools">
+        <a class="organizer-launch" href="/organizer" aria-label="Mi día: agenda, pendientes e ideas">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="16" rx="1"/><path d="M8 3v5M16 3v5M4 11h16M8 15h3M8 18h6"/></svg>
+          <span><strong>MI DÍA</strong><small>Agenda, pendientes e ideas</small></span>
+          <i aria-hidden="true">↗</i>
+        </a>
+        <div class="system-clock" aria-label="Hora local">
         <span id="clock">00:00:00</span>
         <small id="systemDate">QUITO // GMT-5</small>
+        </div>
       </div>
     </header>
 
@@ -95,11 +102,11 @@
         <div class="integrity-block">
           <div><span>SYSTEM INTEGRITY</span><strong id="coreLoad">SCANNING</strong></div>
           <div class="integrity-track"><i></i></div>
-          <small>6 isolated subsystems // local execution</small>
+          <small>6 isolated subsystems // guarded local execution</small>
         </div>
 
         <div class="telemetry">
-          <div><span>PRIVACY</span><strong>LOCAL ONLY</strong></div>
+          <div><span>PRIVACY</span><strong>HYBRID PRIVATE</strong></div>
           <div><span>WAKE PHRASE</span><strong id="wakeWordLabel">JARVIS</strong></div>
           <div><span>SESSION</span><strong id="sessionLabel">EPHEMERAL</strong></div>
         </div>
@@ -123,7 +130,7 @@
           <span>AUDIO_LINK</span><strong>16 BIT // LOCAL</strong>
         </div>
         <div class="stage-telemetry stage-telemetry-right" aria-hidden="true">
-          <span>NEURAL_CORE</span><strong>QWEN // SECURE</strong>
+          <span>NEURAL_CORE</span><strong>CODEX // CHATGPT</strong>
         </div>
 
         <div class="core-coordinate core-coordinate-x" aria-hidden="true"></div>
@@ -204,7 +211,7 @@
 
         <div class="transcript" id="transcript" aria-live="polite">
           <article class="message jarvis-message">
-            <span>JARVIS // LOCAL CORE</span>
+            <span>JARVIS // HYBRID CORE</span>
             <p>Sistemas inicializados. Cuando quieras, estoy listo.</p>
           </article>
         </div>
@@ -590,7 +597,7 @@
     </section>
 
     <div class="toast" id="toast" role="status"></div>
-    <script src="/static/app.js?v=agent-v9" defer></script>
-    <script src="/static/assistant.js?v=assistant-v1" defer></script>
+    <script src="/static/app.js?v=agent-v11" defer></script>
+    <script src="/static/assistant.js?v=assistant-v4" defer></script>
   </body>
 </html>

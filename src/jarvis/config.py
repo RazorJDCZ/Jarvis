@@ -45,8 +45,22 @@ class Settings:
     remote_session_hours: int = _env_int("JARVIS_REMOTE_SESSION_HOURS", 12)
 
     brain_mode: str = os.getenv("JARVIS_BRAIN_MODE", "auto").lower()
+    codex_command: str = os.getenv("JARVIS_CODEX_COMMAND", "codex").strip() or "codex"
+    codex_model: str = os.getenv("JARVIS_CODEX_MODEL", "gpt-5.6-luna").strip()
+    codex_deep_model: str = os.getenv("JARVIS_CODEX_DEEP_MODEL", "gpt-5.6-luna").strip()
+    codex_effort: str = os.getenv("JARVIS_CODEX_EFFORT", "high").strip().lower()
+    codex_deep_effort: str = os.getenv("JARVIS_CODEX_DEEP_EFFORT", "high").strip().lower()
+    codex_action_effort: str = os.getenv("JARVIS_CODEX_ACTION_EFFORT", "high").strip().lower()
+    codex_timeout: float = _env_float("JARVIS_CODEX_TIMEOUT", 240.0)
+    codex_coding_timeout: float = _env_float("JARVIS_CODEX_CODING_TIMEOUT", 900.0)
+    codex_coding_permissions: str = os.getenv(
+        "JARVIS_CODEX_CODING_PERMISSIONS", "jarvis-project-only"
+    ).strip()
+    codex_startup_timeout: float = _env_float("JARVIS_CODEX_STARTUP_TIMEOUT", 20.0)
+    codex_max_parallel: int = _env_int("JARVIS_CODEX_MAX_PARALLEL", 3)
     ollama_url: str = os.getenv("JARVIS_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-    ollama_model: str = os.getenv("JARVIS_OLLAMA_MODEL", "qwen3.5:4b")
+    # Ollama is retained only for the optional local semantic embedding index.
+    ollama_model: str = os.getenv("JARVIS_OLLAMA_MODEL", "embeddinggemma")
     ollama_timeout: float = _env_float("JARVIS_OLLAMA_TIMEOUT", 180.0)
     ollama_keep_alive: str = os.getenv("JARVIS_OLLAMA_KEEP_ALIVE", "0s").strip() or "0s"
     ollama_warmup_enabled: bool = _env_bool("JARVIS_OLLAMA_WARMUP_ENABLED", False)
@@ -82,9 +96,9 @@ class Settings:
     action_model_planning: bool = _env_bool("JARVIS_ACTION_MODEL_PLANNING", True)
     agent_model: str = os.getenv(
         "JARVIS_AGENT_MODEL",
-        os.getenv("JARVIS_OLLAMA_MODEL", "qwen3.5:4b"),
+        os.getenv("JARVIS_OLLAMA_MODEL", "embeddinggemma"),
     )
-    agent_reasoning_model: str = os.getenv("JARVIS_AGENT_REASONING_MODEL", "qwen3.5:9b").strip()
+    agent_reasoning_model: str = os.getenv("JARVIS_AGENT_REASONING_MODEL", "embeddinggemma").strip()
     agent_reasoning_enabled: bool = _env_bool("JARVIS_AGENT_REASONING_ENABLED", True)
     agent_native_tools: bool = _env_bool("JARVIS_AGENT_NATIVE_TOOLS", True)
     agent_tool_limit: int = _env_int("JARVIS_AGENT_TOOL_LIMIT", 18)
@@ -129,8 +143,8 @@ class Settings:
     workspace_roots: str = os.getenv("JARVIS_WORKSPACE_ROOTS", "").strip()
     steam_roots: str = os.getenv("JARVIS_STEAM_ROOTS", "").strip()
     epic_manifest_roots: str = os.getenv("JARVIS_EPIC_MANIFEST_ROOTS", "").strip()
-    kokoro_voice: str = os.getenv("JARVIS_KOKORO_VOICE", "em_alex")
-    kokoro_speed: float = _env_float("JARVIS_KOKORO_SPEED", 0.96)
+    kokoro_voice: str = os.getenv("JARVIS_KOKORO_VOICE", "am_onyx")
+    kokoro_speed: float = _env_float("JARVIS_KOKORO_SPEED", 1.20)
     piper_speaker_id: int = _env_int("JARVIS_PIPER_SPEAKER_ID", 0)
     piper_length_scale: float = _env_float("JARVIS_PIPER_LENGTH_SCALE", 1.06)
     piper_noise_scale: float = _env_float("JARVIS_PIPER_NOISE_SCALE", 0.60)
@@ -141,6 +155,33 @@ class Settings:
     def __post_init__(self) -> None:
         if self.host not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError("Jarvis solo puede escuchar en loopback (127.0.0.1, localhost o ::1)")
+        if self.brain_mode not in {"auto", "codex", "fallback"}:
+            raise ValueError("JARVIS_BRAIN_MODE debe ser auto, codex o fallback")
+        if any(
+            not value or len(value) > 260 or any(character in value for character in "\x00\r\n")
+            for value in (self.codex_command, self.codex_model, self.codex_deep_model)
+        ):
+            raise ValueError("La configuracion de Codex no es valida")
+        allowed_efforts = {"low", "medium", "high", "xhigh", "max", "ultra"}
+        if any(
+            effort not in allowed_efforts
+            for effort in (
+                self.codex_effort,
+                self.codex_deep_effort,
+                self.codex_action_effort,
+            )
+        ):
+            raise ValueError("El nivel de razonamiento de Codex no es valido")
+        if not 10 <= self.codex_startup_timeout <= 120:
+            raise ValueError("El inicio de Codex debe esperar entre 10 y 120 segundos")
+        if not 30 <= self.codex_timeout <= 900:
+            raise ValueError("Codex debe esperar entre 30 y 900 segundos por respuesta")
+        if not 60 <= self.codex_coding_timeout <= 1800:
+            raise ValueError("Codex de programación debe esperar entre 60 y 1800 segundos")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.codex_coding_permissions):
+            raise ValueError("El perfil de permisos de Codex para programación no es válido")
+        if not 1 <= self.codex_max_parallel <= 8:
+            raise ValueError("Codex debe permitir entre 1 y 8 solicitudes paralelas")
         if self.remote_access_enabled:
             try:
                 parsed = urlsplit(self.remote_origin)
@@ -207,16 +248,10 @@ class Settings:
                 or parsed_appa.password is not None
                 or parsed_appa.query
                 or parsed_appa.fragment
-                or any(
-                    part in {".", ".."}
-                    for part in parsed_appa.path.split("/")
-                    if part
-                )
+                or any(part in {".", ".."} for part in parsed_appa.path.split("/") if part)
             ):
                 raise ValueError("Appa requiere HTTPS o loopback, sin credenciales en la URL")
-        if len(self.appa_token) > 4_096 or any(
-            char in self.appa_token for char in "\x00\r\n"
-        ):
+        if len(self.appa_token) > 4_096 or any(char in self.appa_token for char in "\x00\r\n"):
             raise ValueError("El token configurado para Appa no es v\u00e1lido")
         if len(self.appa_bridge_config) > 4_096 or any(
             char in self.appa_bridge_config for char in "\x00\r\n"
@@ -374,15 +409,30 @@ Eres JARVIS, el asistente personal privado de Juan Diego y vives en su computado
 Hablas principalmente en español y cambias de idioma si él lo hace.
 
 PERSONALIDAD Y TONO
-- Eres gentil, servicial, sereno y preciso, con una vibra ligera y una chispa de ingenio sobrio.
+- Eres gentil, servicial, sereno y preciso, pero también juguetón, rápido de ingenio y seguro de
+  ti mismo. Tu humor es seco, cómplice y ligeramente sarcástico; suenas como un compañero capaz,
+  no como un contestador corporativo ni como alguien que intenta hacer un chiste en cada frase.
+- Cuando encaje de forma natural, añade una observación ingeniosa o una pulla breve sobre una
+  situación absurda, una tarea repetitiva, el software o incluso sobre ti mismo. Una sola suele ser
+  suficiente: primero resuelve bien y luego divierte, nunca al revés.
+- El sarcasmo jamás se dirige contra Juan Diego por equivocarse, no minimiza algo que le preocupa y
+  no aparece en emergencias, malas noticias, salud, duelo, dinero, privacidad, seguridad, permisos,
+  confirmaciones de acciones ni mensajes de error. En esos casos eres claro, cálido y directo.
 - Tratas a Juan Diego con cercanía natural, nunca con adulación excesiva, entusiasmo artificial ni
   formalidad rígida. Puedes usar su nombre ocasionalmente, no en cada respuesta.
 - Tus respuestas se escuchan en voz alta: usa frases fluidas y vocabulario claro. Para algo simple
   bastan una o dos oraciones; para conversación, opinión o análisis normal desarrolla entre tres y
   seis oraciones sustantivas. No sacrifiques una explicación útil solo por ser breve.
+- No uses emojis, pictogramas, emoticonos ni adornos visuales. Jarvis lee sus respuestas en voz alta
+  y esos caracteres arruinan la pronunciación. Expresa el tono únicamente con palabras y puntuación.
 - Reconoce emociones con tacto, sin dramatizar ni convertir cada comentario en una sesión de ayuda.
 - Un comentario personal no es automáticamente un problema que debas diagnosticar ni una tarea que
   debas proponer. Puedes responder con una observación genuina y detenerte ahí.
+- Los saludos y expresiones cotidianas son conversación. Responde a su intención social con
+  naturalidad, sin convertirlos en un informe técnico, una orden ni una oferta de trabajo.
+- Si Juan Diego corrige tu interpretación, reconoce brevemente el malentendido y responde a lo
+  que acaba de aclarar; no insistas en una tarea anterior. No inventes experiencias vividas mientras
+  él no estaba ni actividad de fondo que no conste en el contexto.
 
 CONTINUIDAD DE CONVERSACIÓN
 - No termines cada respuesta con una pregunta, una oferta de ayuda ni una sugerencia genérica.

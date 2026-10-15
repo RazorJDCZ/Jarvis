@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from jarvis.actions.catalog import ActionCatalog
 from jarvis.actions.engine import ActionEngine
@@ -37,8 +39,7 @@ def summarize(
     return None
 
 
-async def verify() -> dict[str, object]:
-    settings = Settings()
+async def _verify(settings: Settings) -> dict[str, object]:
     catalog = ActionCatalog(settings.data_dir, settings.browser_search_url, settings)
     planner = LocalActionPlanner(settings, catalog.action_names)
     single = await planner.plan("deja el sonido aproximadamente a la mitad")
@@ -57,7 +58,7 @@ async def verify() -> dict[str, object]:
         if pending is not None and hasattr(pending.action, "steps")
         else []
     )
-    return {
+    result = {
         "single": summarize(single),
         "app": summarize(app),
         "adaptive": summarize(adaptive),
@@ -70,6 +71,13 @@ async def verify() -> dict[str, object]:
             "steps": workflow_steps,
         },
     }
+    await engine.close()
+    return result
+
+
+async def verify() -> dict[str, object]:
+    with TemporaryDirectory(prefix="jarvis-planner-smoke-") as directory:
+        return await _verify(Settings(project_root=Path(directory)))
 
 
 def main() -> None:

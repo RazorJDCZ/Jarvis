@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 from io import BytesIO
 from pathlib import Path
 
-import httpx
 import pytest
 from PIL import Image
 
@@ -339,76 +337,59 @@ async def test_find_all_checks_monitors_separately_and_maps_the_matching_display
 
 
 @pytest.mark.asyncio
-async def test_vision_refuses_non_loopback_ollama(tmp_path: Path) -> None:
-    controller = LocalVisionController(
-        Settings(project_root=tmp_path, ollama_url="https://remote.example")
-    )
+async def test_vision_requires_codex_session(tmp_path: Path) -> None:
+    controller = LocalVisionController(Settings(project_root=tmp_path))
 
     result = await controller.status()
 
     assert result.success is False
-    assert "esta computadora" in result.message
+    assert "sesión de Codex" in result.message
 
 
 @pytest.mark.asyncio
-async def test_status_requires_declared_vision_capability(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original_client = httpx.AsyncClient
+async def test_status_reports_codex_vision(tmp_path: Path) -> None:
+    class FakeCodex:
+        async def account_summary(self):
+            return {"available": True, "detail": "ok"}
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"capabilities": ["completion", "vision"]})
-
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(
-        "jarvis.actions.vision.httpx.AsyncClient",
-        lambda **kwargs: original_client(transport=transport, **kwargs),
+    controller = LocalVisionController(
+        Settings(project_root=tmp_path), codex_client=FakeCodex()
     )
-    controller = LocalVisionController(Settings(project_root=tmp_path))
 
     result = await controller.status()
 
     assert result.success is True
-    assert result.details == {"local": True, "vision": True}
+    assert result.details["local"] is False
+    assert result.details["vision"] is True
+    assert result.details["model"] == "gpt-5.6-luna"
 
 
 @pytest.mark.asyncio
-async def test_visual_model_is_reused_during_request_then_released(
+async def test_visual_request_uses_luna_and_deletes_temporary_image(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_client = httpx.AsyncClient
-    requests: list[tuple[str, dict[str, object]]] = []
+    requests: list[dict[str, object]] = []
+    image_existed_during_call = False
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        payload = json.loads(request.content)
-        requests.append((request.url.path, payload))
-        if request.url.path == "/api/chat":
-            return httpx.Response(
-                200,
-                json={
-                    "message": {
-                        "content": json.dumps(
-                            {
-                                "summary": "Minecraft está visible.",
-                                "visible_apps": ["Minecraft"],
-                                "important_text": [],
-                                "interactive_elements": [],
-                                "warnings": [],
-                            }
-                        )
-                    }
-                },
-            )
-        return httpx.Response(200, json={"done": True})
+    class FakeCodex:
+        async def generate_json(self, **kwargs):
+            nonlocal image_existed_during_call
+            requests.append(kwargs)
+            image_path = Path(kwargs["local_image_paths"][0])
+            image_existed_during_call = image_path.is_file()
+            return {
+                "summary": "Minecraft está visible.",
+                "summary_confidence": 0.95,
+                "visible_apps": [{"text": "Minecraft", "confidence": 0.95}],
+                "important_text": [],
+                "interactive_elements": [],
+                "warnings": [],
+            }
 
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(
-        "jarvis.actions.vision.httpx.AsyncClient",
-        lambda **kwargs: original_client(transport=transport, **kwargs),
+    controller = LocalVisionController(
+        Settings(project_root=tmp_path), codex_client=FakeCodex()
     )
-    controller = LocalVisionController(Settings(project_root=tmp_path))
     monkeypatch.setattr(
         controller,
         "_capture",
@@ -428,12 +409,10 @@ async def test_visual_model_is_reused_during_request_then_released(
     result = await controller.describe("1")
 
     assert result.success is True
-    assert requests[0][0] == "/api/chat"
-    assert requests[0][1]["keep_alive"] == "2m"
-    assert requests[1] == (
-        "/api/generate",
-        {"model": "qwen3.5:4b", "keep_alive": 0},
-    )
+    assert requests[0]["model"] == "gpt-5.6-luna"
+    assert requests[0]["effort"] == "high"
+    assert image_existed_during_call is True
+    assert not Path(requests[0]["local_image_paths"][0]).exists()
 
 
 class FakeVision:

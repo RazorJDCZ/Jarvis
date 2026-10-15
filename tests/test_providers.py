@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import wave
 from pathlib import Path
 
 import httpx
@@ -8,10 +10,11 @@ import numpy as np
 import pytest
 
 from jarvis.config import Settings
-from jarvis.providers.brain import AutoBrain, FallbackBrain, OllamaBrain, build_brain
+from jarvis.providers.brain import AutoBrain, CodexBrain, FallbackBrain, OllamaBrain, build_brain
 from jarvis.providers.stt import WhisperTranscriber
-from jarvis.providers.tts import PiperTTS
+from jarvis.providers.tts import PiperTTS, compress_speech_pauses
 from jarvis.schemas import ProviderStatus
+from jarvis.services.preferences import Preferences
 
 
 def mock_httpx(
@@ -30,13 +33,13 @@ def mock_httpx(
 @pytest.mark.asyncio
 async def test_ollama_status_finds_configured_model(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"models": [{"name": "qwen3.5:4b"}]})
+        return httpx.Response(200, json={"models": [{"name": "embeddinggemma"}]})
 
     mock_httpx(monkeypatch, handler)
     status = await OllamaBrain(Settings()).status()
 
     assert status.available is True
-    assert "qwen3.5:4b" in status.name
+    assert "embeddinggemma" in status.name
 
 
 @pytest.mark.asyncio
@@ -72,7 +75,9 @@ async def test_ollama_chat_sends_non_streaming_request(monkeypatch: pytest.Monke
         return httpx.Response(200, json={"message": {"content": "  Todo listo.  "}})
 
     mock_httpx(monkeypatch, handler)
-    answer = await OllamaBrain(Settings()).chat([{"role": "user", "content": "hola"}])
+    answer = await OllamaBrain(Settings(adaptive_resources=False)).chat(
+        [{"role": "user", "content": "hola"}]
+    )
 
     assert answer == "Todo listo."
     assert len(received) == 1
@@ -156,7 +161,7 @@ async def test_ollama_release_only_unloads_a_resident_model(
         payload = json.loads(request.content) if request.content else None
         requests.append((request.method, request.url.path, payload))
         if request.url.path == "/api/ps":
-            return httpx.Response(200, json={"models": [{"name": "qwen3.5:4b"}]})
+            return httpx.Response(200, json={"models": [{"name": "embeddinggemma"}]})
         return httpx.Response(200, json={"done": True})
 
     mock_httpx(monkeypatch, handler)
@@ -165,7 +170,7 @@ async def test_ollama_release_only_unloads_a_resident_model(
     assert await brain.release() is True
     assert requests == [
         ("GET", "/api/ps", None),
-        ("POST", "/api/generate", {"model": "qwen3.5:4b", "keep_alive": 0}),
+        ("POST", "/api/generate", {"model": "embeddinggemma", "keep_alive": 0}),
     ]
 
 
@@ -196,14 +201,75 @@ async def test_fallback_brain_has_useful_offline_responses() -> None:
     generic = await brain.chat([{"role": "user", "content": "Prueba"}])
 
     assert "Juan Diego" in greeting
-    assert "asistente local" in identity
+    assert "asistente personal" in identity
     assert "Prueba" in generic
 
 
 def test_brain_factory_respects_mode() -> None:
     assert isinstance(build_brain(Settings(brain_mode="fallback")), FallbackBrain)
-    assert isinstance(build_brain(Settings(brain_mode="ollama")), OllamaBrain)
+    assert isinstance(build_brain(Settings(brain_mode="codex")), CodexBrain)
     assert isinstance(build_brain(Settings(brain_mode="auto")), AutoBrain)
+    with pytest.raises(ValueError, match="auto, codex o fallback"):
+        Settings(brain_mode="ollama")
+
+
+class FakeCodexClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.started = False
+        self.closed = False
+
+    async def account_summary(self) -> dict[str, str | bool | None]:
+        return {
+            "available": True,
+            "plan_type": "plus",
+            "model": "gpt-5.6-luna",
+            "detail": "ok",
+        }
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def generate_text(self, **kwargs) -> str:
+        self.calls.append(kwargs)
+        return "Respuesta comprobada."
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_codex_brain_uses_account_models_without_exposing_tools() -> None:
+    client = FakeCodexClient()
+    brain = CodexBrain(
+        Settings(
+            brain_mode="codex",
+            codex_model="gpt-5.6-luna",
+            codex_deep_model="gpt-5.6-luna",
+            codex_effort="high",
+            codex_deep_effort="high",
+        ),
+        client,  # type: ignore[arg-type]
+    )
+    messages = [
+        {"role": "system", "content": "Responde con claridad."},
+        {"role": "user", "content": "Hola"},
+    ]
+
+    status = await brain.status()
+    normal = await brain.chat(messages)
+    deep = await brain.chat_deep(messages)
+    await brain.close()
+
+    assert status.available is True
+    assert "gpt-5.6-luna" in status.name
+    assert normal == deep == "Respuesta comprobada."
+    assert client.calls[0]["model"] == "gpt-5.6-luna"
+    assert client.calls[0]["effort"] == "high"
+    assert client.calls[1]["model"] == "gpt-5.6-luna"
+    assert client.calls[1]["effort"] == "high"
+    assert "tools" not in client.calls[0]
+    assert client.closed is True
 
 
 @pytest.mark.asyncio
@@ -246,6 +312,78 @@ async def test_kokoro_is_preferred_and_generates_pcm_wav(tmp_path: Path) -> None
     assert "Kokoro" in status.name
     assert audio.startswith(b"RIFF")
     assert fake_kokoro.invocation == ("Hola, Juandi.", "em_alex", 0.96, "es")
+
+
+@pytest.mark.asyncio
+async def test_deep_male_onyx_is_the_default_voice(tmp_path: Path) -> None:
+    settings = Settings(project_root=tmp_path, kokoro_voice="am_onyx", kokoro_speed=1.20)
+    provider = PiperTTS(settings)
+
+    class FakeKokoro:
+        voices = ("am_onyx", "em_alex", "em_santa")
+        invocation = None
+
+        def create(self, text, voice, speed, lang):
+            self.invocation = (text, voice, speed, lang)
+            return np.zeros(2_400, dtype=np.float32), 24_000
+
+    fake_kokoro = FakeKokoro()
+    provider._kokoro = fake_kokoro
+
+    audio = await provider.synthesize("Buenas noches, Juan Diego.")
+
+    assert Preferences().voice == "am_onyx"
+    assert Preferences().voice_speed == pytest.approx(1.20)
+    assert audio.startswith(b"RIFF")
+    assert fake_kokoro.invocation == (
+        "Buenas noches, Juan Diego.",
+        "am_onyx",
+        1.20,
+        "es",
+    )
+
+
+def test_tts_compresses_long_silence_without_changing_spoken_samples() -> None:
+    sample_rate = 24_000
+    spoken = np.full(sample_rate // 10, 4_000, dtype=np.int16)
+    silence = np.zeros(sample_rate // 2, dtype=np.int16)
+    samples = np.concatenate((spoken, silence, spoken))
+    source = io.BytesIO()
+    with wave.open(source, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(samples.tobytes())
+
+    compressed = compress_speech_pauses(source.getvalue())
+
+    with wave.open(io.BytesIO(compressed), "rb") as wav_file:
+        result = np.frombuffer(wav_file.readframes(wav_file.getnframes()), dtype=np.int16)
+        assert wav_file.getframerate() == sample_rate
+    assert len(result) == len(spoken) * 2 + int(sample_rate * 0.14)
+    assert np.array_equal(result[: len(spoken)], spoken)
+    assert np.array_equal(result[-len(spoken) :], spoken)
+
+
+@pytest.mark.asyncio
+async def test_tts_removes_emojis_before_synthesis(tmp_path: Path) -> None:
+    provider = PiperTTS(Settings(project_root=tmp_path))
+
+    class FakeKokoro:
+        voices = ("am_onyx",)
+        text = ""
+
+        def create(self, text, voice, speed, lang):
+            del voice, speed, lang
+            self.text = text
+            return np.zeros(2_400, dtype=np.float32), 24_000
+
+    fake_kokoro = FakeKokoro()
+    provider._kokoro = fake_kokoro
+
+    await provider.synthesize("Listo 😏. Operación completa ✅")
+
+    assert fake_kokoro.text == "Listo. Operación completa"
 
 
 @pytest.mark.asyncio

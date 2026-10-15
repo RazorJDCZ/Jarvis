@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,7 @@ from jarvis.actions.models import (
     PreparedWorkflow,
 )
 from jarvis.actions.windows import DialogInfo, InstalledApp
+from jarvis.capabilities.gaming import GameInfo
 from jarvis.config import Settings
 
 
@@ -51,6 +53,87 @@ def test_developer_workspace_name_is_case_insensitive(tmp_path: Path) -> None:
     )
 
     assert prepared.arguments["workspace"] == "jarvis"
+
+
+def test_mail_reply_locks_exact_message_version_recipient_and_body(tmp_path: Path) -> None:
+    action_catalog = catalog(tmp_path)
+    item = {
+        "id": "mail-id",
+        "version": "message-v1",
+        "email": "owner@example.com",
+        "sender": "Profesor <prof@example.com>",
+        "subject": "Informe",
+    }
+    mail = SimpleNamespace(
+        resolve=lambda selector: item,
+        reply_preview=lambda identifier, body, version: {
+            "recipient": "reply@example.com",
+            "subject": "Informe",
+            "body": body.strip(),
+        },
+    )
+    action_catalog.capabilities = SimpleNamespace(mail=mail)
+
+    prepared = action_catalog.prepare(
+        ActionPlan(
+            ActionName.MAIL_REPLY,
+            {"selector": "profesor", "body": "  Gracias, recibido.  "},
+        )
+    )
+
+    assert prepared.risk is ActionRisk.HIGH
+    assert prepared.arguments == {
+        "mail_id": "mail-id",
+        "version": "message-v1",
+        "body": "Gracias, recibido.",
+    }
+    assert "reply@example.com" in prepared.description
+    assert "Gracias, recibido." in prepared.description
+
+
+def test_calendar_update_locks_cached_etag_and_codex_requires_exact_project(
+    tmp_path: Path,
+) -> None:
+    action_catalog = catalog(tmp_path)
+    event = {
+        "id": "calendar:event",
+        "etag": '"v1"',
+        "title": "Clase",
+        "description": "Original",
+        "start_at": "2026-10-20T10:00:00-05:00",
+        "end_at": "2026-10-20T11:00:00-05:00",
+        "all_day": False,
+        "reminders": [60],
+    }
+    action_catalog.capabilities = SimpleNamespace(
+        organizer=SimpleNamespace(resolve_google_event=lambda selector: event)
+    )
+
+    calendar = action_catalog.prepare(
+        ActionPlan(ActionName.GOOGLE_CALENDAR_UPDATE, {"selector": "Clase", "title": "Lab"})
+    )
+    codex = action_catalog.prepare(
+        ActionPlan(
+            ActionName.DEV_CODEX_TASK,
+            {
+                "workspace": "verano_2026",
+                "project": "notas",
+                "instruction": "agrega pruebas",
+            },
+        )
+    )
+
+    assert calendar.risk is ActionRisk.MEDIUM
+    assert calendar.arguments["etag"] == '"v1"'
+    assert calendar.arguments["title"] == "Lab"
+    assert codex.risk is ActionRisk.HIGH and codex.arguments["project"] == "notas"
+    with pytest.raises(ActionSecurityError):
+        action_catalog.prepare(
+            ActionPlan(
+                ActionName.DEV_CODEX_TASK,
+                {"workspace": "verano_2026", "instruction": "cambia todo"},
+            )
+        )
 
 
 def test_static_application_is_low_risk(tmp_path: Path) -> None:
@@ -97,6 +180,85 @@ def test_installed_start_menu_application_requires_confirmation(
     assert action.arguments["display_name"] == "Spotify"
     assert action.risk is ActionRisk.MEDIUM
     assert "Spotify" in action.description
+
+
+def test_desktop_application_launcher_is_locked_for_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    action_catalog = catalog(tmp_path)
+    executable = tmp_path / "Appa Jarvis.exe"
+    installed = InstalledApp(
+        "Appa Jarvis",
+        "",
+        str(executable),
+        str(executable),
+    )
+    monkeypatch.setattr(
+        action_catalog.apps,
+        "find_installed_apps",
+        lambda _name: (installed,),
+    )
+
+    action = action_catalog.prepare(ActionPlan(ActionName.APP_OPEN, {"app": "appa"}))
+
+    assert action.arguments == {
+        "app": "appa",
+        "app_id": "",
+        "display_name": "Appa Jarvis",
+        "target_path": str(executable),
+        "shortcut_path": str(executable),
+    }
+    assert action.risk is ActionRisk.MEDIUM
+
+
+def test_unknown_application_name_falls_back_to_installed_game(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    action_catalog = catalog(tmp_path)
+    game = GameInfo(
+        "Sugar",
+        "Rocket League®",
+        "epic",
+        "com.epicgames.launcher://apps/Sugar?action=launch&silent=true",
+    )
+    action_catalog.capabilities = SimpleNamespace(find_games=lambda _name: (game,))
+    monkeypatch.setattr(action_catalog.apps, "find_installed_apps", lambda _name: ())
+
+    action = action_catalog.prepare(
+        ActionPlan(ActionName.APP_OPEN, {"app": "rocket league"})
+    )
+
+    assert action.name is ActionName.GAME_LAUNCH
+    assert action.arguments == {
+        "game": "Sugar",
+        "platform": "epic",
+        "display_name": "Rocket League®",
+        "launch_target": "com.epicgames.launcher://apps/Sugar?action=launch&silent=true",
+    }
+    assert action.risk is ActionRisk.MEDIUM
+    assert action.description == "Abrir el juego instalado Rocket League®"
+
+
+def test_explicit_game_launch_is_locked_to_manifest(
+    tmp_path: Path,
+) -> None:
+    action_catalog = catalog(tmp_path)
+    game = GameInfo("123", "Minecraft", "steam", "steam://rungameid/123")
+    action_catalog.capabilities = SimpleNamespace(find_games=lambda _name: (game,))
+
+    action = action_catalog.prepare(
+        ActionPlan(ActionName.GAME_LAUNCH, {"game": "minecraft"})
+    )
+
+    assert action.arguments == {
+        "game": "123",
+        "platform": "steam",
+        "display_name": "Minecraft",
+        "launch_target": "steam://rungameid/123",
+    }
+    assert action.description == "Abrir el juego instalado Minecraft"
 
 
 def test_application_noun_is_removed_before_inventory_lookup(
@@ -186,12 +348,8 @@ def test_appa_reads_are_low_risk_and_mutations_require_confirmation(tmp_path: Pa
         ActionPlan(ActionName.FOCUS_START, {"duration_minutes": 25}),
     )
 
-    assert all(
-        action_catalog.prepare(ActionPlan(name)).risk is ActionRisk.LOW for name in reads
-    )
-    assert all(
-        action_catalog.prepare(plan).risk is ActionRisk.MEDIUM for plan in mutations
-    )
+    assert all(action_catalog.prepare(ActionPlan(name)).risk is ActionRisk.LOW for name in reads)
+    assert all(action_catalog.prepare(plan).risk is ActionRisk.MEDIUM for plan in mutations)
 
 
 @pytest.mark.parametrize(
@@ -249,17 +407,16 @@ def test_invalid_volume_levels_are_rejected(tmp_path: Path, level: object) -> No
         catalog(tmp_path).prepare(ActionPlan(ActionName.VOLUME_SET, {"level": level}))
 
 
-def test_model_planned_mutation_is_escalated(tmp_path: Path) -> None:
+@pytest.mark.parametrize("source", [ActionSource.LOCAL_MODEL, ActionSource.CODEX])
+def test_model_planned_mutation_is_escalated(tmp_path: Path, source: ActionSource) -> None:
     action = catalog(tmp_path).prepare(
         ActionPlan(
             ActionName.VOLUME_SET,
             {"level": 25},
-            source=ActionSource.LOCAL_MODEL,
+            source=source,
         )
     )
-    read_only = catalog(tmp_path).prepare(
-        ActionPlan(ActionName.WINDOW_LIST, source=ActionSource.LOCAL_MODEL)
-    )
+    read_only = catalog(tmp_path).prepare(ActionPlan(ActionName.WINDOW_LIST, source=source))
 
     assert action.risk is ActionRisk.MEDIUM
     assert read_only.risk is ActionRisk.LOW

@@ -136,3 +136,40 @@ def test_run_tests_reports_timeout_without_running_a_real_process(tmp_path: Path
     assert result.timed_out is True
     assert result.returncode is None
     assert result.stdout == "partial"
+
+
+def test_create_folders_and_project_templates_stay_inside_authorized_root(tmp_path: Path) -> None:
+    root = tmp_path / "Verano_2026"
+    root.mkdir()
+    workspace = DeveloperWorkspace({"verano_2026": root})
+
+    folder = workspace.create_folder("verano_2026", "ideas/demo")
+    project = workspace.create_project(
+        "verano_2026",
+        "Mi Proyecto",
+        template="python",
+        description="Prueba creada por Jarvis.",
+    )
+
+    assert folder.path == "ideas/demo"
+    assert project.path == "Mi Proyecto" and project.template == "python"
+    assert (root / "Mi Proyecto" / "README.md").is_file()
+    pyproject = (root / "Mi Proyecto" / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'name = "mi-proyecto"' in pyproject
+    assert any(path.startswith("src/") for path in project.files)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../escape", "CON", ".env", "bad/name", "trailing."],
+)
+def test_create_project_rejects_escape_reserved_and_private_names(
+    tmp_path: Path, name: str
+) -> None:
+    root = tmp_path / "Verano_2026"
+    root.mkdir()
+    workspace = DeveloperWorkspace({"verano_2026": root})
+
+    with pytest.raises(WorkspaceSecurityError):
+        workspace.create_project("verano_2026", name)
+    assert list(root.iterdir()) == []

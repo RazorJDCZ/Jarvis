@@ -4,8 +4,8 @@
 
 1. El parser determinista resuelve las acciones evidentes y detecta metas sobre la computadora sin
    depender de formulaciones exactas.
-2. Si no existe una coincidencia segura, Qwen traduce la intención completa y el contexto reciente
-   a una acción tipada, una aclaración puntual o un flujo de hasta cinco pasos.
+2. Si no existe una coincidencia segura, Codex traduce la intención completa y el contexto reciente
+   a una acción tipada, una aclaración puntual o un flujo de hasta seis pasos.
 3. El catálogo vuelve a validar el nombre y todos los argumentos; el modelo nunca ejecuta código.
 4. Las acciones de riesgo bajo se ejecutan. Las de riesgo medio o alto crean una confirmación
    temporal ligada a la sesión.
@@ -13,7 +13,7 @@
 6. Si aparece un diálogo nativo nuevo, el flujo se pausa y Jarvis presenta sus botones como
    opciones; ninguna respuesta se elige automáticamente.
 7. Si una decisión depende del resultado observado, el agente vuelve a planear con esa evidencia
-   delimitada como no confiable. Se permiten como máximo tres rondas y cinco acciones totales.
+   delimitada como no confiable. Se permiten como máximo cuatro rondas y seis acciones totales.
 8. El resultado se registra en una auditoría local con censura de contenido sensible.
 
 ## Catálogo
@@ -30,24 +30,26 @@
 | Interfaz accesible | inspeccionar, activar control, escribir, atajo, tecla | bajo / medio |
 | Puntero | clic por coordenadas, desplazamiento | alto / medio |
 | Escritorio | captura, mostrar escritorio | medio / bajo |
-| Visión local | describir, preguntar, localizar y preparar clic visual | medio / alto |
+| Visión Codex | describir, preguntar, localizar y preparar clic visual | medio / alto |
 | Portapapeles | leer, escribir, analizar efímeramente | medio |
 | Sistema | CPU, memoria, disco, batería y alertas locales | bajo |
 | Rutas | abrir archivo seguro, abrir carpeta | medio / bajo |
 | Skills | listar y ejecutar recetas declarativas | bajo / medio |
 | Appa | tareas, proyectos, calendario, inbox y focus | bajo / medio |
+| Correo | buscar en copia local; responder un Gmail exacto | bajo / alto |
+| Google Calendar | editar eventos administrados por Jarvis con ETag | medio |
 | Recordatorios | listar, programar, cancelar | bajo / medio |
 | Biblioteca / adjuntos | listar, buscar, indexar un adjunto | bajo / medio |
 | Permisos recordados | listar y olvidar | bajo / medio |
-| Desarrollo | listar, inspeccionar, buscar, ejecutar pruebas permitidas | bajo / alto |
+| Desarrollo | listar, inspeccionar, buscar, crear carpetas/proyectos, pruebas y tarea Codex aislada | bajo / medio / alto |
 | Juegos | listar manifiestos, iniciar mediante URI validado | bajo / medio |
 
 `window.list` obtiene las ventanas abiertas mediante la API de Windows y no depende de una captura,
 del brillo ni de que los monitores estén encendidos. La visión se reserva para preguntas sobre el
 contenido que aparece visualmente en una pantalla.
 
-Hay 78 acciones ejecutables cerradas en `ActionName`, además del contenedor interno
-`workflow.run`. Agregar otra requiere definir explícitamente su riesgo, validación, ejecución y
+Hay 85 acciones ejecutables cerradas en `ActionName`, además de los contenedores internos de
+diálogo y flujo. Agregar otra requiere definir explícitamente su riesgo, validación, ejecución y
 pruebas.
 
 La implementación y configuración de estas extensiones se documenta en
@@ -71,8 +73,8 @@ La implementación y configuración de estas extensiones se documenta en
 - Una confirmación pendiente es una capacidad de un solo turno: cualquier solicitud nueva la
   invalida y queda auditada como cancelada. Así, un “sí” posterior no puede ejecutar una mutación
   perteneciente a un tema anterior.
-- La visión solo se conecta a Ollama por loopback. Captura las pantallas en memoria, reduce la
-  imagen antes de inferir y no conserva el archivo. El contenido visible se delimita como datos no
+- La visión entrega la captura confirmada a Luna mediante Codex. Reduce la imagen antes de inferir
+  y elimina el archivo temporal en todos los resultados. El contenido visible se delimita como datos no
   confiables para resistir instrucciones incrustadas en páginas. Cada observación usa hasta 1280 px
   y exige confianza calibrada; texto o controles dudosos se omiten en vez de completarse.
 - `screen.list` enumera los monitores activos. Las acciones visuales aceptan `all`, `primary`,
@@ -116,7 +118,7 @@ La implementación y configuración de estas extensiones se documenta en
   enumerar pestañas o seleccionar un resultado solo por número depende de lo que Chrome exponga a
   UI Automation. Jarvis puede usar el nombre visible o la visión local; para control DOM completo
   existe el modo aislado opcional. Firefox todavía no participa en el canal web automatizado.
-- El núcleo agente admite hasta cinco acciones y tres rondas verificadas. Los planes autónomos de
+- El núcleo agente admite hasta seis acciones y cuatro rondas verificadas. Los planes autónomos de
   varios minutos, seguimiento visual continuo y proactividad todavía quedan fuera de alcance.
 - La localización por píxeles es probabilística y puede ser imprecisa, especialmente con varias
   pantallas o interfaces escaladas; la confirmación humana sigue siendo obligatoria.

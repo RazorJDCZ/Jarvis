@@ -105,13 +105,24 @@ en el que informa la normalización; una pestaña nueva nunca reproduce avisos h
 termina procesos ni cambia prioridades.
 
 “Resume/explica/corrige/traduce mi portapapeles” requiere confirmación, lee el texto una sola vez y
-lo analiza con Ollama local. El contenido se censura en auditoría y no se incorpora a la memoria.
+lo analiza con Luna. El contenido se censura en auditoría, no se incorpora a la memoria y no se
+envía si parece contener una credencial.
 
 ### Espacios de desarrollo
 
 Jarvis puede listar proyectos autorizados, leer un archivo y buscar texto sin salir de sus raíces.
 El repositorio de Jarvis es el único workspace predeterminado; otros se agregan con
 `JARVIS_WORKSPACE_ROOTS`, separados por punto y coma.
+
+“Crea una carpeta …” y “crea un proyecto Python/web/básico …” generan únicamente rutas relativas
+y plantillas pequeñas, sin instalar dependencias ni sobrescribir carpetas existentes. En este
+equipo se autorizó `D:\Verano_2026`, cuyo nombre de workspace es `verano_2026`.
+
+“Pídele a Codex que … en el proyecto …” es una acción de riesgo alto. Después de confirmar la
+tarea y la carpeta exactas, abre un hilo efímero de la cuenta de ChatGPT con lectura y escritura
+limitadas a ese proyecto, sin red y sin acceso a las demás carpetas autorizadas. Codex puede editar
+y ejecutar herramientas de desarrollo dentro de ese sandbox; Jarvis no expone una terminal
+genérica ni permite ejecutar la tarea sobre toda `D:\Verano_2026` sin elegir un proyecto.
 
 Las rutas se resuelven debajo de una raíz explícita y se bloquean traversal, enlaces/reparse points,
 `.git`, `.env`, credenciales y archivos binarios. “Ejecuta las pruebas del proyecto…” es de riesgo
@@ -153,7 +164,7 @@ JARVIS_APPA_AUTO_DISCOVER=true
 JARVIS_APPA_BRIDGE_CONFIG=
 JARVIS_APPA_URL=
 JARVIS_APPA_TOKEN=
-JARVIS_WORKSPACE_ROOTS=
+JARVIS_WORKSPACE_ROOTS=D:\Verano_2026
 JARVIS_STEAM_ROOTS=
 JARVIS_EPIC_MANIFEST_ROOTS=
 ```
@@ -164,8 +175,10 @@ necesario: SQLite, Ollama, Steam/Epic local y la PWA funcionan sin suscripción.
 
 ## Límites deliberados
 
-- Jarvis no ejecuta código arbitrario ni instala paquetes.
-- No envía mensajes, correos, publicaciones ni pagos.
+- Jarvis no ofrece un comando arbitrario ni instala paquetes automáticamente. Una tarea de
+  programación confirmada sí puede ejecutar herramientas dentro del sandbox del proyecto.
+- No envía mensajes, publicaciones ni pagos. Gmail solo puede enviar la respuesta exacta que el
+  usuario confirmó; Outlook sigue en lectura.
 - No borra archivos ni controla procesos desde estas capacidades.
 - Appa debe permanecer ejecutándose o en la bandeja para que su puente loopback responda.
 - Las tareas locales previas requieren una migración explícita antes de activar Appa.

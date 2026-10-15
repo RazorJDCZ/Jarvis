@@ -191,6 +191,33 @@ def test_normalization_strips_typed_punctuation_after_wake_word() -> None:
     assert normalize_request("Jarvis, ¿qué ves en mi monitor?") == "que ves en mi monitor"
 
 
+def test_normalization_accepts_comma_between_greeting_and_wake_word() -> None:
+    assert normalize_request("Oye, Jarvis, abre Fortnite.") == "abre fortnite"
+
+
+@pytest.mark.parametrize(
+    ("phrase", "target"),
+    [
+        ("Oye, Jarvis, dame abriendo Fortnite, por favor.", "fortnite"),
+        ("Jarvis, dame abriendo Appa.", "appa"),
+        ("Dame abriendo Google Chrome, por favor", "google chrome"),
+    ],
+)
+def test_colloquial_dame_abriendo_routes_to_application_engine(
+    phrase: str,
+    target: str,
+) -> None:
+    parser = DeterministicActionParser()
+
+    parsed = parser.parse(phrase)
+
+    assert parsed is not None
+    assert not isinstance(parsed, BlockedIntent)
+    assert parsed.name is ActionName.APP_OPEN
+    assert parsed.arguments == {"app": target}
+    assert parser.has_agent_intent(phrase) is True
+
+
 @pytest.mark.parametrize(
     ("phrase", "names"),
     [
@@ -600,9 +627,7 @@ def test_open_application_inventory_uses_windows_without_visual_capture(phrase: 
 
 
 def test_explicit_monitor_wording_remains_visual() -> None:
-    parsed = DeterministicActionParser().parse(
-        "Dime qué tengo abierto en el display de la derecha"
-    )
+    parsed = DeterministicActionParser().parse("Dime qué tengo abierto en el display de la derecha")
 
     assert parsed is not None
     assert parsed.name is ActionName.SCREEN_DESCRIBE
@@ -620,3 +645,58 @@ def test_dame_is_a_general_agent_request_when_a_computer_domain_is_present(text:
     parser = DeterministicActionParser()
 
     assert parser.has_agent_intent(text) is True
+
+
+@pytest.mark.parametrize(
+    ("phrase", "name", "arguments"),
+    [
+        (
+            "Busca en mis correos informe final",
+            ActionName.MAIL_SEARCH,
+            {"query": "informe final"},
+        ),
+        (
+            "Responde al correo de profesor diciendo Gracias, lo revisaré",
+            ActionName.MAIL_REPLY,
+            {"selector": "profesor", "body": "gracias, lo revisare"},
+        ),
+        (
+            "Oye Jarvis, por si acaso recibiste algún correo con el asunto, Prueba Jarvis.",
+            ActionName.MAIL_SEARCH,
+            {"query": "prueba jarvis"},
+        ),
+        (
+            "Oye Jarvis, responde al correo del asunto Prueba Jarvis diciendo recibido "
+            "correctamente.",
+            ActionName.MAIL_REPLY,
+            {"selector": "prueba jarvis", "body": "recibido correctamente"},
+        ),
+        (
+            r"Crea un proyecto Python llamado notas en la carpeta D:\Verano_2026",
+            ActionName.DEV_CREATE_PROJECT,
+            {"workspace": "verano_2026", "name": "notas", "template": "python"},
+        ),
+        (
+            r"Crea una carpeta prototipos en la carpeta D:\Verano_2026",
+            ActionName.DEV_CREATE_FOLDER,
+            {"workspace": "verano_2026", "path": "prototipos"},
+        ),
+        (
+            "Pídele a Codex que agregue pruebas en el proyecto notas",
+            ActionName.DEV_CODEX_TASK,
+            {
+                "workspace": "verano_2026",
+                "project": "notas",
+                "instruction": "agregue pruebas",
+            },
+        ),
+    ],
+)
+def test_mail_and_development_requests_have_deterministic_safe_routes(
+    phrase: str, name: ActionName, arguments: dict[str, object]
+) -> None:
+    parsed = DeterministicActionParser().parse(phrase)
+
+    assert parsed is not None
+    assert parsed.name is name
+    assert parsed.arguments == arguments

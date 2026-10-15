@@ -21,7 +21,10 @@ async function refresh() {
   for (const account of status.accounts) {
     const row = node("article", "", accounts);
     node("strong", account.email, row);
-    node("p", account.error || (account.synced ? `Última revisión: ${new Date(account.synced * 1000).toLocaleString()}` : "Primera revisión pendiente"), row);
+    const state = account.error || (account.progress
+      ? `Descarga gradual en curso: ${account.progress.processed} conversaciones revisadas en esta ronda`
+      : (account.synced ? `Última revisión: ${new Date(account.synced * 1000).toLocaleString()}` : "Primera revisión pendiente"));
+    node("p", state, row);
     const button = node("button", "Desconectar y borrar copia local", row);
     button.onclick = () => action(button, async () => {
       if (!window.confirm(`¿Desconectar ${account.email} y borrar su copia local de correos? Las tareas creadas en Appa se conservarán.`)) return;

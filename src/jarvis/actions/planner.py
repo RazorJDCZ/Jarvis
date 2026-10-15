@@ -15,17 +15,19 @@ from jarvis.actions.models import (
     ActionWorkflowPlan,
     AgentGoalComplete,
     ClarificationNeeded,
+    ConversationalIntent,
 )
 from jarvis.actions.parser import DeterministicActionParser, normalize_request
 from jarvis.actions.retrieval import CapabilityRetriever
 from jarvis.config import Settings
+from jarvis.providers.codex_app_server import CodexAppServerClient, CodexAppServerError
 from jarvis.providers.ollama_runtime import OLLAMA_RUNTIME_LOCK
 from jarvis.services.performance import available_ram_gb, model_keep_alive
 from jarvis.services.preferences import PreferenceStore
 
 
 class LocalActionPlanner:
-    """Use a local model as an untrusted semantic translator into typed tools."""
+    """Use the configured model as an untrusted semantic translator into typed tools."""
 
     _OBSERVATION_ACTIONS = frozenset(
         {
@@ -242,6 +244,20 @@ class LocalActionPlanner:
             "Appa cruzando tareas, proyectos, agenda, inbox y focus; no se usa para pedir solo "
             "una de esas listas."
         ),
+        "mail.search": (
+            "query:string. Busca por remitente, asunto o contenido en la copia local de correos; "
+            "no abre Gmail ni envía nada."
+        ),
+        "mail.reply": (
+            "selector:string y body:string. Responde únicamente un correo que el usuario haya "
+            "identificado y con el texto indicado; siempre exige confirmación de riesgo alto. "
+            "Si el correo no es inequívoco, primero usa mail.search."
+        ),
+        "google_calendar.update": (
+            "selector:string; title, description, start_at, end_at, all_day y reminders son "
+            "opcionales. Edita solo eventos del calendario Google administrado por Jarvis y "
+            "requiere confirmación. Fechas con hora deben ser ISO 8601 con zona -05:00."
+        ),
         "reminder.list": (
             "sin argumentos. Lista recordatorios, avisos programados y alertas activas."
         ),
@@ -280,6 +296,19 @@ class LocalActionPlanner:
             "workspace:string. Corre o ejecuta la batería fija de tests/pruebas del workspace; "
             "riesgo alto."
         ),
+        "dev.create_folder": (
+            "workspace:string, path:string relativo. Crea una carpeta solamente dentro de una "
+            "raíz de desarrollo autorizada."
+        ),
+        "dev.create_project": (
+            "workspace:string, name:string, template:basic|python|web y description opcional. "
+            "Crea una estructura inicial sin instalar dependencias."
+        ),
+        "dev.codex_task": (
+            "workspace:string, project:string relativo e instruction:string. Encarga a Codex una "
+            "tarea de programación dentro del proyecto confirmado, sin red y con escritura "
+            "limitada a esa carpeta; riesgo alto."
+        ),
         "game.list": ("sin argumentos. Solo lista juegos detectados; no inicia ninguno."),
         "game.launch": (
             "game:string. Abre, inicia o arranca un juego instalado cuando el usuario quiere "
@@ -287,18 +316,40 @@ class LocalActionPlanner:
         ),
     }
 
-    def __init__(self, settings: Settings, action_names: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        action_names: tuple[str, ...],
+        codex_client: CodexAppServerClient | None = None,
+    ) -> None:
         self.settings = settings
         self.action_names = action_names
         self.retriever = CapabilityRetriever(action_names, self._TOOL_GUIDE)
         self.intent_gate = DeterministicActionParser()
         self._models_cache: tuple[float, frozenset[str]] = (0.0, frozenset())
+        self.codex_client = codex_client
+        self._owns_codex_client = codex_client is None
+
+    async def close(self) -> None:
+        if self._owns_codex_client and self.codex_client is not None:
+            await self.codex_client.close()
+            self.codex_client = None
+
+    @property
+    def _uses_codex(self) -> bool:
+        return self.settings.brain_mode in {"auto", "codex"}
+
+    @property
+    def _model_source(self) -> ActionSource:
+        return ActionSource.CODEX if self._uses_codex else ActionSource.LOCAL_MODEL
 
     def likely_tool_request(self, user_text: str) -> bool:
         """Cheap semantic admission gate before spending a local-model inference."""
 
-        ranked = self.retriever.ranked(user_text)
-        return bool(ranked and ranked[0][1] >= 6.25)
+        return (
+            not self.intent_gate.is_explicitly_non_action(user_text)
+            and self.retriever.admission_score(user_text) >= 3.5
+        )
 
     @staticmethod
     def _normalize_arguments(
@@ -366,6 +417,16 @@ class LocalActionPlanner:
                 "task_id": ("task", "tarea"),
                 "task_title": ("title", "titulo"),
             },
+            ActionName.MAIL_SEARCH: {"query": ("text", "search", "consulta")},
+            ActionName.MAIL_REPLY: {
+                "selector": ("mail", "correo", "subject", "asunto", "sender", "remitente"),
+                "body": ("text", "message", "respuesta", "contenido"),
+            },
+            ActionName.GOOGLE_CALENDAR_UPDATE: {
+                "selector": ("event", "evento", "title", "titulo"),
+                "start_at": ("start", "inicio", "fecha"),
+                "end_at": ("end", "fin"),
+            },
             ActionName.REMINDER_CREATE: {
                 "title": ("text", "message", "recordatorio"),
                 "due": ("when", "date", "fecha"),
@@ -379,6 +440,19 @@ class LocalActionPlanner:
             ActionName.DEV_SEARCH: {
                 "workspace": ("project", "proyecto"),
                 "query": ("text", "search", "consulta"),
+            },
+            ActionName.DEV_CREATE_FOLDER: {
+                "workspace": ("root", "raiz"),
+                "path": ("folder", "carpeta", "directory"),
+            },
+            ActionName.DEV_CREATE_PROJECT: {
+                "workspace": ("root", "raiz"),
+                "name": ("project", "proyecto", "title"),
+            },
+            ActionName.DEV_CODEX_TASK: {
+                "workspace": ("root", "raiz"),
+                "project": ("path", "proyecto", "carpeta"),
+                "instruction": ("task", "tarea", "request", "solicitud"),
             },
             ActionName.GAME_LAUNCH: {"game": ("title", "name", "juego")},
         }
@@ -546,6 +620,17 @@ class LocalActionPlanner:
                 ("task_id", string, False),
                 ("task_title", string, False),
             ),
+            "mail.search": (("query", string, True),),
+            "mail.reply": (("selector", string, True), ("body", string, True)),
+            "google_calendar.update": (
+                ("selector", string, True),
+                ("title", string, False),
+                ("description", string, False),
+                ("start_at", string, False),
+                ("end_at", string, False),
+                ("all_day", {"type": "boolean"}, False),
+                ("reminders", {"type": "array", "items": integer, "maxItems": 5}, False),
+            ),
             "reminder.create": (
                 ("title", string, True),
                 ("due", string, True),
@@ -558,6 +643,18 @@ class LocalActionPlanner:
             "dev.inspect": (("workspace", string, True), ("path", string, True)),
             "dev.search": (("workspace", string, True), ("query", string, True)),
             "dev.test": (("workspace", string, True),),
+            "dev.create_folder": (("workspace", string, True), ("path", string, True)),
+            "dev.create_project": (
+                ("workspace", string, True),
+                ("name", string, True),
+                ("template", {"type": "string", "enum": ["basic", "python", "web"]}, False),
+                ("description", string, False),
+            ),
+            "dev.codex_task": (
+                ("workspace", string, True),
+                ("project", string, True),
+                ("instruction", string, True),
+            ),
             "game.launch": (("game", string, True),),
         }
         for key, schema, needed in definitions.get(name, ()):
@@ -836,7 +933,7 @@ class LocalActionPlanner:
                 ActionPlan(
                     action_name,
                     normalized_arguments,
-                    ActionSource.LOCAL_MODEL,
+                    self._model_source,
                     0.86,
                 )
             )
@@ -856,10 +953,19 @@ class LocalActionPlanner:
                 user_text.strip()[:1_000],
                 0.86,
             )
-        return ActionWorkflowPlan(tuple(steps), ActionSource.LOCAL_MODEL, 0.86, continue_goal)
+        return ActionWorkflowPlan(tuple(steps), self._model_source, 0.86, continue_goal)
 
-    def _schema(self, action_names: tuple[str, ...] | None = None) -> dict[str, object]:
+    def _schema(
+        self,
+        action_names: tuple[str, ...] | None = None,
+        *,
+        arguments_as_json: bool = False,
+    ) -> dict[str, object]:
         allowed = action_names or self.action_names
+        argument_name = "arguments_json" if arguments_as_json else "arguments"
+        argument_schema: dict[str, object] = (
+            {"type": "string", "maxLength": 8_000} if arguments_as_json else {"type": "object"}
+        )
         return {
             "type": "object",
             "properties": {
@@ -870,7 +976,7 @@ class LocalActionPlanner:
                 "completion_message": {"type": "string", "maxLength": 700},
                 "continue_after_execution": {"type": "boolean"},
                 "action": {"type": "string", "enum": ["none", *allowed]},
-                "arguments": {"type": "object"},
+                argument_name: argument_schema,
                 "steps": {
                     "type": "array",
                     "maxItems": self.settings.agent_max_steps,
@@ -878,9 +984,10 @@ class LocalActionPlanner:
                         "type": "object",
                         "properties": {
                             "action": {"type": "string", "enum": allowed},
-                            "arguments": {"type": "object"},
+                            argument_name: argument_schema,
                         },
-                        "required": ["action", "arguments"],
+                        "required": ["action", argument_name],
+                        "additionalProperties": False,
                     },
                 },
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
@@ -893,10 +1000,11 @@ class LocalActionPlanner:
                 "completion_message",
                 "continue_after_execution",
                 "action",
-                "arguments",
+                argument_name,
                 "steps",
                 "confidence",
             ],
+            "additionalProperties": False,
         }
 
     def _system_prompt(self, action_names: tuple[str, ...] | None = None) -> str:
@@ -926,6 +1034,9 @@ class LocalActionPlanner:
             "- direct_request=false y action=none para conversación, conocimiento general, "
             "negaciones, "
             "hipótesis, afirmaciones descriptivas o preguntas sobre cómo haría algo.\n"
+            "- Una aclaración puede cambiar de tema o corregir tu interpretación. Atiende la "
+            "última intervención del usuario; no conviertas una conversación nueva en la "
+            "continuación forzada de un objetivo anterior.\n"
             "- Si existe un objetivo directo pero falta un dato esencial que no puede resolverse "
             "con el historial, usa needs_clarification=true y una sola pregunta breve. No pidas "
             "reformular "
@@ -977,9 +1088,11 @@ class LocalActionPlanner:
             f"- Usa steps para objetivos ordenados de 2 a {self.settings.agent_max_steps} "
             "operaciones. Cada paso debe ser necesario y verificable. screen.click y "
             "pointer.click deben ir solos.\n"
-            "- No existe herramienta de shell, instalación, compra, pago, envío, borrado, "
-            "seguridad, "
-            "apagado ni reinicio. Nunca simules una prohibida mediante clics o teclas.\n\n"
+            "- No existe herramienta de shell libre, instalación, compra, pago, borrado, "
+            "seguridad, apagado ni reinicio. mail.reply es la única herramienta de envío y solo "
+            "se usa para un correo y texto explícitos. dev.codex_task puede programar únicamente "
+            "dentro del proyecto confirmado. Nunca simules una operación prohibida mediante "
+            "clics o teclas.\n\n"
             "EJEMPLOS\n"
             "- ‘quiero tener el bloc de notas abierto’: action=app.open, arguments={app:notepad}, "
             "steps=[].\n"
@@ -1047,72 +1160,158 @@ class LocalActionPlanner:
             top_action not in cls._OBSERVATION_ACTIONS
         )
 
+    async def _codex_decision(
+        self,
+        user_text: str,
+        context: tuple[dict[str, str], ...],
+        selected_actions: tuple[str, ...],
+    ) -> dict[str, object]:
+        if self.codex_client is None:
+            self.codex_client = CodexAppServerClient(self.settings)
+        developer_instructions = self._system_prompt(selected_actions) + (
+            "\n\nCAPACIDAD DE RAZONAMIENTO\n"
+            "Puedes inferir detalles rutinarios usando el contexto verificado y preparar hasta "
+            f"{self.settings.agent_max_steps} pasos cuando no dependen de observaciones futuras. "
+            "No seas excesivamente conservador: si la intencion y los argumentos estan claros, "
+            "elige la accion adecuada. Las confirmaciones de riesgo las aplica Jarvis despues; "
+            "no las pidas tu. Conserva el limite estricto de detenerte tras una observacion cuando "
+            "el siguiente paso dependa de su resultado."
+            "\n\nCONTRATO DE SALIDA CODEX\n"
+            "El esquema usa arguments_json en lugar de arguments. Escribe ahi un objeto JSON "
+            "serializado como texto, sin Markdown; usa {} cuando no haya argumentos. Cada paso "
+            "tambien usa arguments_json con la misma regla."
+        )
+        user_input = (
+            "<contexto_no_confiable>\n"
+            f"{json.dumps(self._safe_context(context), ensure_ascii=False)}\n"
+            "</contexto_no_confiable>\n"
+            f"<solicitud>\n{user_text}\n</solicitud>"
+        )
+        decision = await self.codex_client.generate_json(
+            developer_instructions=developer_instructions,
+            user_input=user_input,
+            model=self.settings.codex_model,
+            effort=self.settings.codex_action_effort,
+            output_schema=self._schema(selected_actions, arguments_as_json=True),
+        )
+        return self._decode_codex_arguments(decision)
+
+    @staticmethod
+    def _decode_codex_arguments(decision: dict[str, object]) -> dict[str, object]:
+        decoded = dict(decision)
+        if not isinstance(decoded.get("arguments"), dict):
+            raw_arguments = decoded.pop("arguments_json", None)
+            try:
+                arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else None
+            except json.JSONDecodeError as exc:
+                raise CodexAppServerError("Codex devolvio argumentos JSON invalidos") from exc
+            if not isinstance(arguments, dict):
+                raise CodexAppServerError("Codex devolvio argumentos con formato invalido")
+            decoded["arguments"] = arguments
+
+        raw_steps = decoded.get("steps")
+        if not isinstance(raw_steps, list):
+            return decoded
+        steps: list[dict[str, object]] = []
+        for raw_step in raw_steps:
+            if not isinstance(raw_step, dict):
+                raise CodexAppServerError("Codex devolvio un paso con formato invalido")
+            step = dict(raw_step)
+            if not isinstance(step.get("arguments"), dict):
+                raw_arguments = step.pop("arguments_json", None)
+                try:
+                    arguments = (
+                        json.loads(raw_arguments) if isinstance(raw_arguments, str) else None
+                    )
+                except json.JSONDecodeError as exc:
+                    raise CodexAppServerError("Codex devolvio argumentos JSON invalidos") from exc
+                if not isinstance(arguments, dict):
+                    raise CodexAppServerError("Codex devolvio argumentos con formato invalido")
+                step["arguments"] = arguments
+            steps.append(step)
+        decoded["steps"] = steps
+        return decoded
+
     async def plan(
         self,
         user_text: str,
         context: tuple[dict[str, str], ...] = (),
-    ) -> ActionPlan | ActionWorkflowPlan | AgentGoalComplete | ClarificationNeeded | None:
-        if (
-            not self.settings.action_model_planning
-            or self.settings.brain_mode == "fallback"
-            or not self._local_endpoint()
-        ):
+    ) -> (
+        ActionPlan
+        | ActionWorkflowPlan
+        | AgentGoalComplete
+        | ClarificationNeeded
+        | ConversationalIntent
+        | None
+    ):
+        if not self.settings.action_model_planning or self.settings.brain_mode == "fallback":
+            return None
+        if not self._uses_codex and not self._local_endpoint():
             return None
         selected_actions = self.retriever.select(
             user_text,
             limit=self.settings.agent_tool_limit,
         )
-        model = await self._select_model(user_text, context)
-        weak_semantic_admission = not self.intent_gate.has_agent_intent(user_text)
-        native = await self._native_plan(user_text, context, selected_actions, model)
-        if (
-            native is not None
-            and not weak_semantic_admission
-            and not self._native_requires_verification(native, selected_actions)
-        ):
-            return native
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": self._system_prompt(selected_actions)},
-                {
-                    "role": "user",
-                    "content": (
-                        "<contexto_no_confiable>"
-                        f"{json.dumps(self._safe_context(context), ensure_ascii=False)}"
-                        "</contexto_no_confiable>\n"
-                        f"<solicitud>{user_text}</solicitud>"
-                    ),
-                },
-            ],
-            "stream": False,
-            "think": False,
-            "keep_alive": (
-                "0s"
-                if model == self.settings.agent_reasoning_model
-                else model_keep_alive(self.settings, self.settings.agent_keep_alive)
-            ),
-            "format": self._schema(selected_actions),
-            "options": {"temperature": 0, "num_ctx": 4_096, "num_predict": 500},
-        }
-        try:
-            async with (
-                OLLAMA_RUNTIME_LOCK,
-                httpx.AsyncClient(
-                    timeout=min(self.settings.ollama_timeout, self.settings.agent_timeout)
-                ) as client,
+        native = None
+        if self._uses_codex:
+            try:
+                decoded = await self._codex_decision(user_text, context, selected_actions)
+            except (CodexAppServerError, OSError, TimeoutError):
+                return None
+        else:
+            model = await self._select_model(user_text, context)
+            weak_semantic_admission = not self.intent_gate.has_agent_intent(user_text)
+            native = await self._native_plan(user_text, context, selected_actions, model)
+            if (
+                native is not None
+                and not weak_semantic_admission
+                and not self._native_requires_verification(native, selected_actions)
             ):
-                response = await client.post(
-                    f"{self.settings.ollama_url}/api/chat",
-                    json=payload,
-                )
-                response.raise_for_status()
-            raw_content = response.json().get("message", {}).get("content", "")
-            decoded = json.loads(raw_content)
-        except (httpx.HTTPError, AttributeError, TypeError, ValueError, json.JSONDecodeError):
-            return native
+                return native
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": self._system_prompt(selected_actions)},
+                    {
+                        "role": "user",
+                        "content": (
+                            "<contexto_no_confiable>"
+                            f"{json.dumps(self._safe_context(context), ensure_ascii=False)}"
+                            "</contexto_no_confiable>\n"
+                            f"<solicitud>{user_text}</solicitud>"
+                        ),
+                    },
+                ],
+                "stream": False,
+                "think": False,
+                "keep_alive": (
+                    "0s"
+                    if model == self.settings.agent_reasoning_model
+                    else model_keep_alive(self.settings, self.settings.agent_keep_alive)
+                ),
+                "format": self._schema(selected_actions),
+                "options": {"temperature": 0, "num_ctx": 4_096, "num_predict": 500},
+            }
+            try:
+                async with (
+                    OLLAMA_RUNTIME_LOCK,
+                    httpx.AsyncClient(
+                        timeout=min(self.settings.ollama_timeout, self.settings.agent_timeout)
+                    ) as client,
+                ):
+                    response = await client.post(
+                        f"{self.settings.ollama_url}/api/chat",
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                raw_content = response.json().get("message", {}).get("content", "")
+                decoded = json.loads(raw_content)
+            except (httpx.HTTPError, AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                return native
         if not isinstance(decoded, dict):
             return native
+        if decoded.get("direct_request") is False:
+            return ConversationalIntent()
         if decoded.get("direct_request") is not True:
             return None
         selected_set = frozenset(selected_actions)
@@ -1176,7 +1375,7 @@ class LocalActionPlanner:
                 return ActionPlan(
                     name=step_name,
                     arguments=normalized_arguments,
-                    source=ActionSource.LOCAL_MODEL,
+                    source=self._model_source,
                     confidence=confidence,
                     continue_goal=continue_goal or needs_followup,
                 )
@@ -1206,7 +1405,7 @@ class LocalActionPlanner:
                     ActionPlan(
                         name=step_name,
                         arguments=normalized_arguments,
-                        source=ActionSource.LOCAL_MODEL,
+                        source=self._model_source,
                         confidence=confidence,
                     )
                 )
@@ -1230,7 +1429,7 @@ class LocalActionPlanner:
                 )
             return ActionWorkflowPlan(
                 steps=tuple(steps),
-                source=ActionSource.LOCAL_MODEL,
+                source=self._model_source,
                 confidence=confidence,
                 continue_goal=continue_goal,
             )
@@ -1252,7 +1451,7 @@ class LocalActionPlanner:
         return ActionPlan(
             name=action_name,
             arguments=normalized_arguments,
-            source=ActionSource.LOCAL_MODEL,
+            source=self._model_source,
             confidence=confidence,
             continue_goal=continue_goal,
         )

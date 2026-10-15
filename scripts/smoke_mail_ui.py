@@ -43,6 +43,22 @@ async def main():
         mail.sync = AsyncMock()
         mail.summarize_one = AsyncMock()
         mail._generate = AsyncMock(return_value="Hola, revisaré la documentación. [completar]")
+
+        async def fake_send(identifier, body, version):
+            mail.store.update(
+                identifier,
+                state="waiting",
+                sent_version=version,
+                sent_at=time.time(),
+            )
+            return {
+                "sent": True,
+                "provider_message_id": "synthetic-sent",
+                "recipient": "docente@example.com",
+                "subject": "Re: Entrega del informe",
+            }
+
+        mail.send_reply = AsyncMock(side_effect=fake_send)
         connector = SimpleNamespace(
             _require_capabilities=AsyncMock(),
             _request=AsyncMock(return_value={}),
@@ -53,7 +69,15 @@ async def main():
             connectors=SimpleNamespace(require_appa=lambda: connector)
         )
         identifier = mail.store.connect(
-            "microsoft", "estudiante@universidad.example", {"test": True}
+            "google",
+            "estudiante@gmail.example",
+            {
+                "test": True,
+                "scope": (
+                    "https://www.googleapis.com/auth/gmail.readonly "
+                    "https://www.googleapis.com/auth/gmail.send"
+                ),
+            },
         )
         mail.store.account_result(identifier, synced=time.time())
         mail.store.ingest(
@@ -62,9 +86,11 @@ async def main():
                 "thread_id": "thread1",
                 "version": "v1",
                 "subject": "Entrega del informe",
-                "sender": "Docente",
+                "sender": "Docente <docente@example.com>",
+                "reply_to": "docente@example.com",
+                "message_id": "<synthetic@example.com>",
                 "received": "2026-09-15T12:00:00+00:00",
-                "url": "https://outlook.office.com/mail/",
+                "url": "https://mail.google.com/mail/u/0/#all/thread1",
                 "body": "Entregar informe antes del viernes.",
             },
         )
@@ -96,9 +122,12 @@ async def main():
                         if (cmd === 'mail_request') {
                           const map = {status:['GET','status'],
                             list:['GET','items?include_resolved=true'],
+                            search:['POST','search'],
                             sync:['POST','sync'], update:['PATCH',`items/${args.id}`],
                             task:['POST',`items/${args.id}/task`],
-                            draft:['POST',`items/${args.id}/draft`]};
+                            draft:['POST',`items/${args.id}/draft`],
+                            reply_authorize:['POST',`items/${args.id}/reply/authorize`],
+                            reply_send:['POST',`items/${args.id}/reply/send`]};
                           const [method,path] = map[args.operation];
                           const response = await fetch('/api/mail/'+path, {method,
                             headers:{'Content-Type':'application/json'},
@@ -120,6 +149,10 @@ async def main():
                     "window.dispatchEvent(new CustomEvent('appa-route', {detail:'mail'}))"
                 )
                 await page.get_by_role("heading", name="Entrega del informe", exact=True).wait_for()
+                await page.get_by_label("Buscar en correos").fill("informe")
+                await page.get_by_role("button", name="Buscar", exact=True).click()
+                await page.get_by_role("heading", name="Entrega del informe", exact=True).wait_for()
+                await page.get_by_role("button", name="Limpiar", exact=True).click()
                 await page.get_by_role("button", name="Crear tarea", exact=True).click()
                 await (
                     page.get_by_role("dialog")
@@ -135,6 +168,21 @@ async def main():
                 await page.get_by_role("button", name="Guardar borrador", exact=True).click()
                 await page.get_by_text("Borrador guardado localmente.", exact=True).wait_for()
                 assert mail.store.get(item["id"])["draft"] == "Texto revisado por mí."
+                await page.get_by_role(
+                    "button", name="Revisar y autorizar envío", exact=True
+                ).click()
+                dialog = page.get_by_role("dialog", name="Autorizar respuesta de correo")
+                await dialog.get_by_role(
+                    "button", name="Autorizar texto y destinatario", exact=True
+                ).click()
+                await dialog.get_by_text(
+                    "Destinatario verificado: docente@example.com", exact=False
+                ).wait_for()
+                await dialog.get_by_role("button", name="Enviar ahora", exact=True).click()
+                await page.get_by_text("Respuesta enviada por Gmail.", exact=True).wait_for()
+                mail.send_reply.assert_awaited_once_with(
+                    item["id"], "Texto revisado por mí.", item["version"]
+                )
                 await page.get_by_role("button", name="Posponer 24 h", exact=True).click()
                 await page.get_by_role("heading", name="No hay correos en esta vista").wait_for()
                 await page.get_by_label("Estado de correos", exact=True).select_option("snoozed")
@@ -179,6 +227,8 @@ async def main():
                     "mail_ui": "passed",
                     "task": "idempotent",
                     "draft_edit": "persisted",
+                    "mail_search": "passed",
+                    "authorized_reply": "passed",
                     "snooze": "passed",
                     "state_reload": "passed",
                     "oauth_setup": "passed",

@@ -13,7 +13,7 @@ def normalize_request(text: str) -> str:
     normalized = re.sub(r"\s+", " ", normalized)
     normalized = re.sub(r"^[\W_]+|[\W_]+$", "", normalized)
     normalized = re.sub(
-        r"^(?:(?:oye|hey)\s+)?jarvis(?:\b|[,:;.!?])(?:[,:;.!?\s]+)?",
+        r"^(?:(?:oye|hey)[,:;.!?]?\s+)?jarvis(?:\b|[,:;.!?])(?:[,:;.!?\s]+)?",
         "",
         normalized,
     )
@@ -659,7 +659,27 @@ class DeterministicActionParser:
         """Expose the conservative negation/meta guard to the semantic admission layer."""
 
         command = self._canonical_command(text)
-        return not command or self._is_meta_request(command)
+        return not command or self._is_meta_request(command) or self.is_conversational_turn(text)
+
+    def is_conversational_turn(self, text: str) -> bool:
+        """Release a stale clarification for clear social turns or topic corrections.
+
+        This only routes speech; the conversational model writes the response. An
+        embedded command still wins, e.g. a greeting followed by "abre Chrome".
+        """
+        if self.has_agent_intent(text):
+            return False
+        command = normalize_request(text)
+        return bool(
+            re.search(
+                r"\b(?:como (?:estas|vas|andas|te (?:va|sientes|encuentras|ha ido))|"
+                r"que (?:tal|te cuentas)|hace (?:mucho|tiempo) que no hablamos|"
+                r"(?:solo |solamente )?(?:quiero|queria) (?:hablar|conversar|charlar)|"
+                r"(?:cambiemos|cambiar) de tema|"
+                r"(?:estoy|me siento) (?:triste|feliz|cansado|cansada|nervioso|nerviosa))\b",
+                command,
+            )
+        )
 
     def has_agent_intent(self, text: str) -> bool:
         """Broad, local gate for requests that deserve semantic tool planning.
@@ -735,7 +755,7 @@ class DeterministicActionParser:
             )
         if request is None and not normalized.startswith(cls._ACTION_PREFIXES):
             request = re.search(
-                r"(?:[,;.!][\s¿¡]*|\by\s+)(?P<request>(?:"
+                r"(?:[,;.!?][\s¿¡]*|\by\s+)(?P<request>(?:"
                 r"abre|me abres|inicia|lanza|busca|investiga|visita|navega|entra|ve a|"
                 r"llevame a|sube|baja|silencia|maximiza|minimiza|restaura|cierra|"
                 r"muestra|captura|pon|reproduce|revisa|verifica|analiza|observa|mira|"
@@ -830,6 +850,7 @@ class DeterministicActionParser:
         command = re.sub(r"^dimel\s+", "dime el ", command)
         command = cls._COURTESY_PREFIX.sub("", command)
         colloquial_prefixes = (
+            (r"^dame abriendo\s+", "abre "),
             (r"^me abres\s+", "abre "),
             (r"^me dejes abiert[oa]\s+(?:la |el )?", "abre "),
             (r"^me dejes (?:la |el )?(.+?) abiert[oa]$", r"abre \1"),
@@ -941,6 +962,37 @@ class DeterministicActionParser:
                 parameters={},
             )
 
+        mail_search = re.fullmatch(
+            r"(?:busca|encuentra|consulta) (?:en )?(?:mis )?(?:correos|emails)(?: sobre)? (.+)|"
+            r"(?:busca|encuentra|consulta) (.+?) en (?:mis )?(?:correos|emails)",
+            command,
+        )
+        if mail_search:
+            return self._plan(
+                ActionName.MAIL_SEARCH,
+                query=next(group for group in mail_search.groups() if group),
+            )
+        received_mail = re.fullmatch(
+            r"(?:(?:por si acaso|revisa si|dime si|sabes si) )?"
+            r"(?:recibiste|recibi|llego|hay|tengo)(?: algun| un)? (?:correo|email) "
+            r"(?:(?:con (?:el )?|de )asunto|(?:llamado|titulado))[,;:]? (.+)",
+            command,
+        )
+        if received_mail:
+            return self._plan(ActionName.MAIL_SEARCH, query=received_mail.group(1))
+        mail_reply = re.fullmatch(
+            r"responde (?:al )?(?:correo|email) "
+            r"(?:(?:de|sobre) |(?:con (?:el )?|del |de )asunto[,;:]? )(.+?) "
+            r"(?:diciendo|con(?: el mensaje)?) (.+)",
+            command,
+        )
+        if mail_reply:
+            return self._plan(
+                ActionName.MAIL_REPLY,
+                selector=mail_reply.group(1),
+                body=mail_reply.group(2),
+            )
+
         if re.fullmatch(
             r"(?:lista|muestra|dime|cuales son|que) (?:mis |las )?"
             r"(?:tareas|pendientes)(?: (?:de|en) appa)?",
@@ -967,6 +1019,24 @@ class DeterministicActionParser:
             command,
         ):
             return self._plan(ActionName.PROJECT_LIST)
+        dev_project_create = re.fullmatch(
+            r"(?:crea|inicia) (?:un )?proyecto (python|web|basico) "
+            r"(?:llamado )?(.+?)(?: en (?:la )?(?:carpeta|raiz|workspace) "
+            r"(?:d:\\verano_2026|verano_2026))?",
+            command,
+        )
+        if dev_project_create:
+            template = {
+                "python": "python",
+                "web": "web",
+                "basico": "basic",
+            }[dev_project_create.group(1)]
+            return self._plan(
+                ActionName.DEV_CREATE_PROJECT,
+                workspace="verano_2026",
+                name=dev_project_create.group(2),
+                template=template,
+            )
         project_create = re.fullmatch(
             r"(?:crea|agrega) (?:un )?proyecto(?: en appa)?(?: llamado)? (.+)",
             command,
@@ -1148,6 +1218,29 @@ class DeterministicActionParser:
             command,
         ):
             return self._plan(ActionName.DEV_LIST)
+        dev_folder = re.fullmatch(
+            r"crea (?:una )?carpeta (.+?) (?:en|dentro de) "
+            r"(?:la )?(?:carpeta|raiz|workspace) (d:\\verano_2026|verano_2026)",
+            command,
+        )
+        if dev_folder:
+            return self._plan(
+                ActionName.DEV_CREATE_FOLDER,
+                workspace="verano_2026",
+                path=dev_folder.group(1),
+            )
+        dev_codex = re.fullmatch(
+            r"(?:pidele a codex que|usa codex para) (.+?) "
+            r"(?:en|dentro de) (?:el )?proyecto (.+)",
+            command,
+        )
+        if dev_codex:
+            return self._plan(
+                ActionName.DEV_CODEX_TASK,
+                workspace="verano_2026",
+                project=dev_codex.group(2),
+                instruction=dev_codex.group(1),
+            )
         dev_inspect = re.fullmatch(
             r"(?:lee|revisa|inspecciona) (?:el archivo )?(.+?) "
             r"(?:del|en el) (?:proyecto|workspace) (.+)",

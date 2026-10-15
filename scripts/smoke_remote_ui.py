@@ -120,6 +120,24 @@ async def verify() -> dict[str, object]:
                         f"El emparejamiento visual falló: {gate_error}; JS={page_errors}"
                     ) from exc
                 paired = not await page.locator("#emergencyStopButton").is_hidden()
+                neural_audio_unlocked = await page.evaluate(
+                    """async () => {
+                      const original = appState.neuralAudioElement;
+                      const originalUnlocked = appState.audioPlaybackUnlocked;
+                      let plays = 0;
+                      appState.neuralAudioElement = {
+                        src: "", volume: 1, currentTime: 0,
+                        play() { plays += 1; return Promise.resolve(); },
+                        pause() {},
+                      };
+                      appState.audioPlaybackUnlocked = false;
+                      await unlockNeuralAudioPlayback();
+                      const unlocked = appState.audioPlaybackUnlocked && plays === 1;
+                      appState.neuralAudioElement = original;
+                      appState.audioPlaybackUnlocked = originalUnlocked;
+                      return unlocked;
+                    }"""
+                )
                 no_horizontal_overflow = await page.evaluate(
                     "document.documentElement.scrollWidth <= window.innerWidth"
                 )
@@ -158,6 +176,7 @@ async def verify() -> dict[str, object]:
                     "pending_action_restored": restored,
                     "emergency_stop_cancelled_pending": stopped,
                     "mobile_layout_no_horizontal_overflow": no_horizontal_overflow,
+                    "mobile_neural_audio_unlocked": neural_audio_unlocked,
                     "page_errors": page_errors,
                 }
         finally:

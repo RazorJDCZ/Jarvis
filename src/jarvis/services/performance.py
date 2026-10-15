@@ -12,6 +12,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
+from jarvis.text import strip_emojis
+
 TokenSink = Callable[[str], Awaitable[None]]
 token_sink: ContextVar[TokenSink | None] = ContextVar("token_sink", default=None)
 active_timing: ContextVar[dict[str, float] | None] = ContextVar("active_timing", default=None)
@@ -83,6 +85,9 @@ async def response_events(operation, log: PerformanceLog, session: str):
     started = time.perf_counter()
 
     async def emit(text: str):
+        text = strip_emojis(text, trim=False)
+        if not text:
+            return
         timing.setdefault("first_text", round((time.perf_counter() - started) * 1000, 1))
         await queue.put({"event": "token", "text": text})
 

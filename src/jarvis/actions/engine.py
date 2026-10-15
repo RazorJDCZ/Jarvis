@@ -22,6 +22,7 @@ from jarvis.actions.models import (
     AgentGoalComplete,
     BlockedIntent,
     ClarificationNeeded,
+    ConversationalIntent,
     ExecutionResult,
     PendingAction,
     PendingDialog,
@@ -31,6 +32,7 @@ from jarvis.actions.models import (
 from jarvis.actions.parser import DeterministicActionParser, normalize_request
 from jarvis.actions.planner import LocalActionPlanner
 from jarvis.config import Settings
+from jarvis.providers.codex_app_server import CodexAppServerClient
 from jarvis.schemas import ProviderStatus
 from jarvis.services.agent_state import AgentStateStore, StoredGoal
 
@@ -138,15 +140,21 @@ class ActionEngine:
         parser: DeterministicActionParser | None = None,
         planner: LocalActionPlanner | None = None,
         audit: ActionAuditLog | None = None,
+        codex_client: CodexAppServerClient | None = None,
     ) -> None:
         self.settings = settings
         self.catalog = catalog or ActionCatalog(
             settings.data_dir,
             settings.browser_search_url,
             settings,
+            codex_client=codex_client,
         )
         self.parser = parser or DeterministicActionParser()
-        self.planner = planner or LocalActionPlanner(settings, self.catalog.action_names)
+        self.planner = planner or LocalActionPlanner(
+            settings,
+            self.catalog.action_names,
+            codex_client=codex_client,
+        )
         self.audit = audit or ActionAuditLog(settings.data_dir / "action-audit.jsonl")
         self._pending: OrderedDict[str, PendingAction] = OrderedDict()
         self._dialogs: OrderedDict[str, PendingDialog] = OrderedDict()
@@ -234,13 +242,13 @@ class ActionEngine:
         if vision_controller is None:
             return ProviderStatus(
                 available=False,
-                name="Visión local",
+                name="Visión Codex",
                 detail="La percepción visual no está configurada",
             )
         result = await vision_controller.status()
         return ProviderStatus(
             available=result.success and self.settings.safe_actions_enabled,
-            name=f"Visión local / {self.settings.ollama_model}",
+            name=f"Visión Codex / {self.settings.codex_model}",
             detail=result.message,
         )
 
@@ -502,10 +510,17 @@ class ActionEngine:
             pending = None
 
         pending_clarification = self._clarifications.get(session_id)
-        resume_requested = re.search(
-            r"\b(?:continua|continúa|sigue|retoma|prosigue)(?:\s+con)?\b",
-            decision,
-        ) is not None
+        if pending_clarification is not None and self.parser.is_explicitly_non_action(text):
+            self._clarifications.pop(session_id, None)
+            self._drop_agent_goal(session_id)
+            pending_clarification = None
+        resume_requested = (
+            re.search(
+                r"\b(?:continua|continúa|sigue|retoma|prosigue)(?:\s+con)?\b",
+                decision,
+            )
+            is not None
+        )
         resumable_goal = self._get_agent_goal(session_id) if resume_requested else None
         # Active goals normally advance within this same request or wait behind a
         # confirmation. A new independent utterance supersedes stale autonomous work.
@@ -547,11 +562,8 @@ class ActionEngine:
         semantic_gate = getattr(self.planner, "likely_tool_request", None)
         if callable(semantic_gate) and not self.parser.is_explicitly_non_action(planning_text):
             semantic_candidate = bool(semantic_gate(planning_text))
-        agent_candidate = (
-            continuation
-            or self.parser.has_agent_intent(planning_text)
-            or semantic_candidate
-        )
+        explicit_candidate = continuation or self.parser.has_agent_intent(planning_text)
+        agent_candidate = explicit_candidate or semantic_candidate
         # A short reference such as "¿qué dice ese error?" must first resolve against
         # the last verified capture. Sending it to the semantic planner without that
         # grounding can make a small model invent an invalid monitor identifier.
@@ -562,6 +574,10 @@ class ActionEngine:
                 planning_text,
                 self._planner_context(session_id, conversation_context),
             )
+        if isinstance(parsed, ConversationalIntent):
+            self._clarifications.pop(session_id, None)
+            self._drop_agent_goal(session_id)
+            return None
         if isinstance(parsed, ClarificationNeeded):
             original_request = (
                 pending_clarification.original_request
@@ -580,7 +596,7 @@ class ActionEngine:
             )
         parsed = self._apply_visual_context(session_id, text, parsed)
         if parsed is None:
-            if agent_candidate or self.parser.looks_visual(text):
+            if explicit_candidate or self.parser.looks_visual(text):
                 question = (
                     "Entendí que quieres que observe la pantalla. ¿Busco algo concreto o "
                     "describo todo lo visible?"
@@ -611,12 +627,8 @@ class ActionEngine:
                 message=f"No pude preparar la acción de forma segura: {type(exc).__name__}.",
             )
 
-        goal_request = (
-            resumable_goal.original_request if resumable_goal is not None else text
-        )
-        goal_remote = remote or (
-            resumable_goal.remote if resumable_goal is not None else False
-        )
+        goal_request = resumable_goal.original_request if resumable_goal is not None else text
+        goal_remote = remote or (resumable_goal.remote if resumable_goal is not None else False)
         self._start_agent_goal(session_id, goal_request, resolved, goal_remote)
         prepared = self._apply_remote_policy(prepared, goal_remote)
         if prepared.risk in {ActionRisk.MEDIUM, ActionRisk.HIGH} and not self._permission_allows(
@@ -689,9 +701,13 @@ class ActionEngine:
         if not 2 <= len(steps) <= self.settings.agent_max_steps:
             return current
         source = (
-            ActionSource.LOCAL_MODEL
-            if any(step.source is ActionSource.LOCAL_MODEL for step in steps)
-            else ActionSource.DETERMINISTIC
+            ActionSource.CODEX
+            if any(step.source is ActionSource.CODEX for step in steps)
+            else (
+                ActionSource.LOCAL_MODEL
+                if any(step.source is ActionSource.LOCAL_MODEL for step in steps)
+                else ActionSource.DETERMINISTIC
+            )
         )
         return ActionWorkflowPlan(
             steps=tuple(steps),
@@ -1481,4 +1497,7 @@ class ActionEngine:
         return self.audit.recent(limit)
 
     async def close(self) -> None:
+        close_planner = getattr(self.planner, "close", None)
+        if callable(close_planner):
+            await close_planner()
         await self.catalog.close()
