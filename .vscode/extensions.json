@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "openai.chatgpt",
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "rust-lang.rust-analyzer"
+  ],
+  "unwantedRecommendations": [
+    "oracle.oracle-java"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "folders": [
+    {
+      "name": "Jarvis Android",
+      "path": "mobile/android"
+    }
+  ],
+  "settings": {
+    "files.watcherExclude": {
+      "**/.gradle/**": true,
+      "**/build/**": true,
+      "**/app/build/**": true
+    },
+    "search.exclude": {
+      "**/.gradle/**": true,
+      "**/build/**": true,
+      "**/app/build/**": true
+    },
+    "java.server.launchMode": "Standard",
+    "java.import.gradle.enabled": true,
+    "java.gradle.buildServer.enabled": "on",
+    "java.autobuild.enabled": false,
+    "gradle.autoDetect": "on"
+  },
+  "extensions": {
+    "recommendations": [
+      "redhat.java",
+      "vscjava.vscode-gradle"
+    ],
+    "unwantedRecommendations": [
+      "oracle.oracle-java"
+    ]
+  }
+}
