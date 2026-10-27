@@ -89,6 +89,8 @@ class ActionEngine:
             ActionName.BROWSER_READ,
             ActionName.SCREEN_LIST,
             ActionName.SYSTEM_STATUS,
+            ActionName.FILE_SEARCH,
+            ActionName.PERSONAL_SEARCH,
             ActionName.UI_INSPECT,
             ActionName.VOLUME_GET,
             ActionName.WINDOW_CURRENT,
@@ -100,7 +102,9 @@ class ActionEngine:
             ActionName.INBOX_LIST,
             ActionName.FOCUS_STATUS,
             ActionName.APPA_BRIEFING,
+            ActionName.MAIL_SEARCH,
             ActionName.REMINDER_LIST,
+            ActionName.ACTION_HISTORY,
             ActionName.KNOWLEDGE_LIST,
             ActionName.KNOWLEDGE_SEARCH,
             ActionName.ATTACHMENT_LIST,
@@ -223,6 +227,20 @@ class ActionEngine:
             return False
         steps = action.steps if isinstance(action, PreparedWorkflow) else (action,)
         return bool(steps) and all(step.name in self._REMEMBERABLE_ACTIONS for step in steps)
+
+    def _needs_confirmation(
+        self,
+        action: PreparedAction | PreparedWorkflow,
+        remote: bool,
+        session_id: str,
+    ) -> bool:
+        if action.risk is ActionRisk.HIGH:
+            return True
+        if action.risk is not ActionRisk.MEDIUM:
+            return False
+        if not remote and self.settings.local_trusted_actions:
+            return False
+        return not self._permission_allows(action, remote, session_id)
 
     async def status(self) -> ProviderStatus:
         browser = await self.catalog.browser.status()
@@ -631,11 +649,7 @@ class ActionEngine:
         goal_remote = remote or (resumable_goal.remote if resumable_goal is not None else False)
         self._start_agent_goal(session_id, goal_request, resolved, goal_remote)
         prepared = self._apply_remote_policy(prepared, goal_remote)
-        if prepared.risk in {ActionRisk.MEDIUM, ActionRisk.HIGH} and not self._permission_allows(
-            prepared,
-            goal_remote,
-            session_id,
-        ):
+        if self._needs_confirmation(prepared, goal_remote, session_id):
             outcome = self._request_confirmation(session_id, prepared, remote=goal_remote)
         else:
             outcome = await self._execute(session_id, prepared)
@@ -1301,11 +1315,7 @@ class ActionEngine:
             ),
         )
         prepared = self._apply_remote_policy(prepared, goal.remote)
-        if prepared.risk in {ActionRisk.MEDIUM, ActionRisk.HIGH} and not self._permission_allows(
-            prepared,
-            goal.remote,
-            session_id,
-        ):
+        if self._needs_confirmation(prepared, goal.remote, session_id):
             return self._request_confirmation(session_id, prepared, remote=goal.remote)
         return await self._execute(session_id, prepared)
 

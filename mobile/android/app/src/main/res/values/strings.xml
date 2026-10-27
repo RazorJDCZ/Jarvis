@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Jarvis</string>
+    <string name="ambient_channel">Voz ambiental de Jarvis</string>
+    <string name="ambient_description">Escucha local con activación por la palabra Jarvis</string>
+</resources>

@@ -52,6 +52,10 @@ class CapabilityRetriever:
         "clipboard.": "portapapeles copiar pegar texto resumir analizar",
         "system.": "computadora pc sistema cpu ram memoria disco temperatura recursos estado",
         "path.": "archivo carpeta ruta abrir explorador documento",
+        "file.": "archivo documento carpeta disco computadora pc buscar encontrar localizar nombre",
+        "personal.": (
+            "buscar todo personal unificado correo calendario appa memoria biblioteca archivo tema"
+        ),
         "skill.": "receta skill automatizacion capacidad",
         "task.": "tarea pendiente deber recordatorio productividad appa completar crear listar",
         "project.": "proyecto appa objetivo avance plan",
@@ -65,6 +69,7 @@ class CapabilityRetriever:
         "mail.": "correo gmail email buscar remitente asunto responder enviar borrador autorizado",
         "google_calendar.": "google calendar agenda evento editar reprogramar cambiar fecha hora",
         "reminder.": "recordatorio aviso alarma recordar programar",
+        "action.": "cambio historial recibo deshacer revertir ultima accion",
         "knowledge.": "biblioteca conocimiento documento buscar fuente cita privado",
         "attachment.": "adjunto archivo cargado sesion",
         "permission.": "permiso autorizacion recordar olvidar seguridad",
@@ -92,12 +97,27 @@ class CapabilityRetriever:
         "dia": ("appa.briefing", "task.list", "calendar.list"),
         "volumen": ("volume.get", "volume.set", "volume.change", "volume.mute"),
         "sonido": ("volume.get", "volume.set", "volume.change", "volume.mute"),
-        "correo": ("mail.search", "mail.reply", "browser.open", "browser.read"),
+        "correo": (
+            "mail.search",
+            "personal.search",
+            "mail.reply",
+            "browser.open",
+            "browser.read",
+        ),
         "gmail": ("mail.search", "mail.reply", "browser.open"),
         "codex": ("dev.codex_task", "dev.list", "dev.create_project"),
-        "carpeta": ("dev.create_folder", "path.open_folder", "dev.list"),
-        "encuentra": ("screen.find", "ui.inspect", "browser.read", "browser.search"),
+        "archivo": ("file.search", "path.open", "dev.inspect", "knowledge.search"),
+        "carpeta": ("file.search", "dev.create_folder", "path.open_folder", "dev.list"),
+        "encuentra": (
+            "personal.search",
+            "file.search",
+            "screen.find",
+            "ui.inspect",
+            "browser.read",
+            "browser.search",
+        ),
         "recu*": ("reminder.create", "reminder.list", "calendar.create", "task.create"),
+        "deshaz": ("action.undo", "action.history"),
     }
 
     def __init__(self, action_names: tuple[str, ...], descriptions: dict[str, str]) -> None:

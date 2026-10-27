@@ -57,6 +57,11 @@ En el teléfono abre la URL `https://<equipo>.<tailnet>.ts.net`, escribe un nomb
 el código. Confirma la passkey con el mecanismo que ofrezca el teléfono. En visitas posteriores,
 el botón **DESBLOQUEAR CON BIOMETRÍA** renueva la sesión sin usar otro código.
 
+La aplicación Android puede reutilizar una passkey creada anteriormente en Chrome. Cuando Jarvis
+detecta una credencial asociada a la misma identidad de Tailscale, muestra directamente
+**DESBLOQUEAR CON BIOMETRÍA** y Android permite seleccionar la passkey existente sin registrarla
+otra vez.
+
 ## Política de acciones remotas
 
 - Consultar el volumen, estado del sistema, monitores, ventanas, pestañas o texto visible mantiene

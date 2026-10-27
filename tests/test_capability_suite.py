@@ -251,6 +251,8 @@ def test_parser_calendar_date_is_accepted_by_the_due_parser() -> None:
         ),
         ("lista mis juegos", ActionName.GAME_LIST, {}),
         ("abre el juego Minecraft", ActionName.GAME_LAUNCH, {"game": "minecraft"}),
+        ("muestra los cambios reversibles", ActionName.ACTION_HISTORY, {}),
+        ("deshaz el ultimo cambio", ActionName.ACTION_UNDO, {}),
     ],
 )
 def test_new_natural_commands_are_typed_and_deterministic(
@@ -368,6 +370,64 @@ async def test_suite_executes_tasks_reminders_knowledge_and_skills_with_fakes(
     assert isolated_search.success is False
     assert skill.success and len(catalog.workflows[0].steps) == 2
     assert vision.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_suite_receipts_only_undo_verified_task_and_reminder_changes(
+    tmp_path: Path,
+) -> None:
+    suite = CapabilitySuite(settings(tmp_path), vision=NeverVision())
+    catalog = FakeCatalog()
+    clipboard = NeverClipboard()
+    task = await suite.execute(
+        "owner",
+        ActionName.TASK_CREATE,
+        {"title": "Revisar recibos"},
+        clipboard=clipboard,
+        catalog=catalog,
+    )
+    completed = await suite.execute(
+        "owner",
+        ActionName.TASK_COMPLETE,
+        {"task": task.details["task"]["id"]},
+        clipboard=clipboard,
+        catalog=catalog,
+    )
+    undone_task = await suite.execute(
+        "owner",
+        ActionName.ACTION_UNDO,
+        {},
+        clipboard=clipboard,
+        catalog=catalog,
+    )
+    active = await suite.connectors.local.list_tasks("owner")
+
+    reminder = await suite.execute(
+        "owner",
+        ActionName.REMINDER_CREATE,
+        {"title": "Probar deshacer", "due": "en 20 minutos", "recurrence": "none"},
+        clipboard=clipboard,
+        catalog=catalog,
+    )
+    history = await suite.execute(
+        "owner",
+        ActionName.ACTION_HISTORY,
+        {},
+        clipboard=clipboard,
+        catalog=catalog,
+    )
+    undone_reminder = await suite.execute(
+        "owner",
+        ActionName.ACTION_UNDO,
+        {"receipt": reminder.details["receipt"]["receipt_id"]},
+        clipboard=clipboard,
+        catalog=catalog,
+    )
+
+    assert completed.success and completed.details["receipt"]["undo_kind"] == "task.set_completed"
+    assert undone_task.success and active[0].completed is False
+    assert history.success and history.details["receipts"]
+    assert undone_reminder.success and suite.reminders.list("owner") == ()
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ import json
 import time
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -127,6 +128,39 @@ async def test_stream_disconnect_cancels_inference():
     await anext(events)
     await events.aclose()
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stream_timeout_cancels_inference_and_allows_a_retry():
+    cancelled = asyncio.Event()
+
+    async def operation():
+        try:
+            await asyncio.sleep(30)
+        finally:
+            cancelled.set()
+
+    events = response_events(operation, PerformanceLog(), "voice", timeout=0.01)
+    assert json.loads(await anext(events))["event"] == "accepted"
+    error = json.loads(await anext(events))
+    await events.aclose()
+
+    assert error["event"] == "error"
+    assert "puedes hablar de nuevo" in error["detail"]
+    assert cancelled.is_set()
+
+
+def test_voice_client_has_stream_and_playback_watchdogs():
+    root = Path(__file__).resolve().parents[1]
+    assistant = (root / "src" / "jarvis" / "web" / "assistant.js").read_text(
+        encoding="utf-8"
+    )
+    app = (root / "src" / "jarvis" / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "VOICE_STREAM_TIMEOUT_MS" in assistant
+    assert "controller.abort()" in assistant
+    assert "speechWatchdog" in app
+    assert "TTS_REQUEST_TIMEOUT_MS" in app
 
 
 def test_memory_edit_rejects_stale_version_and_deletes_exact_key(tmp_path):

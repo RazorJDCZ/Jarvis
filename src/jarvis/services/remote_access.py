@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import sqlite3
 import threading
@@ -20,7 +21,7 @@ from webauthn import (
     verify_authentication_response,
     verify_registration_response,
 )
-from webauthn.helpers import options_to_json
+from webauthn.helpers import base64url_to_bytes, options_to_json
 from webauthn.helpers.exceptions import (
     InvalidAuthenticationResponse,
     InvalidRegistrationResponse,
@@ -34,6 +35,8 @@ from webauthn.helpers.structs import (
 )
 
 from jarvis.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class RemoteAccessError(ValueError):
@@ -88,7 +91,7 @@ class RegistrationCeremony:
 @dataclass(frozen=True, slots=True)
 class AuthenticationCeremony:
     challenge: bytes
-    device_id: str
+    device_ids: tuple[str, ...]
     identity: RemoteIdentity
     expires_at: float
 
@@ -139,6 +142,7 @@ class RemoteAccessService:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
     def _initialize(self) -> None:
@@ -177,6 +181,19 @@ class RemoteAccessService:
                     summary TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS remote_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    device_id TEXT NOT NULL,
+                    login TEXT NOT NULL,
+                    expires_at REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    FOREIGN KEY(device_id) REFERENCES remote_devices(device_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_remote_sessions_expiry
+                    ON remote_sessions(expires_at);
+                CREATE INDEX IF NOT EXISTS idx_remote_sessions_device
+                    ON remote_sessions(device_id);
                 """
             )
 
@@ -245,6 +262,12 @@ class RemoteAccessService:
         ]
         for token_hash in expired_sessions:
             self._sessions.pop(token_hash, None)
+        if self.enabled:
+            with self._lock, closing(self._connect()) as connection, connection:
+                connection.execute(
+                    "DELETE FROM remote_sessions WHERE expires_at <= ?",
+                    (current,),
+                )
         for login, attempts in tuple(self._failed_codes.items()):
             recent = [attempt for attempt in attempts if current - attempt <= 300]
             if recent:
@@ -352,7 +375,7 @@ class RemoteAccessService:
                 credential=credential,
                 expected_challenge=ceremony.challenge,
                 expected_rp_id=self.settings.remote_rp_id,
-                expected_origin=self.settings.remote_origin,
+                expected_origin=self.settings.remote_webauthn_origins,
                 require_user_verification=True,
             )
         except (InvalidRegistrationResponse, ValueError, TypeError) as exc:
@@ -398,15 +421,24 @@ class RemoteAccessService:
 
     def begin_authentication(
         self,
-        device_id: str,
+        device_id: str | None,
         identity: RemoteIdentity,
     ) -> dict[str, Any]:
         self._require_enabled()
         self._require_identity_allowed(identity)
         self._prune()
-        device = self.get_device(device_id)
-        if device is None or device.login != identity.login:
-            raise RemoteAccessError("El dispositivo no está emparejado con esta identidad.")
+        if device_id is not None:
+            device = self.get_device(device_id)
+            candidates = [device] if device is not None else []
+        else:
+            candidates = [
+                device
+                for device in self.list_devices(include_private=True)
+                if device.login == identity.login
+            ]
+        candidates = [device for device in candidates if device.login == identity.login]
+        if not candidates:
+            raise RemoteAccessError("No hay una passkey emparejada con esta identidad.")
         challenge = secrets.token_bytes(32)
         ceremony_id = uuid4().hex
         options = generate_authentication_options(
@@ -418,12 +450,13 @@ class RemoteAccessService:
                     id=device.credential_id,
                     transports=self._transport_enums(device.transports),
                 )
+                for device in candidates
             ],
             user_verification=UserVerificationRequirement.REQUIRED,
         )
         self._authentications[ceremony_id] = AuthenticationCeremony(
             challenge=challenge,
-            device_id=device_id,
+            device_ids=tuple(device.device_id for device in candidates),
             identity=identity,
             expires_at=time.time() + self._CEREMONY_SECONDS,
         )
@@ -441,20 +474,57 @@ class RemoteAccessService:
         ceremony = self._authentications.pop(ceremony_id, None)
         if ceremony is None or ceremony.identity.login != identity.login:
             raise RemoteAccessError("La autenticación expiró o pertenece a otro dispositivo.")
-        device = self.get_device(ceremony.device_id)
-        if device is None or device.login != identity.login:
+        raw_id = credential.get("rawId") or credential.get("id")
+        try:
+            credential_id = base64url_to_bytes(raw_id) if isinstance(raw_id, str) else b""
+        except (TypeError, ValueError):
+            credential_id = b""
+        devices = [
+            device
+            for candidate_id in ceremony.device_ids
+            if (device := self.get_device(candidate_id)) is not None
+            and device.login == identity.login
+        ]
+        device = next(
+            (
+                candidate
+                for candidate in devices
+                if hmac.compare_digest(candidate.credential_id, credential_id)
+            ),
+            None,
+        )
+        if device is None:
             raise RemoteAccessError("El dispositivo ya no está autorizado.")
         try:
             verification = verify_authentication_response(
                 credential=credential,
                 expected_challenge=ceremony.challenge,
                 expected_rp_id=self.settings.remote_rp_id,
-                expected_origin=self.settings.remote_origin,
+                expected_origin=self.settings.remote_webauthn_origins,
                 credential_public_key=device.public_key,
                 credential_current_sign_count=device.sign_count,
                 require_user_verification=True,
             )
         except (InvalidAuthenticationResponse, ValueError, TypeError) as exc:
+            response = credential.get("response")
+            encoded_client_data = (
+                response.get("clientDataJSON") if isinstance(response, dict) else None
+            )
+            client_origin = "unavailable"
+            if isinstance(encoded_client_data, str):
+                try:
+                    client_data = json.loads(base64url_to_bytes(encoded_client_data))
+                    raw_origin = client_data.get("origin")
+                    if isinstance(raw_origin, str) and len(raw_origin) <= 500:
+                        client_origin = raw_origin
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    pass
+            logger.warning(
+                "Remote passkey rejected (%s): %s; client origin=%s",
+                type(exc).__name__,
+                str(exc).replace("\r", " ").replace("\n", " ")[:500],
+                client_origin,
+            )
             self.record_event(device.device_id, "authentication", "rejected", "Passkey rechazada")
             raise RemoteAccessError("La passkey no pudo verificarse.") from exc
         now = time.time()
@@ -502,15 +572,65 @@ class RemoteAccessService:
     def _new_session(self, device_id: str, login: str) -> str:
         token = secrets.token_urlsafe(48)
         token_hash = self._token_hash(token)
-        self._sessions[token_hash] = RemoteSession(
+        now = time.time()
+        session = RemoteSession(
             device_id=device_id,
             login=login,
-            expires_at=time.time() + self.settings.remote_session_hours * 3_600,
+            expires_at=now + self.settings.remote_session_hours * 3_600,
         )
+        with self._lock, closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO remote_sessions(token_hash, device_id, login, expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (token_hash, device_id, login, session.expires_at, now),
+            )
+            stale = connection.execute(
+                """
+                SELECT token_hash FROM remote_sessions
+                ORDER BY created_at DESC
+                LIMIT -1 OFFSET ?
+                """,
+                (self._MAX_SESSIONS,),
+            ).fetchall()
+            if stale:
+                connection.executemany(
+                    "DELETE FROM remote_sessions WHERE token_hash = ?",
+                    ((str(row["token_hash"]),) for row in stale),
+                )
+        self._sessions[token_hash] = session
         self._sessions.move_to_end(token_hash)
         while len(self._sessions) > self._MAX_SESSIONS:
             self._sessions.popitem(last=False)
         return token
+
+    def _stored_session(self, token_hash: str) -> RemoteSession | None:
+        session = self._sessions.get(token_hash)
+        if session is not None:
+            self._sessions.move_to_end(token_hash)
+            return session
+        with self._lock, closing(self._connect()) as connection, connection:
+            row = connection.execute(
+                """
+                SELECT device_id, login, expires_at
+                FROM remote_sessions
+                WHERE token_hash = ? AND expires_at > ?
+                """,
+                (token_hash, time.time()),
+            ).fetchone()
+        if row is None:
+            return None
+        session = RemoteSession(
+            device_id=str(row["device_id"]),
+            login=str(row["login"]),
+            expires_at=float(row["expires_at"]),
+        )
+        self._sessions[token_hash] = session
+        self._sessions.move_to_end(token_hash)
+        while len(self._sessions) > self._MAX_SESSIONS:
+            self._sessions.popitem(last=False)
+        return session
 
     def authenticate(
         self,
@@ -520,7 +640,7 @@ class RemoteAccessService:
         if not token or not self.enabled:
             return None
         self._prune()
-        session = self._sessions.get(self._token_hash(token))
+        session = self._stored_session(self._token_hash(token))
         if session is None or not hmac.compare_digest(session.login, identity.login):
             return None
         device = self.get_device(session.device_id)
@@ -530,7 +650,14 @@ class RemoteAccessService:
 
     def logout(self, token: str | None) -> None:
         if token:
-            self._sessions.pop(self._token_hash(token), None)
+            token_hash = self._token_hash(token)
+            self._sessions.pop(token_hash, None)
+            if self.enabled:
+                with self._lock, closing(self._connect()) as connection, connection:
+                    connection.execute(
+                        "DELETE FROM remote_sessions WHERE token_hash = ?",
+                        (token_hash,),
+                    )
 
     def get_device(self, device_id: str) -> RemoteDevice | None:
         if not self.enabled:
@@ -595,6 +722,11 @@ class RemoteAccessService:
         for token_hash, session in tuple(self._sessions.items()):
             if session.device_id == device_id:
                 self._sessions.pop(token_hash, None)
+        with self._lock, closing(self._connect()) as connection, connection:
+            connection.execute(
+                "DELETE FROM remote_sessions WHERE device_id = ?",
+                (device_id,),
+            )
         if changed:
             self.record_event(device_id, "device", "revoked", "Dispositivo revocado")
         return changed

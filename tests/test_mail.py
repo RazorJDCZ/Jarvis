@@ -132,6 +132,98 @@ def test_mail_search_and_resolution_accept_gmail_style_subject_qualifiers(servic
     assert service.resolve("asunto: prueba Jarvis")["subject"] == "Prueba Jarvis"
 
 
+def test_mail_search_matches_topics_without_requiring_every_literal_word(service):
+    identifier = account(service)
+    service.store.ingest(
+        identifier,
+        message(
+            thread_id="academic",
+            version="academic-1",
+            subject="Evaluación del curso",
+            sender="Docente <docente@example.com>",
+            body="La entrega del proyecto universitario vence el viernes.",
+        ),
+    )
+    service.store.ingest(
+        identifier,
+        message(
+            thread_id="shopping",
+            version="shopping-1",
+            subject="Tu pedido fue enviado",
+            sender="Tienda <shop@example.com>",
+            body="El paquete llegará mañana.",
+        ),
+    )
+
+    result = service.search("qué correos me han llegado sobre universidad", 10)
+
+    assert [item["thread_id"] for item in result["items"]] == ["academic"]
+    assert result["order"] == "relevance"
+    assert result["items"][0]["topic_matches"]
+
+
+def test_mail_search_ranks_subject_and_priority_and_can_sort_by_newest(service):
+    identifier = account(service)
+    service.store.ingest(
+        identifier,
+        message(
+            thread_id="older-exact",
+            version="older-exact-1",
+            subject="Proyecto Atlas",
+            received="2026-09-10T12:00:00+00:00",
+            body="Detalles del proyecto.",
+        ),
+    )
+    service.store.ingest(
+        identifier,
+        message(
+            thread_id="newer-body",
+            version="newer-body-1",
+            subject="Actualización semanal",
+            received="2026-09-20T12:00:00+00:00",
+            body="Incluye novedades del proyecto Atlas.",
+        ),
+    )
+    exact = next(
+        item for item in service.store.list(True) if item["thread_id"] == "older-exact"
+    )
+    service.store.update(exact["id"], priority="high")
+
+    relevant = service.search("proyecto atlas", 10)
+    newest = service.search("proyecto atlas más recientes", 10)
+
+    assert relevant["items"][0]["thread_id"] == "older-exact"
+    assert newest["items"][0]["thread_id"] == "newer-body"
+    assert newest["order"] == "newest"
+
+
+def test_mail_insights_builds_private_ranked_attention_queue(service):
+    identifier = account(service)
+    service.store.ingest(
+        identifier,
+        message(
+            subject="Entrega final de la universidad",
+            body="El profesor solicita responder antes de la fecha limite.",
+        ),
+    )
+    item = service.store.list()[0]
+    service.store.update(
+        item["id"],
+        state="reply",
+        priority="high",
+        reason="Requiere confirmacion",
+        deadline="2026-10-26T12:00:00+00:00",
+    )
+
+    insights = service.insights()
+
+    assert insights["local_analysis"] is True
+    assert insights["items"][0]["subject"] == "Entrega final de la universidad"
+    assert "body" not in insights["items"][0]
+    assert "universidad" in insights["items"][0]["topics"]
+    assert insights["items"][0]["attention_score"] > 20
+
+
 @pytest.mark.asyncio
 async def test_gmail_reply_requires_exact_short_lived_authorization_and_sends_once(service):
     identifier = account(service, can_reply=True)
@@ -278,6 +370,10 @@ async def test_gmail_paginates_and_uses_latest_message():
             ).messages(0)
         ]
     assert len(rows) == 2 and all(m["version"] == "new" and m["body"] == "Hola" for m in rows)
+    assert all(
+        [item["version"] for item in row["_thread_messages"]] == ["old", "new"]
+        for row in rows
+    )
     assert len(calls) == 4 and calls[2].url.params["pageToken"] == "next"
 
 

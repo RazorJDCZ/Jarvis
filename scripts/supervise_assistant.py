@@ -15,6 +15,9 @@ import httpx
 from jarvis.capabilities.connectors import ConnectorError, load_appa_bridge_descriptor
 from jarvis.config import Settings
 
+SUPERVISOR_SHUTDOWN = "supervisor.shutdown"
+SERVER_SHUTDOWN = "server.shutdown"
+
 
 def stop_owned(child):
     if child is None or child.poll() is not None:
@@ -35,6 +38,36 @@ def stop_owned(child):
         child.wait(timeout=15)
     except subprocess.TimeoutExpired:
         child.kill()
+
+
+def wait_for_request(path: Path, seconds: float) -> bool:
+    """Sleep responsively so a desktop shutdown request is handled promptly."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+    return path.exists()
+
+
+def close_for_desktop_request(
+    child, request: Path, server_request: Path, status: Path, port: int
+) -> None:
+    """Ask Jarvis to drain cleanly, then stop only the child owned by this supervisor."""
+    server_request.write_text(str(time.time()), encoding="utf-8")
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline:
+        with socket.socket() as probe:
+            if probe.connect_ex(("127.0.0.1", port)) != 0:
+                break
+        time.sleep(0.25)
+    stop_owned(child)
+    server_request.unlink(missing_ok=True)
+    request.unlink(missing_ok=True)
+    status.write_text(
+        json.dumps({"state": "stopped", "updated": time.time(), "pid": None}),
+        encoding="utf-8",
+    )
 
 
 def appa_executable(config: Settings) -> Path | None:
@@ -95,14 +128,26 @@ def main():
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     status = config.data_dir / "supervisor.json"
     paused = config.data_dir / "supervisor.pause"
+    shutdown_request = config.data_dir / SUPERVISOR_SHUTDOWN
+    server_shutdown = config.data_dir / SERVER_SHUTDOWN
+    # Requests are one-shot. A stale file from an interrupted Windows session must not
+    # prevent the normal Startup shortcut from bringing Jarvis back on the next login.
+    shutdown_request.unlink(missing_ok=True)
+    server_shutdown.unlink(missing_ok=True)
     with httpx.Client(timeout=5, trust_env=False) as client:
         while True:
+            if shutdown_request.exists():
+                close_for_desktop_request(
+                    child, shutdown_request, server_shutdown, status, config.port
+                )
+                return
             if paused.exists():
                 if child and child.poll() is None:
                     stop_owned(child)
                 child = None
                 status.write_text(json.dumps({"state": "paused", "updated": time.time()}))
-                time.sleep(10)
+                if wait_for_request(shutdown_request, 10):
+                    continue
                 continue
             try:
                 response = client.get(f"http://127.0.0.1:{config.port}/api/health")
@@ -191,7 +236,7 @@ def main():
                     }
                 )
             )
-            time.sleep(20)
+            wait_for_request(shutdown_request, 20)
 
 
 if __name__ == "__main__":

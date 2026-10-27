@@ -7,8 +7,9 @@
 2. Si no existe una coincidencia segura, Codex traduce la intención completa y el contexto reciente
    a una acción tipada, una aclaración puntual o un flujo de hasta seis pasos.
 3. El catálogo vuelve a validar el nombre y todos los argumentos; el modelo nunca ejecuta código.
-4. Las acciones de riesgo bajo se ejecutan. Las de riesgo medio o alto crean una confirmación
-   temporal ligada a la sesión.
+4. Las acciones de riesgo bajo se ejecutan. En la PC, el modo local confiable también ejecuta las
+   de riesgo medio; en el celular esas acciones crean una confirmación temporal ligada al
+   dispositivo. El riesgo alto siempre se confirma.
 5. El controlador ejecuta y verifica cuando Windows o el navegador ofrecen una señal comprobable.
 6. Si aparece un diálogo nativo nuevo, el flujo se pausa y Jarvis presenta sus botones como
    opciones; ninguna respuesta se elige automáticamente.
@@ -33,12 +34,14 @@
 | Visión Codex | describir, preguntar, localizar y preparar clic visual | medio / alto |
 | Portapapeles | leer, escribir, analizar efímeramente | medio |
 | Sistema | CPU, memoria, disco, batería y alertas locales | bajo |
-| Rutas | abrir archivo seguro, abrir carpeta | medio / bajo |
+| Archivos / rutas | buscar nombres en solo lectura, abrir archivo seguro o carpeta | bajo / medio |
 | Skills | listar y ejecutar recetas declarativas | bajo / medio |
 | Appa | tareas, proyectos, calendario, inbox y focus | bajo / medio |
 | Correo | buscar en copia local; responder un Gmail exacto | bajo / alto |
 | Google Calendar | editar eventos administrados por Jarvis con ETag | medio |
 | Recordatorios | listar, programar, cancelar | bajo / medio |
+| Historial reversible | listar recibos; deshacer tarea/recordatorio verificado | bajo / medio |
+| Búsqueda personal | correo, agenda, Appa, memoria, biblioteca y archivos en solo lectura | bajo |
 | Biblioteca / adjuntos | listar, buscar, indexar un adjunto | bajo / medio |
 | Permisos recordados | listar y olvidar | bajo / medio |
 | Desarrollo | listar, inspeccionar, buscar, crear carpetas/proyectos, pruebas y tarea Codex aislada | bajo / medio / alto |
@@ -48,7 +51,7 @@
 del brillo ni de que los monitores estén encendidos. La visión se reserva para preguntas sobre el
 contenido que aparece visualmente en una pantalla.
 
-Hay 85 acciones ejecutables cerradas en `ActionName`, además de los contenedores internos de
+Hay 89 acciones ejecutables cerradas en `ActionName`, además de los contenedores internos de
 diálogo y flujo. Agregar otra requiere definir explícitamente su riesgo, validación, ejecución y
 pruebas.
 
@@ -65,7 +68,7 @@ La implementación y configuración de estas extensiones se documenta en
   accesibilidad de Windows. `JARVIS_BROWSER_PERSONAL_PROFILE=false` habilita el modo aislado anterior
   con CDP y un perfil dentro de `.data` cuando se necesita control DOM más preciso.
 - `browser.fill` no presiona Enter ni envía formularios. Los clics web se resuelven por rol o nombre
-  accesible y exigen confirmación.
+  accesible; desde el teléfono exigen confirmación y en la PC aplican el modo local confiable.
 - Los nombres asociados a compras, pagos, transferencias o eliminación se bloquean incluso después
   de una petición de clic.
 - Un clic por coordenadas puede verse afectado por cambios de foco o movimiento de ventanas; por eso

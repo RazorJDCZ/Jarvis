@@ -468,6 +468,168 @@ class PermissionStore(_SQLiteStore):
 
 
 @dataclass(frozen=True, slots=True)
+class ActionReceipt:
+    receipt_id: str
+    session_id: str
+    action: str
+    description: str
+    undo_kind: str
+    undo_payload: dict[str, Any]
+    created_at: str
+    expires_at: str
+    undone_at: str | None
+
+
+class ReceiptStore(_SQLiteStore):
+    """Receipts for a deliberately small set of verifiable, reversible actions."""
+
+    _UNDO_KINDS = frozenset({"reminder.cancel", "task.set_completed"})
+
+    def __init__(self, path: Path, *, clock: Callable[[], datetime] | None = None) -> None:
+        super().__init__(path)
+        self._clock = clock or _utc_now
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS capability_receipts (
+                    receipt_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    undo_kind TEXT NOT NULL,
+                    undo_payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    undone_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_capability_receipts_session
+                    ON capability_receipts(session_id, created_at DESC);
+                """
+            )
+
+    def record(
+        self,
+        session_id: str,
+        action: str,
+        description: str,
+        undo_kind: str,
+        undo_payload: Mapping[str, Any],
+        *,
+        ttl_days: int = 7,
+    ) -> ActionReceipt:
+        session = _bounded(session_id, field="session_id", maximum=128)
+        safe_action = _bounded(action, field="action", maximum=120).casefold()
+        safe_description = _redact_text(description, 300)
+        safe_undo = _bounded(undo_kind, field="undo_kind", maximum=80).casefold()
+        if safe_undo not in self._UNDO_KINDS or not 1 <= int(ttl_days) <= 30:
+            raise ValueError("Reversión no permitida")
+        payload = _safe_metadata(dict(undo_payload))
+        if not isinstance(payload, dict):
+            raise ValueError("Datos de reversión inválidos")
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > 2_048:
+            raise ValueError("Datos de reversión demasiado grandes")
+        now = _as_utc(self._clock())
+        receipt_id = uuid4().hex
+        expires = now + timedelta(days=int(ttl_days))
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO capability_receipts(
+                    receipt_id,session_id,action,description,undo_kind,undo_payload_json,
+                    created_at,expires_at
+                ) VALUES (?,?,?,?,?,?,?,?)
+                """,
+                (
+                    receipt_id,
+                    session,
+                    safe_action,
+                    safe_description,
+                    safe_undo,
+                    encoded,
+                    _iso(now),
+                    _iso(expires),
+                ),
+            )
+            connection.execute(
+                "DELETE FROM capability_receipts WHERE expires_at<? OR rowid IN ("
+                "SELECT rowid FROM capability_receipts ORDER BY created_at DESC "
+                "LIMIT -1 OFFSET 1000)",
+                (_iso(now),),
+            )
+        receipt = self.get(receipt_id, session)
+        if receipt is None:  # pragma: no cover - SQLite invariant
+            raise RuntimeError("No se pudo recuperar el recibo")
+        return receipt
+
+    def get(self, receipt_id: str, session_id: str) -> ActionReceipt | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM capability_receipts WHERE receipt_id=? AND session_id=?",
+                (
+                    _bounded(receipt_id, field="receipt_id", maximum=64),
+                    _bounded(session_id, field="session_id", maximum=128),
+                ),
+            ).fetchone()
+        return self._receipt(row) if row is not None else None
+
+    def list(self, session_id: str, *, limit: int = 30) -> tuple[ActionReceipt, ...]:
+        session = _bounded(session_id, field="session_id", maximum=128)
+        safe_limit = max(1, min(int(limit), 100))
+        now = _iso(self._clock())
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM capability_receipts
+                WHERE session_id=? AND expires_at>=?
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (session, now, safe_limit),
+            ).fetchall()
+        return tuple(self._receipt(row) for row in rows)
+
+    def latest_undoable(self, session_id: str) -> ActionReceipt | None:
+        return next(
+            (item for item in self.list(session_id, limit=30) if item.undone_at is None),
+            None,
+        )
+
+    def mark_undone(self, receipt_id: str, session_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE capability_receipts SET undone_at=?
+                WHERE receipt_id=? AND session_id=? AND undone_at IS NULL AND expires_at>=?
+                """,
+                (
+                    _iso(self._clock()),
+                    _bounded(receipt_id, field="receipt_id", maximum=64),
+                    _bounded(session_id, field="session_id", maximum=128),
+                    _iso(self._clock()),
+                ),
+            )
+        return cursor.rowcount == 1
+
+    @staticmethod
+    def _receipt(row: sqlite3.Row) -> ActionReceipt:
+        try:
+            payload = json.loads(str(row["undo_payload_json"]))
+        except (TypeError, ValueError):
+            payload = {}
+        return ActionReceipt(
+            receipt_id=str(row["receipt_id"]),
+            session_id=str(row["session_id"]),
+            action=str(row["action"]),
+            description=str(row["description"]),
+            undo_kind=str(row["undo_kind"]),
+            undo_payload=payload if isinstance(payload, dict) else {},
+            created_at=str(row["created_at"]),
+            expires_at=str(row["expires_at"]),
+            undone_at=str(row["undone_at"]) if row["undone_at"] else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Reminder:
     reminder_id: str
     session_id: str

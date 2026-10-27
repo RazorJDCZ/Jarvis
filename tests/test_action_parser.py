@@ -690,6 +690,21 @@ def test_dame_is_a_general_agent_request_when_a_computer_domain_is_present(text:
                 "instruction": "agregue pruebas",
             },
         ),
+        (
+            "Qué correos me han llegado sobre universidad",
+            ActionName.MAIL_SEARCH,
+            {"query": "universidad"},
+        ),
+        (
+            "Busca el archivo informe final en mi computadora",
+            ActionName.FILE_SEARCH,
+            {"query": "informe final"},
+        ),
+        (
+            "Dónde está el documento presupuesto 2026",
+            ActionName.FILE_SEARCH,
+            {"query": "presupuesto 2026"},
+        ),
     ],
 )
 def test_mail_and_development_requests_have_deterministic_safe_routes(

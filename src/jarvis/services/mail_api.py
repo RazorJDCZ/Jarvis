@@ -66,6 +66,10 @@ def mail_router(service, require_local, web_dir):
         except MailError as exc:
             raise HTTPException(400, str(exc)) from None
 
+    @router.get("/api/mail/insights")
+    async def insights():
+        return service.insights()
+
     @router.put("/api/mail/config")
     async def configure(request: Request, payload: ClientSettings):
         require_local(request)

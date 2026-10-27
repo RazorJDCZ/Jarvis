@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from webauthn.helpers import bytes_to_base64url
 
 from jarvis.config import Settings
 from jarvis.main import create_app
@@ -52,6 +53,13 @@ def test_remote_configuration_requires_private_https_origin(tmp_path) -> None:
     assert settings.remote_rp_id == "jarvis.test-tail.ts.net"
     assert settings.remote_cookie_secure is True
     assert settings.host == "127.0.0.1"
+    assert settings.android_app_origin == (
+        "android:apk-key-hash:Z4aWii5wK59A70iDyIi-23H4svK18BS1_f5_JuY9F3k"
+    )
+    assert settings.remote_webauthn_origins == [
+        "https://jarvis.test-tail.ts.net",
+        settings.android_app_origin,
+    ]
 
 
 def test_passkey_pairing_authentication_and_revocation(
@@ -63,9 +71,15 @@ def test_passkey_pairing_authentication_and_revocation(
     identity = RemoteIdentity("owner@example.com", "Owner")
     pairing = service.start_pairing()
     options = service.begin_registration(pairing["code"], "Teléfono personal", identity)
+    registration_arguments: dict[str, object] = {}
+
+    def verify_registration(**kwargs: object) -> SimpleNamespace:
+        registration_arguments.update(kwargs)
+        return registration_verification()
+
     monkeypatch.setattr(
         "jarvis.services.remote_access.verify_registration_response",
-        lambda **_kwargs: registration_verification(),
+        verify_registration,
     )
 
     device, session_token = service.finish_registration(
@@ -75,6 +89,7 @@ def test_passkey_pairing_authentication_and_revocation(
     )
 
     assert device["label"] == "Teléfono personal"
+    assert registration_arguments["expected_origin"] == settings.remote_webauthn_origins
     assert service.authenticate(session_token, identity) is not None
     assert (
         service.authenticate(
@@ -89,21 +104,61 @@ def test_passkey_pairing_authentication_and_revocation(
             RemoteIdentity("attacker@example.com", "Attacker"),
         )
 
-    authentication = service.begin_authentication(device["device_id"], identity)
+    authentication = service.begin_authentication(None, identity)
+    assert len(authentication["options"]["allowCredentials"]) == 1
+    authentication_arguments: dict[str, object] = {}
+
+    def verify_authentication(**kwargs: object) -> SimpleNamespace:
+        authentication_arguments.update(kwargs)
+        return authentication_verification()
+
     monkeypatch.setattr(
         "jarvis.services.remote_access.verify_authentication_response",
-        lambda **_kwargs: authentication_verification(),
+        verify_authentication,
     )
     refreshed, new_token = service.finish_authentication(
         authentication["ceremony_id"],
-        {"response": {}},
+        {
+            "rawId": bytes_to_base64url(b"credential-id"),
+            "response": {},
+        },
         identity,
     )
 
     assert refreshed["device_id"] == device["device_id"]
+    assert authentication_arguments["expected_origin"] == settings.remote_webauthn_origins
     assert service.authenticate(new_token, identity).sign_count == 1
+
+    restarted = RemoteAccessService(settings)
+    assert restarted.authenticate(new_token, identity).device_id == device["device_id"]
+
     assert service.revoke_device(device["device_id"]) is True
     assert service.authenticate(new_token, identity) is None
+    assert restarted.authenticate(new_token, identity) is None
+
+
+def test_remote_logout_removes_persistent_session(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = remote_settings(tmp_path)
+    service = RemoteAccessService(settings)
+    identity = RemoteIdentity("owner@example.com", "Owner")
+    pairing = service.start_pairing()
+    options = service.begin_registration(pairing["code"], "Pixel personal", identity)
+    monkeypatch.setattr(
+        "jarvis.services.remote_access.verify_registration_response",
+        lambda **_kwargs: registration_verification(),
+    )
+    _device, token = service.finish_registration(
+        options["ceremony_id"],
+        {"response": {"transports": ["internal"]}},
+        identity,
+    )
+
+    assert RemoteAccessService(settings).authenticate(token, identity) is not None
+    service.logout(token)
+    assert RemoteAccessService(settings).authenticate(token, identity) is None
 
 
 def test_pairing_code_expires_after_bounded_failures(tmp_path) -> None:
@@ -160,6 +215,10 @@ def test_remote_api_requires_tailscale_and_passkey_then_escalates_actions(
             f"{remote_base}/api/health",
             headers=remote_headers,
         )
+        asset_links = client.get(
+            f"{remote_base}/.well-known/assetlinks.json",
+            headers=remote_headers,
+        )
         registration = client.post(
             f"{remote_base}/api/remote/pair/options",
             headers=remote_headers,
@@ -173,11 +232,35 @@ def test_remote_api_requires_tailscale_and_passkey_then_escalates_actions(
                 "credential": {"response": {"transports": ["internal"]}},
             },
         )
+        discoverable_authentication = client.post(
+            f"{remote_base}/api/remote/auth/options",
+            headers=remote_headers,
+            json={},
+        )
 
         assert unauthenticated.status_code == 401
+        assert asset_links.status_code == 200
+        assert asset_links.headers["content-type"].startswith("application/json")
+        assert asset_links.json() == [
+            {
+                "relation": [
+                    "delegate_permission/common.handle_all_urls",
+                    "delegate_permission/common.get_login_creds",
+                ],
+                "target": {
+                    "namespace": "android_app",
+                    "package_name": settings.android_package_name,
+                    "sha256_cert_fingerprints": [
+                        settings.android_certificate_sha256,
+                    ],
+                },
+            }
+        ]
         assert registration.status_code == 200
         assert verified.status_code == 200
         assert verified.json()["authenticated"] is True
+        assert discoverable_authentication.status_code == 200
+        assert len(discoverable_authentication.json()["options"]["allowCredentials"]) == 1
 
         pending = client.post(
             f"{remote_base}/api/chat",

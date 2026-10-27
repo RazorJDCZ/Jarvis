@@ -12,7 +12,7 @@ import pytest
 from jarvis.config import Settings
 from jarvis.providers.brain import AutoBrain, CodexBrain, FallbackBrain, OllamaBrain, build_brain
 from jarvis.providers.stt import WhisperTranscriber
-from jarvis.providers.tts import PiperTTS, compress_speech_pauses
+from jarvis.providers.tts import PiperTTS, compress_speech_pauses, prepare_speech_text
 from jarvis.schemas import ProviderStatus
 from jarvis.services.preferences import Preferences
 
@@ -343,6 +343,10 @@ async def test_deep_male_onyx_is_the_default_voice(tmp_path: Path) -> None:
     )
 
 
+def test_speech_text_removes_visual_markup_and_reduces_heavy_punctuation() -> None:
+    assert prepare_speech_text("**Estado:**\n- Listo... ✅") == "Estado, Listo"
+
+
 def test_tts_compresses_long_silence_without_changing_spoken_samples() -> None:
     sample_rate = 24_000
     spoken = np.full(sample_rate // 10, 4_000, dtype=np.int16)
@@ -360,7 +364,7 @@ def test_tts_compresses_long_silence_without_changing_spoken_samples() -> None:
     with wave.open(io.BytesIO(compressed), "rb") as wav_file:
         result = np.frombuffer(wav_file.readframes(wav_file.getnframes()), dtype=np.int16)
         assert wav_file.getframerate() == sample_rate
-    assert len(result) == len(spoken) * 2 + int(sample_rate * 0.14)
+    assert len(result) == len(spoken) * 2 + int(sample_rate * 0.10)
     assert np.array_equal(result[: len(spoken)], spoken)
     assert np.array_equal(result[-len(spoken) :], spoken)
 

@@ -3219,9 +3219,19 @@ body[data-state="error"] .state-copy p {
 #assistantContent button, #assistantMemory button { padding: 12px 16px; min-height: 44px; color: #fff; background: #421829; border: 1px solid #9c4963; border-radius: 8px; cursor: pointer; }
 .assistant-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 18px; }
 .assistant-settings label, #assistantMemory label, .memory-edit-row { display: grid; gap: 8px; font-size: 14px; color: #f6dce5; }
-.assistant-settings select, #assistantMemory textarea { width: 100%; min-height: 44px; padding: 10px; color: #fff; background: #210c15; border: 1px solid #89536a; border-radius: 6px; font: inherit; }
+.assistant-settings select, #assistantMemory :is(textarea,input,select) { width: 100%; min-height: 44px; padding: 10px; color: #fff; background: #210c15; border: 1px solid #89536a; border-radius: 6px; font: inherit; }
 #assistantMemory textarea { min-height: 85px; resize: vertical; }
 #assistantMemory { margin-top: 28px; }
+.assistant-search { display: grid; gap: 10px; padding: 14px; border: 1px solid #783248; border-radius: 10px; background: rgba(41, 10, 23, .7); }
+.assistant-search label { display: grid; gap: 8px; color: #f6dce5; }
+.assistant-search input { min-height: 46px; padding: 10px 12px; color: #fff; background: #160912; border: 1px solid #89536a; border-radius: 7px; font: inherit; }
+.assistant-search-results { display: grid; gap: 8px; }
+.assistant-search-results article { padding: 10px; border-left: 2px solid #ff315f; background: rgba(13, 9, 20, .7); }
+.assistant-search-results p { margin: 6px 0 0; color: #d8bac5; }
+.automation-edit-row, .personal-entity-form, .personal-entity-row { display: grid; gap: 10px; padding: 16px; background: rgba(255,54,88,.045); border: 1px solid rgba(255,54,88,.2); border-radius: 8px; }
+.automation-edit-row small { color: #bd98a6; letter-spacing: .08em; text-transform: uppercase; }
+.automation-edit-row label { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(90px, 140px); align-items: center; gap: 12px; }
+.automation-edit-row input[type="checkbox"] { width: 18px; min-height: 18px; accent-color: var(--primary); justify-self: end; }
 .memory-edit-row { padding: 16px 0; border-bottom: 1px solid #714052; }
 body.compact-mode .neural-field, body.compact-mode .ambient-grid, body.compact-mode .scanline, body.compact-mode .atmosphere, body.compact-mode .status-panel, body.compact-mode .stage-telemetry, body.compact-mode .focus-strip { display: none; }
 body.compact-mode .shell { display: grid; grid-template-columns: 1fr; max-width: 1050px; margin-inline: auto; }
@@ -3232,3 +3242,275 @@ body.compact-mode .conversation-panel { min-height: 55vh; }
 body.compact-mode * { animation: none !important; }
 .message[data-incomplete=true] { border-left: 3px solid #f7b267; }
 .deck-tabs { flex-wrap: wrap; }
+
+/* The Android shell supplies the app bar and navigation. Keep the web surface focused on Jarvis. */
+html.native-android,
+html.native-android body {
+  min-height: 100%;
+  overscroll-behavior: none;
+  background: #050711;
+}
+
+html.native-android .topbar,
+html.native-android .status-panel,
+html.native-android .footer-bar,
+html.native-android .stage-telemetry,
+html.native-android .focus-strip {
+  display: none;
+}
+
+html.native-android body:not(.organizer-view) {
+  --orb-size: min(68vw, 282px);
+  background:
+    radial-gradient(circle at 50% 38%, rgba(173, 22, 61, 0.24), transparent 34%),
+    radial-gradient(circle at 8% 12%, rgba(39, 104, 255, 0.14), transparent 27%),
+    linear-gradient(158deg, #03050d, #100711 56%, #03050d);
+}
+
+html.native-android body.remote-client .shell,
+html.native-android body:not(.organizer-view) .shell {
+  width: 100%;
+  max-width: none;
+  min-height: 100dvh;
+  padding: 0;
+  display: block;
+}
+
+html.native-android body.remote-client .core-stage,
+html.native-android body:not(.organizer-view) .core-stage {
+  width: 100%;
+  height: 100dvh;
+  min-height: 600px;
+  padding: clamp(28px, 5dvh, 52px) 16px 24px;
+  justify-content: center;
+}
+
+html.native-android .core-stage::before {
+  width: min(640px, 128vw);
+  opacity: 0.42;
+}
+
+html.native-android .core-stage::after {
+  width: min(470px, 94vw);
+  opacity: 0.72;
+}
+
+html.native-android .state-copy {
+  margin-top: 20px;
+  padding: 0 18px;
+}
+
+html.native-android .state-copy p {
+  margin-bottom: 9px;
+  font-size: 9px;
+  letter-spacing: 0.3em;
+}
+
+html.native-android .state-copy h2 {
+  max-width: 330px;
+  min-height: 42px;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+html.native-android #waveform {
+  width: min(390px, 92%);
+  height: 42px;
+  margin-top: 2px;
+}
+
+html.native-android .voice-controls {
+  width: min(330px, calc(100% - 32px));
+  margin-top: 4px;
+}
+
+html.native-android #handsFreeButton {
+  display: none;
+}
+
+html.native-android #muteButton {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  justify-content: center;
+  padding: 10px 14px;
+  border-radius: 14px;
+  clip-path: none;
+  background: linear-gradient(105deg, rgba(48, 10, 27, 0.84), rgba(4, 20, 33, 0.88));
+}
+
+html.native-android #muteButton strong {
+  font-size: 10px;
+}
+
+html.native-android #muteButton small {
+  font-size: 9px;
+}
+
+html.native-android .conversation-panel {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 30;
+  width: 100%;
+  height: min(72dvh, 620px);
+  min-height: 360px;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: 24px 24px 0 0;
+  clip-path: none;
+  background:
+    radial-gradient(circle at 85% 0, rgba(39, 104, 255, 0.13), transparent 33%),
+    linear-gradient(165deg, rgba(27, 8, 22, 0.99), rgba(3, 12, 21, 0.995));
+  box-shadow: 0 -22px 65px rgba(0, 0, 0, 0.62), 0 -1px 0 rgba(255, 54, 88, 0.5);
+  transform: translateY(0);
+  opacity: 1;
+  visibility: visible;
+  transition: transform 240ms cubic-bezier(0.22, 0.72, 0.18, 1), opacity 180ms ease;
+}
+
+html.native-android body.mobile-chat-hidden .conversation-panel {
+  transform: translateY(calc(100% + 18px));
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    transform 230ms cubic-bezier(0.4, 0, 1, 1),
+    opacity 150ms ease,
+    visibility 0s linear 230ms;
+}
+
+html.native-android .conversation-panel > .panel-heading {
+  min-height: 56px;
+  padding: 0 18px;
+  border-bottom-color: rgba(255, 54, 88, 0.16);
+}
+
+html.native-android .conversation-panel > .panel-heading::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 38px;
+  height: 3px;
+  border-radius: 3px;
+  background: rgba(255, 231, 235, 0.28);
+  transform: translateX(-50%);
+}
+
+html.native-android .conversation-panel .panel-heading > div:first-child {
+  padding-top: 7px;
+}
+
+html.native-android .conversation-panel .panel-heading > div:first-child small,
+html.native-android .conversation-meta,
+html.native-android #controlDeckCompactButton {
+  display: none;
+}
+
+html.native-android .conversation-panel .panel-heading > div:first-child span {
+  font-size: 0;
+  letter-spacing: 0.18em;
+}
+
+html.native-android .conversation-panel .panel-heading > div:first-child span::after {
+  content: "CONVERSACIÓN";
+  font-size: 9px;
+}
+
+html.native-android .transcript {
+  padding: 14px 14px 10px;
+  font-size: 13px;
+  scrollbar-width: thin;
+}
+
+html.native-android .message {
+  max-width: 92%;
+  padding: 14px 15px;
+  border-radius: 4px 14px 14px 14px;
+}
+
+html.native-android .user-message {
+  border-radius: 14px 4px 14px 14px;
+}
+
+html.native-android .text-console {
+  min-height: 64px;
+  padding: 8px 10px 10px;
+  gap: 7px;
+  background: rgba(3, 8, 15, 0.96);
+}
+
+html.native-android .text-console input {
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 54, 88, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+html.native-android .text-console button {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+}
+
+html.native-android .emergency-stop {
+  top: 12px;
+  right: 12px;
+  bottom: auto;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  clip-path: none;
+}
+
+html.native-android .emergency-stop small {
+  display: none;
+}
+
+html.native-android .control-deck-dialog,
+html.native-android .remote-dialog {
+  width: 100vw;
+  max-width: none;
+  max-height: 100dvh;
+  border-right: 0;
+  border-left: 0;
+}
+
+html.native-android .control-deck-shell,
+html.native-android .remote-dialog-shell {
+  max-height: 100dvh;
+}
+
+html.native-android .day-brand {
+  display: none;
+}
+
+html.native-android .day-topbar {
+  min-height: 72px;
+  padding-inline: 16px;
+}
+
+html.native-android .day-date {
+  width: 100%;
+  margin-left: 0;
+}
+
+@media (max-height: 700px) {
+  html.native-android body:not(.organizer-view) {
+    --orb-size: min(58vw, 230px);
+  }
+
+  html.native-android body.remote-client .core-stage,
+  html.native-android body:not(.organizer-view) .core-stage {
+    min-height: 520px;
+    padding-top: 18px;
+  }
+
+  html.native-android .state-copy {
+    margin-top: 12px;
+  }
+}

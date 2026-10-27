@@ -8,9 +8,10 @@
       name="description"
       content="Interfaz privada de Jarvis con razonamiento Codex y ejecución local"
     />
+    <script src="/static/mobile-shell.js?v=1"></script>
     <link rel="manifest" href="/manifest.webmanifest?v=agent-v9" />
     <link rel="icon" href="/static/icon.svg?v=agent-v9" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=agent-v10" />
+    <link rel="stylesheet" href="/static/styles.css?v=agent-v15" />
     <title>JARVIS // Neural Interface</title>
   </head>
   <body data-state="standby">
@@ -180,7 +181,7 @@
         <div class="voice-controls">
           <button class="control-button" id="handsFreeButton" type="button" aria-pressed="false">
             <span class="control-icon">◉</span>
-            <span><strong>MANOS LIBRES</strong><small>Di “Jarvis”</small></span>
+            <span><strong>MODO AMBIENTAL</strong><small>Di “Jarvis”</small></span>
             <i></i>
           </button>
           <button class="control-button" id="muteButton" type="button" aria-pressed="false">
@@ -583,7 +584,7 @@
           </label>
           <button class="primary-remote-button" type="submit">CREAR PASSKEY Y EMPAREJAR</button>
           <button class="text-remote-button" id="showAuthenticationPanelButton" type="button" hidden>
-            Volver a usar mi passkey
+            Usar mi passkey existente
           </button>
         </form>
 
@@ -597,7 +598,7 @@
     </section>
 
     <div class="toast" id="toast" role="status"></div>
-    <script src="/static/app.js?v=agent-v11" defer></script>
-    <script src="/static/assistant.js?v=assistant-v4" defer></script>
+    <script src="/static/app.js?v=agent-v19" defer></script>
+    <script src="/static/assistant.js?v=assistant-v8" defer></script>
   </body>
 </html>

@@ -11,3 +11,8 @@ models/
 dist/
 build/
 *.egg-info/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/app/build/
+# Tauri desktop build output
+desktop/src-tauri/target/

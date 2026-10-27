@@ -36,6 +36,7 @@ async def main():
             adaptive_resources=False,
             semantic_enabled=False,
             stt_device="cpu",
+            file_search_roots=directory,
         )
         app = create_app(settings)
         app.state.conversation.verifier.verify = AsyncMock(return_value=None)
@@ -66,6 +67,12 @@ async def main():
             return "Primera frase visible. Respuesta terminada."
 
         app.state.conversation.brain.chat = fake_chat
+
+        @app.post("/api/test/hanging-stream")
+        async def hanging_stream():
+            await asyncio.sleep(30)
+            return {"status": "unexpected"}
+
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
@@ -115,6 +122,25 @@ async def main():
                     await page.locator("#muteButton").click()
                     await page.evaluate("openControlDeck('assistant')")
                     await page.get_by_text("Tu asistente cotidiano", exact=True).wait_for()
+                    await page.locator(".assistant-search input").fill("proyecto atlas")
+                    await page.locator('.assistant-search button[type="submit"]').click()
+                    await page.wait_for_function(
+                        "() => document.querySelector('.assistant-search-results')"
+                        "?.textContent.trim()"
+                    )
+                    await page.get_by_role(
+                        "button", name="Permisos y seguridad", exact=True
+                    ).click()
+                    await page.get_by_text(
+                        "La busqueda de archivos es solo lectura", exact=False
+                    ).wait_for()
+                    await page.get_by_role(
+                        "button", name="Automatizaciones proactivas", exact=True
+                    ).click()
+                    await page.wait_for_function(
+                        "() => document.querySelectorAll('.automation-edit-row').length === 5"
+                    )
+                    await page.get_by_text("Cola fiable:", exact=False).wait_for()
                     await page.get_by_role(
                         "button", name="Ver y corregir memoria", exact=True
                     ).click()
@@ -139,13 +165,37 @@ async def main():
                     await page.wait_for_function("() => appState.streaming")
                     await page.evaluate("cancelActiveClientWork(); stopSpeaking()")
                     await page.wait_for_function("() => !appState.busy && !appState.streaming")
+                    timeout_recovery = await page.evaluate(
+                        """async () => {
+                          appState.busy = true;
+                          try {
+                            await receiveAssistantStream(
+                              "/api/test/hanging-stream",
+                              { method: "POST" },
+                              80,
+                            );
+                            return { recovered: false, message: "" };
+                          } catch (error) {
+                            return {
+                              recovered: !appState.busy && !appState.streaming,
+                              message: error.message,
+                            };
+                          }
+                        }"""
+                    )
+                    assert timeout_recovery["recovered"]
+                    assert "volver a hablar" in timeout_recovery["message"]
                     results.append(
                         {
                             "viewport": label,
                             "streaming": True,
                             "memory_edit": True,
+                            "personal_search": True,
+                            "security_summary": True,
+                            "automation_queue": True,
                             "settings": True,
                             "cancellation": True,
+                            "timeout_recovery": True,
                         }
                     )
                     await context.close()

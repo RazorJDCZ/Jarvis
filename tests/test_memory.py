@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,22 @@ def test_memory_store_uses_private_sqlite_database_and_upserts(tmp_path: Path) -
     assert store.path.is_file()
     assert len(store.list_entries()) == 1
     assert store.list_entries()[0].content == "Vive en Cuenca."
+
+
+def test_temporary_memory_and_entities_have_explicit_expiration(tmp_path: Path) -> None:
+    candidate = MemoryExtractor.explicit_candidate(
+        "Recuerda que estoy usando una laptop prestada durante una semana"
+    )
+    assert candidate is not None and candidate.expires_at is not None
+    assert "durante una semana" not in candidate.content
+
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    entry = store.upsert(candidate)
+    expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat()
+    entity = store.save_entity("lugar", "Oficina temporal", expires_at=expiry)
+
+    assert entry is not None and entry.expires_at == candidate.expires_at
+    assert entity is not None and entity.expires_at is not None
 
 
 def test_memory_store_prunes_old_entries_to_configured_limit(tmp_path: Path) -> None:
@@ -102,6 +119,45 @@ def test_relevant_retrieval_and_physical_forget(tmp_path: Path) -> None:
         "like:games",
         "project:jarvis",
     }
+
+
+def test_structured_personal_entities_are_versioned_relevant_and_forgettable(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    entity = store.save_entity(
+        "persona", "Sami", "amigo cercano", "Le gustan los videojuegos cooperativos"
+    )
+
+    assert entity is not None
+    assert store.relevant_entities("Qué juego le gustaría a Sami") == (entity,)
+    assert store.save_entity(
+        "persona",
+        "Sami",
+        "amigo cercano",
+        "Prefiere juegos de carreras",
+        entity_id=entity.entity_id,
+        expected_updated_at="versión-antigua",
+    ) is None
+
+    updated = store.save_entity(
+        "persona",
+        "Sami",
+        "amigo cercano",
+        "Prefiere juegos de carreras",
+        entity_id=entity.entity_id,
+        expected_updated_at=entity.updated_at,
+    )
+    assert updated is not None and "carreras" in updated.details
+    assert store.delete_entity(updated.entity_id, entity.updated_at) is False
+    assert store.delete_entity(updated.entity_id, updated.updated_at) is True
+    assert store.list_entities() == ()
+
+
+def test_structured_personal_entities_reject_secrets(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    with pytest.raises(ValueError, match="sensibles"):
+        store.save_entity("proyecto", "Servidor", details="Mi contraseña es hunter2")
 
 
 def test_recent_conversations_are_bounded_filterable_and_resettable(tmp_path: Path) -> None:

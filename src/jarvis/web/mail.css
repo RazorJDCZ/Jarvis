@@ -24,4 +24,9 @@ input[type="checkbox"] { display: inline-block; width: 20px; height: 20px; margi
 article { border-top: 1px solid #34445a; padding: 16px 0; overflow-wrap: anywhere; }
 summary { cursor: pointer; font-weight: 600; }
 #message { color: #ffda94; white-space: pre-wrap; }
+.local-badge, .attention-score { color: #7fffd4; border: 1px solid #397565; border-radius: 999px; padding: 5px 9px; font-size: .7rem; letter-spacing: .08em; }
+.attention-item { border-left: 3px solid #e63462; padding-left: 14px; }
+.attention-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.attention-heading h3 { margin: 0; }
+.attention-reasons { color: #ffb4c8; font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
 @media(max-width: 680px) { .columns { grid-template-columns: 1fr; } section, details { padding: 16px; } }

@@ -4,11 +4,12 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#100309">
   <title>Mi día · Jarvis</title>
+  <script src="/static/mobile-shell.js?v=1"></script>
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest?v=agent-v9">
-  <link rel="stylesheet" href="/static/styles.css?v=agent-v10">
-  <link rel="stylesheet" href="/static/organizer.css?v=2">
-  <script src="/static/organizer.js?v=2" defer></script>
+  <link rel="stylesheet" href="/static/styles.css?v=agent-v15">
+  <link rel="stylesheet" href="/static/organizer.css?v=5">
+  <script src="/static/organizer.js?v=5" defer></script>
 </head>
 <body class="organizer-view">
   <div class="ambient-grid" aria-hidden="true"></div><div class="atmosphere" aria-hidden="true"></div>
@@ -34,13 +35,14 @@
       <div class="day-date"><span id="dayDate">TU ESPACIO PERSONAL</span><small id="syncStatus">Consultando tu información…</small><button id="refresh" type="button" aria-label="Actualizar agenda"><span aria-hidden="true">↻</span> Actualizar</button></div>
     </div>
     <nav class="day-navigation" aria-label="Secciones de mi día">
-      <a href="#overview" class="selected">01 <span>Resumen</span></a><a href="#agenda">02 <span>Agenda</span></a><a href="#ideas">03 <span>Ideas</span></a><a href="#connections">04 <span>Conexiones</span></a>
+      <a href="#overview" class="selected">01 <span>Resumen</span></a><a href="#finances">02 <span>Finanzas</span></a><a href="#agenda">03 <span>Agenda</span></a><a href="#ideas">04 <span>Ideas</span></a><a href="#connections">05 <span>Conexiones</span></a>
     </nav>
     <p id="message" role="status" aria-live="polite"></p>
     <div class="day-metrics" aria-label="Resumen de pendientes">
       <a href="#agenda"><span>EN AGENDA</span><strong id="eventCount">—</strong><small>Próximos compromisos <i>↗</i></small></a>
       <a href="#pendingPanel"><span>TAREAS</span><strong id="taskCount">—</strong><small>Lo que queda por hacer <i>↗</i></small></a>
       <a href="#pendingPanel"><span>CORREOS</span><strong id="mailCount">—</strong><small>Pendientes de revisar <i>↗</i></small></a>
+      <a href="#finances"><span>GASTADO ESTE MES</span><strong id="spentTotal">—</strong><small id="spentCaption">Desde correos bancarios <i>↗</i></small></a>
       <a href="#ideas"><span>IDEAS GUARDADAS</span><strong id="captureCount">—</strong><small>Para retomarlas después <i>↗</i></small></a>
     </div>
     <div class="day-grid" id="overview">
@@ -67,13 +69,49 @@
         <div class="day-panel-heading"><div><span class="day-index">04</span><h2>Tareas y correos</h2></div><a class="day-text-link" href="/mail">Ver correos ↗</a></div>
         <div class="day-panel-body" id="pending"><p class="day-empty">Consultando pendientes…</p></div>
       </section>
+      <section class="day-panel day-finance" id="finances">
+        <div class="day-panel-heading"><div><span class="day-index">05</span><h2>Finanzas del mes</h2></div><span class="day-caption">PRODUBANCO + BANCO PICHINCHA</span></div>
+        <div class="day-panel-body">
+          <div class="finance-toolbar">
+            <div><p class="day-kicker">LECTURA PRIVADA DE NOTIFICACIONES</p><p id="financeStatus" class="day-help">Analizando movimientos reconocidos…</p></div>
+            <div class="finance-toolbar-actions"><label>Mes<input id="financeMonth" type="month" aria-label="Mes del resumen financiero"></label><a id="financeExport" class="finance-export" href="/api/organizer/finance/export.csv">Exportar CSV</a></div>
+          </div>
+          <div class="finance-summary" aria-label="Resumen financiero">
+            <article><span>TOTAL GASTADO</span><strong id="financeTotal">$—</strong><small id="financeComparison">Sin comparación disponible</small></article>
+            <article><span>PROYECCIÓN DEL MES</span><strong id="financeProjection">$—</strong><small id="financeProjectionCaption">Calculando ritmo de gasto</small></article>
+            <article><span>PRESUPUESTO DISPONIBLE</span><strong id="financeBudgetRemaining">$—</strong><small id="financeBudgetCaption">Configura un límite mensual</small></article>
+            <article><span>AHORRO PROYECTADO</span><strong id="financeSavings">$—</strong><small id="financeSavingsCaption">Configura ingreso y meta</small></article>
+            <article><span>COMPRAS</span><strong id="financePurchases">$—</strong><small>Consumos con tarjeta</small></article>
+            <article><span>TRANSFERENCIAS</span><strong id="financeTransfers">$—</strong><small>Incluidas hasta que las revises</small></article>
+            <article><span>EFECTIVO</span><strong id="financeCash">$—</strong><small>Retiros detectados</small></article>
+            <article><span>INGRESOS DETECTADOS</span><strong id="financeIncome">$—</strong><small>Créditos reconocidos en notificaciones</small></article>
+          </div>
+          <div class="finance-layout">
+            <section aria-labelledby="financeCategoriesTitle"><div class="finance-subheading"><h3 id="financeCategoriesTitle">Por categoría</h3><span id="financeReviewCount"></span></div><div id="financeCategories" class="finance-categories"></div></section>
+            <section aria-labelledby="financeTransactionsTitle"><div class="finance-subheading"><h3 id="financeTransactionsTitle">Movimientos recientes</h3><span>EDITABLES</span></div><div id="financeTransactions" class="finance-transactions"></div></section>
+          </div>
+          <div class="finance-intelligence">
+            <section><div class="finance-subheading"><h3>Tendencia de seis meses</h3><span>HISTORIAL</span></div><div id="financeHistory" class="finance-history"></div></section>
+            <section><div class="finance-subheading"><h3>Pagos recurrentes</h3><span>ESTIMADOS</span></div><div id="financeRecurring" class="finance-signal-list"></div></section>
+            <section><div class="finance-subheading"><h3>Movimientos inusuales</h3><span>REVISIÓN LOCAL</span></div><div id="financeAlerts" class="finance-signal-list"></div></section>
+          </div>
+          <details class="finance-planner">
+            <summary><span>Configurar presupuesto y ahorro</span><i>+</i></summary>
+            <div class="finance-planner-grid">
+              <form id="financeBudget"><h3>Presupuesto mensual</h3><p class="day-help">Define un límite total o límites por categoría. Escribe 0 para retirar un límite.</p><label>Categoría<select name="category"><option value="total">Presupuesto total</option><option value="alimentacion">Alimentación</option><option value="transporte">Transporte</option><option value="compras">Compras</option><option value="entretenimiento">Entretenimiento</option><option value="salud">Salud</option><option value="servicios">Servicios</option><option value="educacion">Educación</option><option value="donaciones">Donaciones</option><option value="transferencias">Transferencias</option><option value="efectivo">Efectivo</option><option value="otros">Otros</option></select></label><label>Límite mensual USD<input name="monthly_limit" inputmode="decimal" pattern="\d{1,8}([.,]\d{1,2})?" value="0" required></label><button>Guardar presupuesto</button></form>
+              <form id="financeProfile"><h3>Meta personal</h3><p class="day-help">El ingreso es manual porque las notificaciones bancarias no reflejan necesariamente todo lo que recibes.</p><label>Ingreso mensual estimado USD<input name="monthly_income" inputmode="decimal" pattern="\d{1,8}([.,]\d{1,2})?" value="0" required></label><label>Meta de ahorro mensual USD<input name="savings_goal" inputmode="decimal" pattern="\d{1,8}([.,]\d{1,2})?" value="0" required></label><button>Guardar meta</button></form>
+            </div>
+          </details>
+          <p id="financeDisclaimer" class="finance-disclaimer"></p>
+        </div>
+      </section>
       <section class="day-panel day-proposals">
-        <div class="day-panel-heading"><div><span class="day-index">05</span><h2>Fechas para revisar</h2></div><span class="day-caption">TÚ DECIDES QUÉ AGENDAR</span></div>
+        <div class="day-panel-heading"><div><span class="day-index">06</span><h2>Fechas para revisar</h2></div><span class="day-caption">TÚ DECIDES QUÉ AGENDAR</span></div>
         <div class="day-panel-body"><p class="day-help">Revisa las fechas que llegan por correo y las sesiones de estudio antes de guardarlas en Calendar. Los formularios usan la hora de Ecuador continental.</p><div id="proposals"></div></div>
       </section>
     </div>
     <details class="day-panel day-study">
-      <summary><span><span class="day-index">06</span><strong>Preparar estudio</strong></span><span class="day-caption">ENCUENTRA TIEMPO PARA AVANZAR <i>+</i></span></summary>
+      <summary><span><span class="day-index">07</span><strong>Preparar estudio</strong></span><span class="day-caption">ENCUENTRA TIEMPO PARA AVANZAR <i>+</i></span></summary>
       <div class="day-panel-body"><p class="day-help">Organiza tu preparación antes de una entrega o examen, respetando tu agenda.</p>
         <form id="study" class="day-form-grid"><label class="day-wide">Materia o entrega<input name="title" required maxlength="200" placeholder="Por ejemplo: examen de cálculo"></label><label>Fecha límite<input name="deadline" type="date" required></label><label>Sesiones<input name="sessions" type="number" value="3" min="1" max="20"></label><label>Minutos por sesión<input name="minutes" type="number" value="45" min="15" max="180"></label><label>Desde las<input name="start_hour" type="number" value="16" min="0" max="22"></label><label>Hasta las<input name="end_hour" type="number" value="20" min="1" max="23"></label><div class="day-wide day-actions"><button class="day-primary">Proponer sesiones</button><p class="day-form-note">Lunes a viernes. Podrás revisar cada sesión antes de guardarla.</p></div></form>
       </div>
@@ -83,7 +121,7 @@
       <details class="day-panel"><summary><span><span class="day-setting-icon" aria-hidden="true">◷</span><strong>Google Calendar</strong></span><i>+</i></summary><div class="day-panel-body"><p id="calendarStatus">Consultando conexión…</p><p class="day-help">Conecta tu agenda para reunir tus compromisos aquí.</p><div class="day-actions"><button id="connect" class="day-primary">Conectar Google Calendar</button><button id="disconnect">Desconectar</button></div><details class="day-instructions"><summary>Cómo preparar la conexión</summary><p>Habilita Google Calendar API en el mismo proyecto de Google Cloud del correo. Usaremos el cliente de escritorio configurado en <a href="/mail">Correos</a>. Calendar solicita permiso independiente para consultar tu agenda y administrar el calendario «Jarvis».</p></details></div></details>
       <details class="day-panel"><summary><span><span class="day-setting-icon" aria-hidden="true">⌁</span><strong>Avisos en este dispositivo</strong></span><i>+</i></summary><div class="day-panel-body"><p class="day-help">Recibe avisos aunque cierres la página. Jarvis y tu PC deben seguir encendidos y conectados. El aviso oculta el contenido de tus correos.</p><p class="day-help">En iPhone, añade primero Jarvis a la pantalla de inicio.</p><div class="day-actions"><button id="push" class="day-primary">Activar avisos</button><button id="pushTest">Enviar prueba</button><button id="pushOff">Desactivar</button></div><p id="pushStatus" role="status"></p></div></details>
       <details class="day-panel"><summary><span><span class="day-setting-icon" aria-hidden="true">◎</span><strong>Seguimiento de correos</strong></span><i>+</i></summary><div class="day-panel-body"><p class="day-help">Avisos para «Por responder» y «Esperando respuesta», respetando tu horario de silencio.</p><form id="followups"><label class="day-toggle">Activar seguimiento<input name="enabled" type="checkbox" checked></label><div class="day-form-grid"><label>Avisar tras estos días<input name="after_days" type="number" value="3" min="1" max="30"></label><label>Repetir cada tantas horas<input name="repeat_hours" type="number" value="24" min="24" max="720"></label></div><button>Guardar seguimiento</button></form></div></details>
-      <details class="day-panel"><summary><span><span class="day-setting-icon" aria-hidden="true">◇</span><strong>Respaldo y recuperación</strong></span><i>+</i></summary><div class="day-panel-body"><p id="backupStatus">Consultando respaldo…</p><p class="day-help">Respaldos diarios cifrados para tu usuario de Windows. Se conservan los últimos 14; la restauración se hace con Jarvis detenido.</p><button id="backup">Crear respaldo ahora</button></div></details>
+      <details class="day-panel"><summary><span><span class="day-setting-icon" aria-hidden="true">◇</span><strong>Confiabilidad y recuperación</strong></span><i>+</i></summary><div class="day-panel-body"><p id="backupStatus">Consultando respaldo…</p><p class="day-help">Respaldos diarios cifrados para tu usuario de Windows. Se conservan los últimos 14 y ahora se verifican antes de declararse válidos. La restauración sigue requiriendo que Jarvis esté detenido.</p><div id="reliabilityChecks" class="reliability-checks"></div><form id="resourceMode"><label>Actividad en segundo plano<select name="resource_mode"><option value="normal">Normal · revisión cada minuto</option><option value="eco">Ahorro · revisión cada tres minutos</option></select></label><button>Guardar modo</button></form><div class="day-actions"><button id="diagnose">Comprobar ahora</button><button id="verifyBackup">Verificar último respaldo</button><button id="backup" class="day-primary">Crear respaldo ahora</button></div><p id="reliabilityStatus" class="day-help" role="status"></p></div></details>
     </div>
     <footer class="day-footer"><span>JARVIS / PERSONAL OPERATIONS</span><a href="/">← Volver al asistente</a><span>QUITO · UTC−5</span></footer>
   </main>

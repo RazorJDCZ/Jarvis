@@ -6,7 +6,9 @@ import json
 import re
 import secrets
 import time
+import unicodedata
 from contextlib import suppress
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from email.utils import parseaddr
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
@@ -313,6 +315,14 @@ class MailService:
                             self.gmail_batch_size,
                         )
                         for message in rows:
+                            for archived in message.get("_thread_messages", ()):
+                                archived["url"] = (
+                                    "https://mail.google.com/mail/?authuser="
+                                    + quote(account["email"], safe="")
+                                    + "#all/"
+                                    + quote(archived["thread_id"], safe="")
+                                )
+                                self.store.archive(account["id"], archived)
                             message["url"] = (
                                 "https://mail.google.com/mail/?authuser="
                                 + quote(account["email"], safe="")
@@ -348,6 +358,14 @@ class MailService:
                         ),
                     )
         return more_pages
+
+    async def rebuild_recent_archive(self):
+        """Re-read Gmail's last 30 days in small durable pages after an archive upgrade."""
+
+        async with self.lock:
+            accounts = self.store.reset_google_sync()
+        self.request_sync()
+        return {"scheduled": bool(accounts), "accounts": len(accounts)}
 
     async def _generate(self, item, draft=False):
         if self.codex_client is None:
@@ -450,15 +468,118 @@ class MailService:
         return re.sub(r"\s+", " ", clean).strip(" \t\r\n\"'“”‘’")
 
     def search(self, query: str, limit: int = 20):
-        terms = self._search_terms(query)
         try:
-            items = self.store.search(terms, limit=limit)
+            items = self.store.search(query.strip(), limit=limit)
         except ValueError as exc:
             raise MailError(str(exc)) from None
+        normalized = unicodedata.normalize("NFKD", self._search_terms(query).casefold())
+        normalized = "".join(
+            character for character in normalized if not unicodedata.combining(character)
+        )
+        if re.search(r"\b(?:mas recientes?|ultimos?|por fecha|nuevos?)\b", normalized):
+            order = "newest"
+        elif re.search(r"\b(?:mas importantes?|prioridad|urgentes?)\b", normalized):
+            order = "importance"
+        else:
+            order = "relevance"
         return {
             "query": query.strip(),
             "items": items,
             "count": len(items),
+            "order": order,
+        }
+
+    def insights(self, limit: int = 20):
+        """Build a local attention queue without sending mailbox contents to a model."""
+
+        topics = {
+            "universidad": {
+                "clase", "curso", "entrega", "examen", "profesor", "tarea", "universidad"
+            },
+            "seguridad": {"acceso", "alerta", "contrasena", "login", "seguridad", "sesion"},
+            "finanzas": {"banco", "cobro", "factura", "pago", "recibo", "tarjeta"},
+            "compras": {"compra", "envio", "orden", "paquete", "pedido", "tienda"},
+            "viajes": {"hotel", "reserva", "viaje", "vuelo"},
+            "salud": {"cita", "clinica", "doctor", "medico", "salud"},
+        }
+        now = datetime.now(UTC)
+        ranked: list[tuple[float, dict[str, object]]] = []
+        topic_counts: dict[str, int] = {}
+        for item in self.store.list()[:500]:
+            normalized = unicodedata.normalize(
+                "NFKD",
+                " ".join(
+                    str(item.get(key) or "")
+                    for key in ("subject", "sender", "summary", "reason")
+                ).casefold(),
+            )
+            normalized = "".join(
+                character for character in normalized if not unicodedata.combining(character)
+            )
+            matched_topics = [
+                name for name, words in topics.items() if any(word in normalized for word in words)
+            ]
+            for name in matched_topics:
+                topic_counts[name] = topic_counts.get(name, 0) + 1
+            reasons: list[str] = []
+            score = 0.0
+            if item.get("state") == "reply":
+                score += 18
+                reasons.append("requiere respuesta")
+            if item.get("priority") == "high":
+                score += 14
+                reasons.append(str(item.get("reason") or "prioridad alta")[:160])
+            deadline = str(item.get("deadline") or "").strip()
+            if deadline:
+                try:
+                    parsed = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=UTC)
+                    days = (parsed.astimezone(UTC) - now).total_seconds() / 86_400
+                    if -1 <= days <= 14:
+                        score += 20 if days <= 2 else 10
+                        reasons.append("fecha límite próxima")
+                except ValueError:
+                    reasons.append("menciona una fecha límite")
+                    score += 5
+            try:
+                received = datetime.fromisoformat(
+                    str(item.get("received") or "").replace("Z", "+00:00")
+                )
+                if received.tzinfo is None:
+                    received = received.replace(tzinfo=UTC)
+                age = max(0.0, (now - received.astimezone(UTC)).total_seconds() / 86_400)
+                score += max(0.0, 5.0 - age / 3)
+            except ValueError:
+                pass
+            if not reasons:
+                continue
+            public = {
+                key: item.get(key)
+                for key in (
+                    "id",
+                    "subject",
+                    "sender",
+                    "received",
+                    "summary",
+                    "priority",
+                    "state",
+                    "deadline",
+                )
+            }
+            public["attention_reasons"] = list(dict.fromkeys(reasons))
+            public["topics"] = matched_topics
+            public["attention_score"] = round(score, 2)
+            ranked.append((score, public))
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        safe_limit = max(1, min(int(limit), 50))
+        return {
+            "items": [item for _score, item in ranked[:safe_limit]],
+            "count": min(len(ranked), safe_limit),
+            "total_attention": len(ranked),
+            "topics": dict(sorted(topic_counts.items(), key=lambda pair: pair[1], reverse=True)),
+            "generated_at": now.isoformat(),
+            "local_analysis": True,
         }
 
     def resolve(self, selector: str):

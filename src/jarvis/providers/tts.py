@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import io
+import re
 import sys
 import wave
 from array import array
@@ -14,7 +15,26 @@ from jarvis.services.preferences import PreferenceStore
 from jarvis.text import strip_emojis
 
 
-def compress_speech_pauses(audio: bytes, max_pause_seconds: float = 0.14) -> bytes:
+def prepare_speech_text(text: str) -> str:
+    """Remove visual-only markup and soften punctuation that causes theatrical pauses."""
+
+    clean = strip_emojis(text)
+    clean = re.sub(r"```(?:[\w.+-]+)?\s*|```", " ", clean)
+    clean = re.sub(r"(?m)^\s{0,3}(?:[-*•]|\d+[.)])\s+", "", clean)
+    clean = re.sub(r"[*_`#]+", "", clean)
+    clean = re.sub(r"\.{2,}|…+", ", ", clean)
+    clean = re.sub(r"\s*[;:—–]\s*", ", ", clean)
+    clean = re.sub(r"[!?]{2,}", lambda match: match.group(0)[0], clean)
+    clean = re.sub(r"[ \t]*\n+[ \t]*", ". ", clean)
+    clean = re.sub(r"\s+", " ", clean)
+    clean = re.sub(r"\s+([,.!?])", r"\1", clean)
+    clean = re.sub(r",\s*,+", ", ", clean)
+    clean = re.sub(r",\s*\.", ".", clean)
+    clean = re.sub(r"\.\s*,", ".", clean)
+    return clean.strip(" ,")
+
+
+def compress_speech_pauses(audio: bytes, max_pause_seconds: float = 0.10) -> bytes:
     """Shorten long near-silent runs without changing pitch or spoken samples."""
 
     try:
@@ -34,7 +54,9 @@ def compress_speech_pauses(audio: bytes, max_pause_seconds: float = 0.14) -> byt
     if not frame_count:
         return audio
     peak = max(abs(sample) for sample in samples)
-    threshold = max(96, min(500, int(peak * 0.012)))
+    # Kokoro leaves a faint low-energy tail around punctuation. Treating that tail as
+    # silence makes the audible pause match the configured cap without clipping speech.
+    threshold = max(120, min(650, int(peak * 0.018)))
     maximum = max(1, int(params.framerate * max_pause_seconds))
     ranges = []
     start = None
@@ -234,7 +256,7 @@ class PiperTTS:
             raise RuntimeError(status.detail)
 
     async def synthesize(self, text: str) -> bytes:
-        clean_text = strip_emojis(text)
+        clean_text = prepare_speech_text(text)
         if not clean_text:
             raise RuntimeError("No hay texto pronunciable")
         task = asyncio.create_task(self._synthesize(clean_text))

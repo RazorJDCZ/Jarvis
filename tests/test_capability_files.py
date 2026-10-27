@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from jarvis.capabilities.computer_files import ComputerFileSearch
 from jarvis.capabilities.files import AttachmentError, AttachmentStore
 
 
@@ -119,3 +120,46 @@ def test_pdf_without_optional_dependency_fails_honestly_and_keeps_the_upload(
         store.read_text("owner", attachment.attachment_id)
 
     assert store.content_path("owner", attachment.attachment_id).is_file()
+
+
+def test_computer_file_search_returns_ranked_metadata_without_reading_or_changing_files(
+    tmp_path: Path,
+) -> None:
+    documents = tmp_path / "Documentos" / "Universidad"
+    documents.mkdir(parents=True)
+    exact = documents / "Informe Final.pdf"
+    exact.write_bytes(b"contenido que no debe abrir el buscador")
+    secondary = documents / "borrador-informe-final.txt"
+    secondary.write_text("privado", encoding="utf-8")
+    ignored = tmp_path / ".git" / "informe-final-secreto.txt"
+    ignored.parent.mkdir()
+    ignored.write_text("ignorado", encoding="utf-8")
+    before = {path: path.read_bytes() for path in (exact, secondary, ignored)}
+    search = ComputerFileSearch((tmp_path,), timeout_seconds=2, max_directories=1_000)
+
+    result = search.search("archivo informe final", limit=10)
+
+    assert result["read_only"] is True
+    assert result["count"] == 2
+    assert result["items"][0]["name"] == "Informe Final.pdf"
+    assert all(".git" not in item["path"] for item in result["items"])
+    assert before == {path: path.read_bytes() for path in (exact, secondary, ignored)}
+
+
+def test_computer_file_search_never_follows_links_outside_an_authorized_root(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "nomina-privada.xlsx").write_bytes(b"private")
+    link = root / "external"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("El entorno no permite crear enlaces de prueba")
+
+    result = ComputerFileSearch((root,)).search("nomina privada")
+
+    assert result["items"] == []

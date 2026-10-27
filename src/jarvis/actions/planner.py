@@ -40,6 +40,8 @@ class LocalActionPlanner:
             ActionName.SCREEN_ASK,
             ActionName.SCREEN_FIND,
             ActionName.SYSTEM_STATUS,
+            ActionName.FILE_SEARCH,
+            ActionName.PERSONAL_SEARCH,
             ActionName.UI_INSPECT,
             ActionName.VOLUME_GET,
             ActionName.WINDOW_CURRENT,
@@ -52,6 +54,7 @@ class LocalActionPlanner:
             ActionName.FOCUS_STATUS,
             ActionName.APPA_BRIEFING,
             ActionName.REMINDER_LIST,
+            ActionName.ACTION_HISTORY,
             ActionName.KNOWLEDGE_LIST,
             ActionName.KNOWLEDGE_SEARCH,
             ActionName.ATTACHMENT_LIST,
@@ -207,6 +210,14 @@ class LocalActionPlanner:
             "path:string explícito. Abre una carpeta o directorio existente en el explorador; "
             "no se usa para documentos."
         ),
+        "file.search": (
+            "query:string. Localiza archivos del computador por nombre, extensión o parte de "
+            "su ruta. Solo devuelve metadatos y rutas; nunca abre ni modifica los archivos."
+        ),
+        "personal.search": (
+            "query:string. Busca el mismo tema de forma unificada y de solo lectura en Gmail, "
+            "calendario, tareas y proyectos de Appa, memoria, biblioteca y archivos locales."
+        ),
         "skill.list": "sin argumentos. Lista recetas declarativas seguras.",
         "skill.run": "skill:string, parameters:object opcional. Ejecuta una receta permitida.",
         "task.list": (
@@ -266,6 +277,13 @@ class LocalActionPlanner:
             "Programa un aviso local; corresponde a frases como avísame o recuérdame."
         ),
         "reminder.cancel": "reminder:string. Cancela por identificador o título.",
+        "action.history": (
+            "sin argumentos. Muestra cambios recientes y reversibles hechos por Jarvis."
+        ),
+        "action.undo": (
+            "receipt opcional. Deshace solo el cambio reversible mas reciente o el recibo "
+            "indicado; requiere confirmacion."
+        ),
         "knowledge.list": (
             "sin argumentos. Solo lista fuentes privadas ya indexadas; no agrega adjuntos."
         ),
@@ -418,6 +436,10 @@ class LocalActionPlanner:
                 "task_title": ("title", "titulo"),
             },
             ActionName.MAIL_SEARCH: {"query": ("text", "search", "consulta")},
+            ActionName.FILE_SEARCH: {"query": ("text", "search", "consulta", "name")},
+            ActionName.PERSONAL_SEARCH: {
+                "query": ("text", "search", "consulta", "topic")
+            },
             ActionName.MAIL_REPLY: {
                 "selector": ("mail", "correo", "subject", "asunto", "sender", "remitente"),
                 "body": ("text", "message", "respuesta", "contenido"),
@@ -432,6 +454,7 @@ class LocalActionPlanner:
                 "due": ("when", "date", "fecha"),
             },
             ActionName.REMINDER_CANCEL: {"reminder": ("id", "title", "recordatorio")},
+            ActionName.ACTION_UNDO: {"receipt": ("id", "receipt_id", "recibo")},
             ActionName.KNOWLEDGE_SEARCH: {"query": ("text", "search", "consulta")},
             ActionName.DEV_INSPECT: {
                 "workspace": ("project", "proyecto"),
@@ -592,6 +615,8 @@ class LocalActionPlanner:
             ),
             "path.open": (("path", string, True),),
             "path.open_folder": (("path", string, True),),
+            "file.search": (("query", string, True),),
+            "personal.search": (("query", string, True),),
             "skill.run": (("skill", string, True), ("parameters", {"type": "object"}, False)),
             "task.create": (
                 ("title", string, True),
@@ -637,6 +662,7 @@ class LocalActionPlanner:
                 ("recurrence", string, False),
             ),
             "reminder.cancel": (("reminder", string, True),),
+            "action.undo": (("receipt", string, False),),
             "knowledge.search": (("query", string, True),),
             "knowledge.add_attachment": (("attachment_id", string, True), ("title", string, False)),
             "permission.forget": (("action", string, True),),

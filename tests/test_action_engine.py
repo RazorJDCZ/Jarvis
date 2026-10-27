@@ -112,6 +112,7 @@ def build_engine(
 ) -> tuple[ActionEngine, RecordingCatalog]:
     action_catalog = catalog or RecordingCatalog(tmp_path)
     settings.setdefault("action_model_planning", False)
+    settings.setdefault("local_trusted_actions", False)
     config = Settings(project_root=tmp_path, **settings)
     return (
         ActionEngine(config, catalog=action_catalog, planner=planner),
@@ -701,6 +702,46 @@ async def test_model_planned_mutation_requires_confirmation(tmp_path: Path) -> N
 
     assert pending.status is ActionStatus.PENDING
     assert planner.calls == ["configura el sonido a treinta"]
+    assert action_catalog.executed == []
+
+
+@pytest.mark.asyncio
+async def test_trusted_desktop_runs_medium_action_but_same_mobile_action_confirms(
+    tmp_path: Path,
+) -> None:
+    plan = ActionPlan(
+        ActionName.VOLUME_SET,
+        {"level": 30},
+        source=ActionSource.LOCAL_MODEL,
+        confidence=0.95,
+    )
+    planner = FixedPlanner(plan)
+    engine, action_catalog = build_engine(
+        tmp_path,
+        planner=planner,
+        local_trusted_actions=True,
+    )
+
+    desktop = await engine.try_handle("desktop", "configura el sonido a treinta")
+    mobile = await engine.try_handle(
+        "remote:phone:actions",
+        "configura el sonido a treinta",
+        remote=True,
+    )
+
+    assert desktop.status is ActionStatus.COMPLETED
+    assert mobile.status is ActionStatus.PENDING
+    assert len(action_catalog.executed) == 1
+
+
+@pytest.mark.asyncio
+async def test_trusted_desktop_still_confirms_high_risk_action(tmp_path: Path) -> None:
+    engine, action_catalog = build_engine(tmp_path, local_trusted_actions=True)
+
+    pending = await engine.try_handle("desktop", "haz clic en 400, 250")
+
+    assert pending.status is ActionStatus.PENDING
+    assert pending.risk is ActionRisk.HIGH
     assert action_catalog.executed == []
 
 

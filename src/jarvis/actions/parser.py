@@ -980,6 +980,26 @@ class DeterministicActionParser:
         )
         if received_mail:
             return self._plan(ActionName.MAIL_SEARCH, query=received_mail.group(1))
+        thematic_mail = re.fullmatch(
+            r"(?:dime|muestra(?:me)?|lista|revisa|que|cuales) (?:que |cuales )?"
+            r"(?:correos|emails)(?: me)? (?:han )?(?:llegado|llegaron|hay|tengo)?\s*"
+            r"(?:sobre|acerca de|relacionados con|de la tematica|de tema) (.+)",
+            command,
+        )
+        if thematic_mail:
+            return self._plan(ActionName.MAIL_SEARCH, query=thematic_mail.group(1))
+        personal_search = re.fullmatch(
+            r"(?:busca|encuentra|revisa|consulta) (?:en )?"
+            r"(?:todo|todas partes|mis cosas) "
+            r"(?:lo relacionado con |sobre )?(.+)|"
+            r"(?:que|dime que) (?:tengo|hay) (?:en todo|sobre) (.+)",
+            command,
+        )
+        if personal_search:
+            return self._plan(
+                ActionName.PERSONAL_SEARCH,
+                query=next(group for group in personal_search.groups() if group),
+            )
         mail_reply = re.fullmatch(
             r"responde (?:al )?(?:correo|email) "
             r"(?:(?:de|sobre) |(?:con (?:el )?|del |de )asunto[,;:]? )(.+?) "
@@ -991,6 +1011,23 @@ class DeterministicActionParser:
                 ActionName.MAIL_REPLY,
                 selector=mail_reply.group(1),
                 body=mail_reply.group(2),
+            )
+
+        file_search = re.fullmatch(
+            r"(?:busca|encuentra|localiza) (?:en (?:mi )?(?:pc|computadora|equipo) )?"
+            r"(?:el |los )?(?:archivo|archivos|documento|documentos)"
+            r"(?: (?:llamado|llamada|llamados|llamadas|que (?:se )?llam(?:a|an)|sobre))? "
+            r"(.+?)(?: en (?:mi )?(?:pc|computadora|equipo|disco))?|"
+            r"(?:donde esta|donde tengo|en que carpeta esta) (?:el )?"
+            r"(?:archivo|documento) (.+)|"
+            r"(?:busca|encuentra|localiza) (.+?) (?:en|dentro de) "
+            r"(?:mi )?(?:pc|computadora|equipo|disco)",
+            command,
+        )
+        if file_search:
+            return self._plan(
+                ActionName.FILE_SEARCH,
+                query=next(group for group in file_search.groups() if group),
             )
 
         if re.fullmatch(
@@ -1155,6 +1192,19 @@ class DeterministicActionParser:
         )
         if reminder_cancel:
             return self._plan(ActionName.REMINDER_CANCEL, reminder=reminder_cancel.group(1))
+
+        if re.fullmatch(
+            r"(?:deshaz|revierte) (?:el |la )?(?:ultimo|ultima) "
+            r"(?:cambio|accion|tarea|operacion)(?: de jarvis)?",
+            command,
+        ):
+            return self._plan(ActionName.ACTION_UNDO)
+        if re.fullmatch(
+            r"(?:muestra|lista|dime|que) (?:los )?(?:cambios|acciones|recibos) "
+            r"(?:recientes|reversibles|de jarvis)",
+            command,
+        ):
+            return self._plan(ActionName.ACTION_HISTORY)
 
         if re.fullmatch(
             r"(?:lista|muestra|dime) (?:las )?(?:fuentes|documentos) "

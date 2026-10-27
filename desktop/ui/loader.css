@@ -1,0 +1,189 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI", sans-serif;
+  background: #03050d;
+  color: #ffeef2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(160, 18, 53, 0.24), transparent 30%),
+    radial-gradient(circle at 15% 15%, rgba(39, 126, 255, 0.12), transparent 28%),
+    #03050d;
+}
+
+.boot-shell {
+  position: relative;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  isolation: isolate;
+}
+
+.grid {
+  position: fixed;
+  inset: -20%;
+  z-index: -1;
+  opacity: 0.18;
+  background-image:
+    linear-gradient(rgba(255, 54, 88, 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(39, 126, 255, 0.17) 1px, transparent 1px);
+  background-size: 64px 64px;
+  transform: perspective(700px) rotateX(62deg) translateY(18%);
+  mask-image: radial-gradient(circle, #000 0 35%, transparent 74%);
+}
+
+.boot-card {
+  width: min(680px, 92vw);
+  padding: clamp(28px, 5vw, 54px);
+  border: 1px solid rgba(255, 54, 88, 0.42);
+  border-radius: 26px;
+  background:
+    linear-gradient(145deg, rgba(42, 9, 24, 0.91), rgba(3, 13, 23, 0.96)),
+    #090710;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.56), inset 0 0 45px rgba(255, 54, 88, 0.035);
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.brand-row img {
+  width: 58px;
+  height: 58px;
+}
+
+.brand-row p {
+  margin: 0 0 8px;
+  color: #ff4968;
+  font-size: 11px;
+  letter-spacing: 0.25em;
+}
+
+.brand-row h1 {
+  margin: 0;
+  font-size: clamp(22px, 4vw, 34px);
+  font-weight: 350;
+  letter-spacing: 0.015em;
+}
+
+.core {
+  position: relative;
+  width: 190px;
+  height: 190px;
+  margin: 42px auto 36px;
+  display: grid;
+  place-items: center;
+}
+
+.core img {
+  width: 84px;
+  height: 84px;
+  border-radius: 20px;
+  filter: drop-shadow(0 0 20px rgba(255, 54, 88, 0.55));
+  animation: breathe 2.4s ease-in-out infinite alternate;
+}
+
+.orbit,
+.pulse {
+  position: absolute;
+  border-radius: 50%;
+}
+
+.orbit {
+  inset: 0;
+  border: 1px dashed rgba(255, 73, 104, 0.62);
+  animation: rotate 8s linear infinite;
+}
+
+.orbit-two {
+  inset: 22px;
+  border-style: solid;
+  border-color: rgba(39, 126, 255, 0.53) transparent rgba(39, 126, 255, 0.53) transparent;
+  animation-direction: reverse;
+  animation-duration: 4.8s;
+}
+
+.pulse {
+  inset: 48px;
+  border: 1px solid rgba(255, 54, 88, 0.6);
+  animation: pulse 1.8s ease-out infinite;
+}
+
+.status {
+  margin: 0;
+  color: #fff4f7;
+  text-align: center;
+  font-size: 17px;
+}
+
+.detail {
+  min-height: 42px;
+  margin: 12px auto 0;
+  color: #bd98a6;
+  text-align: center;
+  line-height: 1.55;
+}
+
+.actions {
+  margin-top: 24px;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+button {
+  min-height: 44px;
+  padding: 0 20px;
+  border: 1px solid #ff3658;
+  border-radius: 12px;
+  color: #fff4f7;
+  background: rgba(122, 16, 45, 0.52);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  cursor: pointer;
+}
+
+button.secondary {
+  border-color: rgba(39, 126, 255, 0.66);
+  background: rgba(13, 37, 76, 0.58);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+
+@keyframes rotate {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes breathe {
+  to { transform: scale(1.07); filter: drop-shadow(0 0 32px rgba(255, 54, 88, 0.72)); }
+}
+
+@keyframes pulse {
+  from { opacity: 0.76; transform: scale(0.72); }
+  to { opacity: 0; transform: scale(1.55); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; }
+}

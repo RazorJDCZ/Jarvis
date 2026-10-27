@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permisos mínimos de la pantalla local de arranque de Jarvis.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

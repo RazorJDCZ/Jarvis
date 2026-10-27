@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import re
 from dataclasses import dataclass
@@ -43,6 +44,14 @@ class Settings:
     remote_allowed_login: str = os.getenv("JARVIS_REMOTE_ALLOWED_LOGIN", "").strip()
     remote_pairing_seconds: int = _env_int("JARVIS_REMOTE_PAIRING_SECONDS", 300)
     remote_session_hours: int = _env_int("JARVIS_REMOTE_SESSION_HOURS", 12)
+    android_package_name: str = os.getenv(
+        "JARVIS_ANDROID_PACKAGE_NAME", "com.juandi.jarvis"
+    ).strip()
+    android_certificate_sha256: str = os.getenv(
+        "JARVIS_ANDROID_CERTIFICATE_SHA256",
+        "67:86:96:8A:2E:70:2B:9F:40:EF:48:83:C8:88:BE:DB:"
+        "71:F8:B2:F2:B5:F0:14:B5:FD:FE:7F:26:E6:3D:17:79",
+    ).strip().upper()
 
     brain_mode: str = os.getenv("JARVIS_BRAIN_MODE", "auto").lower()
     codex_command: str = os.getenv("JARVIS_CODEX_COMMAND", "codex").strip() or "codex"
@@ -52,6 +61,7 @@ class Settings:
     codex_deep_effort: str = os.getenv("JARVIS_CODEX_DEEP_EFFORT", "high").strip().lower()
     codex_action_effort: str = os.getenv("JARVIS_CODEX_ACTION_EFFORT", "high").strip().lower()
     codex_timeout: float = _env_float("JARVIS_CODEX_TIMEOUT", 240.0)
+    voice_pipeline_timeout: float = _env_float("JARVIS_VOICE_PIPELINE_TIMEOUT", 90.0)
     codex_coding_timeout: float = _env_float("JARVIS_CODEX_CODING_TIMEOUT", 900.0)
     codex_coding_permissions: str = os.getenv(
         "JARVIS_CODEX_CODING_PERMISSIONS", "jarvis-project-only"
@@ -108,6 +118,7 @@ class Settings:
     agent_max_rounds: int = _env_int("JARVIS_AGENT_MAX_ROUNDS", 3)
     agent_min_confidence: float = _env_float("JARVIS_AGENT_MIN_CONFIDENCE", 0.72)
     action_confirmation_seconds: int = _env_int("JARVIS_ACTION_CONFIRMATION_SECONDS", 90)
+    local_trusted_actions: bool = _env_bool("JARVIS_LOCAL_TRUSTED_ACTIONS", True)
     vision_actions_enabled: bool = _env_bool("JARVIS_VISION_ACTIONS_ENABLED", True)
     vision_timeout: float = _env_float("JARVIS_VISION_TIMEOUT", 180.0)
     vision_keep_alive: str = os.getenv("JARVIS_VISION_KEEP_ALIVE", "2m").strip() or "2m"
@@ -141,6 +152,11 @@ class Settings:
     scheduler_poll_seconds: float = _env_float("JARVIS_SCHEDULER_POLL_SECONDS", 2.0)
     system_monitor_seconds: float = _env_float("JARVIS_SYSTEM_MONITOR_SECONDS", 15.0)
     workspace_roots: str = os.getenv("JARVIS_WORKSPACE_ROOTS", "").strip()
+    file_search_roots: str = os.getenv("JARVIS_FILE_SEARCH_ROOTS", "").strip()
+    file_search_timeout: float = _env_float("JARVIS_FILE_SEARCH_TIMEOUT", 5.0)
+    file_search_max_directories: int = _env_int(
+        "JARVIS_FILE_SEARCH_MAX_DIRECTORIES", 60_000
+    )
     steam_roots: str = os.getenv("JARVIS_STEAM_ROOTS", "").strip()
     epic_manifest_roots: str = os.getenv("JARVIS_EPIC_MANIFEST_ROOTS", "").strip()
     kokoro_voice: str = os.getenv("JARVIS_KOKORO_VOICE", "am_onyx")
@@ -176,6 +192,8 @@ class Settings:
             raise ValueError("El inicio de Codex debe esperar entre 10 y 120 segundos")
         if not 30 <= self.codex_timeout <= 900:
             raise ValueError("Codex debe esperar entre 30 y 900 segundos por respuesta")
+        if not 30 <= self.voice_pipeline_timeout <= 300:
+            raise ValueError("La voz debe esperar entre 30 y 300 segundos por respuesta")
         if not 60 <= self.codex_coding_timeout <= 1800:
             raise ValueError("Codex de programación debe esperar entre 60 y 1800 segundos")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.codex_coding_permissions):
@@ -209,6 +227,16 @@ class Settings:
             raise ValueError("El emparejamiento remoto debe durar entre 60 y 900 segundos")
         if not 1 <= self.remote_session_hours <= 72:
             raise ValueError("La sesión remota debe durar entre 1 y 72 horas")
+        if not re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+",
+            self.android_package_name,
+        ):
+            raise ValueError("El identificador del paquete Android no es válido")
+        if not re.fullmatch(
+            r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}",
+            self.android_certificate_sha256,
+        ):
+            raise ValueError("La huella del certificado Android no es válida")
         if not 2 <= self.agent_max_steps <= 6:
             raise ValueError("Un plan del agente debe permitir entre 2 y 6 pasos")
         if not 1 <= self.agent_max_rounds <= 4:
@@ -261,6 +289,10 @@ class Settings:
             raise ValueError("El sondeo de recordatorios debe estar entre 0.5 y 60 segundos")
         if not 2 <= self.system_monitor_seconds <= 300:
             raise ValueError("El monitor del sistema debe muestrear entre 2 y 300 segundos")
+        if not 0.25 <= self.file_search_timeout <= 30:
+            raise ValueError("La búsqueda de archivos debe durar entre 0.25 y 30 segundos")
+        if not 100 <= self.file_search_max_directories <= 500_000:
+            raise ValueError("El límite de carpetas para buscar archivos no es válido")
 
     @property
     def data_dir(self) -> Path:
@@ -376,6 +408,11 @@ class Settings:
         return roots
 
     @property
+    def configured_file_search_roots(self) -> tuple[Path, ...] | None:
+        roots = self._path_list(self.file_search_roots)
+        return roots or None
+
+    @property
     def configured_steam_roots(self) -> tuple[Path, ...]:
         configured = self._path_list(self.steam_roots)
         if configured:
@@ -398,6 +435,18 @@ class Settings:
     @property
     def remote_rp_id(self) -> str:
         return urlsplit(self.remote_origin).hostname or ""
+
+    @property
+    def android_app_origin(self) -> str:
+        certificate_digest = bytes.fromhex(
+            self.android_certificate_sha256.replace(":", "")
+        )
+        encoded_digest = base64.urlsafe_b64encode(certificate_digest).rstrip(b"=")
+        return f"android:apk-key-hash:{encoded_digest.decode('ascii')}"
+
+    @property
+    def remote_webauthn_origins(self) -> list[str]:
+        return [self.remote_origin, self.android_app_origin]
 
     @property
     def remote_cookie_secure(self) -> bool:

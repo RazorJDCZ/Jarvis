@@ -18,7 +18,8 @@ async def verify() -> dict[str, object]:
         await page.locator("#actionsStatus.online").wait_for(state="visible", timeout=15_000)
         await page.locator("#visionStatus.online").wait_for(state="visible", timeout=15_000)
 
-        await page.locator("#textInput").fill("captura la pantalla")
+        # Local medium-risk actions are direct; high-risk pixel clicks must still gate.
+        await page.locator("#textInput").fill("haz clic en 400, 250")
         await page.locator('#textForm button[type="submit"]').click()
         gate = page.locator("#actionConfirmation")
         await gate.wait_for(state="visible", timeout=15_000)
@@ -48,7 +49,14 @@ async def verify() -> dict[str, object]:
         dialog_labels = await dialog_buttons.all_text_contents()
         regular_buttons_hidden = await page.locator("#approveActionButton").is_hidden()
         await page.evaluate("handleAction(null)")
-        barge_in = await page.evaluate(
+        idle_animation_before = await page.locator(".orbit-one").evaluate(
+            "element => getComputedStyle(element).transform"
+        )
+        await page.wait_for_timeout(450)
+        idle_animation_after = await page.locator(".orbit-one").evaluate(
+            "element => getComputedStyle(element).transform"
+        )
+        voice_privacy = await page.evaluate(
             """() => {
               const fakeAudio = {
                 paused: false,
@@ -66,18 +74,52 @@ async def verify() -> dict[str, object]:
               microphone.preRoll = [];
               microphone.preRollSamples = 0;
               microphone.threshold = 0.016;
-              microphone.context = {sampleRate: 16000};
+              microphone.context = {sampleRate: 16000, state: "closed"};
               microphone.process(new Float32Array(2048).fill(0.08));
-              const result = {
+              const ambientOff = {
+                capturing: microphone.capturing,
+                interruptionCapture: microphone.interruptionCapture,
+                playbackPaused: fakeAudio.paused,
+                statePaused: appState.interruptionPaused,
+              };
+
+              microphone.handsFree = true;
+              microphone.process(new Float32Array(2048).fill(0.08));
+              const ambientOn = {
                 capturing: microphone.capturing,
                 interruptionCapture: microphone.interruptionCapture,
                 playbackPaused: fakeAudio.paused,
                 statePaused: appState.interruptionPaused,
               };
               microphone.disableHandsFree();
+
+              let trackStopped = false;
+              let contextClosed = false;
+              microphone.ready = true;
+              microphone.handsFree = false;
+              microphone.stream = {getTracks: () => [{stop() { trackStopped = true; }}]};
+              microphone.context = {
+                state: "running",
+                close() { contextClosed = true; this.state = "closed"; return Promise.resolve(); },
+              };
+              microphone.cancelManual();
+              const released = {
+                trackStopped,
+                contextClosed,
+                ready: microphone.ready,
+                streamCleared: microphone.stream === null,
+              };
+
               appState.audioPlayer = null;
               stopSpeaking();
-              return result;
+              return {
+                ambientOff,
+                ambientOn,
+                released,
+                mobileBridge: typeof window.jarvisMobileVoice?.start === "function"
+                  && typeof window.jarvisMobileVoice?.stop === "function"
+                  && typeof window.jarvisMobileVoice?.cancel === "function",
+              };
             }"""
         )
         await page.locator("#mobileAccessButton").click()
@@ -105,13 +147,29 @@ async def verify() -> dict[str, object]:
             "system_action_response": True,
             "dialog_options_rendered": dialog_labels == ["Guardar", "No guardar", "Cancelar"],
             "ambiguous_confirm_hidden": regular_buttons_hidden,
-            "barge_in_after_manual_mic": barge_in
+            "idle_core_is_animated": idle_animation_before != idle_animation_after,
+            "ambient_off_does_not_listen": voice_privacy["ambientOff"]
+            == {
+                "capturing": False,
+                "interruptionCapture": False,
+                "playbackPaused": False,
+                "statePaused": False,
+            },
+            "ambient_mode_can_interrupt": voice_privacy["ambientOn"]
             == {
                 "capturing": True,
                 "interruptionCapture": True,
                 "playbackPaused": True,
                 "statePaused": True,
             },
+            "push_to_talk_releases_microphone": voice_privacy["released"]
+            == {
+                "trackStopped": True,
+                "contextClosed": True,
+                "ready": False,
+                "streamCleared": True,
+            },
+            "mobile_voice_bridge_ready": voice_privacy["mobileBridge"],
             "mobile_access_admin_ready": mobile_admin_ready,
         }
     finally:

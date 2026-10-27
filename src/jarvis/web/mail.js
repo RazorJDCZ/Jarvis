@@ -14,7 +14,9 @@ async function action(button, callback) {
   finally { button.disabled = false; }
 }
 async function refresh() {
-  const [status, data] = await Promise.all([api("status"), api("items")]);
+  const [status, data, attention] = await Promise.all([
+    api("status"), api("items"), api("insights"),
+  ]);
   const accounts = document.querySelector("#accounts"); accounts.replaceChildren();
   document.querySelector("#coverage").textContent = status.coverage;
   if (!status.accounts.length) node("p", "Todavía no has conectado cuentas.", accounts);
@@ -35,6 +37,21 @@ async function refresh() {
     button.disabled = !status.providers[button.dataset.connect];
   }
   if (!status.providers.google || !status.providers.microsoft) document.querySelector("#setup").open = true;
+  const insights = document.querySelector("#insights"); insights.replaceChildren();
+  if (!attention.items.length) node("p", "No hay correos que requieran atención especial.", insights);
+  for (const item of attention.items.slice(0, 12)) {
+    const row = node("article", "", insights); row.className = "attention-item";
+    const heading = node("div", "", row); heading.className = "attention-heading";
+    node("h3", item.subject || "Sin asunto", heading);
+    node("span", `PRIORIDAD ${Math.round(item.attention_score)}`, heading).className = "attention-score";
+    node("p", item.sender || "Remitente no disponible", row);
+    node("p", item.summary || "Resumen pendiente.", row);
+    const reasons = [
+      ...(item.attention_reasons || []),
+      ...(item.topics || []).map((topic) => `tema: ${topic}`),
+    ];
+    if (reasons.length) node("p", reasons.join(" · "), row).className = "attention-reasons";
+  }
   const items = document.querySelector("#items"); items.replaceChildren();
   if (!data.items.length) node("p", status.syncing ? "Revisando tus correos…" : "No hay pendientes registrados.", items);
   for (const item of data.items.slice(0, 30)) {

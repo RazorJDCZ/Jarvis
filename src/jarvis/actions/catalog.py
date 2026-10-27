@@ -198,6 +198,13 @@ class ActionCatalog:
             "Analizar de forma ef\u00edmera el texto del portapapeles",
         ),
         ActionName.SYSTEM_STATUS: ActionSpec(ActionRisk.LOW, "Consultar recursos del sistema"),
+        ActionName.FILE_SEARCH: ActionSpec(
+            ActionRisk.LOW, "Buscar archivos por nombre sin abrirlos ni modificarlos"
+        ),
+        ActionName.PERSONAL_SEARCH: ActionSpec(
+            ActionRisk.LOW,
+            "Buscar de forma unificada en correo, agenda, Appa, memoria y archivos",
+        ),
         ActionName.PATH_OPEN: ActionSpec(ActionRisk.MEDIUM, "Abrir un archivo no ejecutable"),
         ActionName.PATH_OPEN_FOLDER: ActionSpec(ActionRisk.LOW, "Abrir una carpeta existente"),
         ActionName.SKILL_LIST: ActionSpec(ActionRisk.LOW, "Listar recetas seguras disponibles"),
@@ -242,6 +249,12 @@ class ActionCatalog:
             ActionRisk.MEDIUM, "Programar un recordatorio local"
         ),
         ActionName.REMINDER_CANCEL: ActionSpec(ActionRisk.MEDIUM, "Cancelar un recordatorio local"),
+        ActionName.ACTION_HISTORY: ActionSpec(
+            ActionRisk.LOW, "Listar cambios recientes que Jarvis puede deshacer"
+        ),
+        ActionName.ACTION_UNDO: ActionSpec(
+            ActionRisk.MEDIUM, "Deshacer el último cambio reversible verificado"
+        ),
         ActionName.KNOWLEDGE_LIST: ActionSpec(
             ActionRisk.LOW, "Listar fuentes de la biblioteca local"
         ),
@@ -292,6 +305,8 @@ class ActionCatalog:
             ActionName.UI_INSPECT,
             ActionName.BROWSER_LIST_TABS,
             ActionName.SYSTEM_STATUS,
+            ActionName.FILE_SEARCH,
+            ActionName.PERSONAL_SEARCH,
             ActionName.VOLUME_GET,
             ActionName.SCREEN_LIST,
             ActionName.SCREEN_DESCRIBE,
@@ -306,6 +321,7 @@ class ActionCatalog:
             ActionName.APPA_BRIEFING,
             ActionName.MAIL_SEARCH,
             ActionName.REMINDER_LIST,
+            ActionName.ACTION_HISTORY,
             ActionName.KNOWLEDGE_LIST,
             ActionName.KNOWLEDGE_SEARCH,
             ActionName.ATTACHMENT_LIST,
@@ -748,7 +764,11 @@ class ActionCatalog:
                 value = self._optional_string(plan.arguments, key, maximum)
                 if value is not None:
                     args[key] = value
-        elif plan.name is ActionName.MAIL_SEARCH:
+        elif plan.name in {
+            ActionName.MAIL_SEARCH,
+            ActionName.FILE_SEARCH,
+            ActionName.PERSONAL_SEARCH,
+        }:
             args = {"query": self._required_safe_string(args, "query", 300)}
         elif plan.name is ActionName.MAIL_REPLY:
             mail = getattr(self.capabilities, "mail", None)
@@ -833,6 +853,9 @@ class ActionCatalog:
         elif plan.name in {ActionName.REMINDER_CANCEL, ActionName.PERMISSION_FORGET}:
             key = "reminder" if plan.name is ActionName.REMINDER_CANCEL else "action"
             args = {key: self._string(args, key, 300)}
+        elif plan.name is ActionName.ACTION_UNDO:
+            receipt_id = self._optional_string(args, "receipt", 64)
+            args = {"receipt": receipt_id} if receipt_id is not None else {}
         elif plan.name is ActionName.KNOWLEDGE_SEARCH:
             args = {"query": self._string(args, "query", 500)}
         elif plan.name is ActionName.KNOWLEDGE_ADD_ATTACHMENT:
@@ -1202,12 +1225,16 @@ class ActionCatalog:
             ActionName.FOCUS_STATUS,
             ActionName.FOCUS_START,
             ActionName.APPA_BRIEFING,
+            ActionName.FILE_SEARCH,
+            ActionName.PERSONAL_SEARCH,
             ActionName.MAIL_SEARCH,
             ActionName.MAIL_REPLY,
             ActionName.GOOGLE_CALENDAR_UPDATE,
             ActionName.REMINDER_LIST,
             ActionName.REMINDER_CREATE,
             ActionName.REMINDER_CANCEL,
+            ActionName.ACTION_HISTORY,
+            ActionName.ACTION_UNDO,
             ActionName.KNOWLEDGE_LIST,
             ActionName.KNOWLEDGE_SEARCH,
             ActionName.KNOWLEDGE_ADD_ATTACHMENT,

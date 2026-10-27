@@ -64,8 +64,10 @@ y [permisos delegados](https://learn.microsoft.com/en-us/graph/permissions-refer
 - **Crear tarea** muestra una confirmación y usa el puente autenticado existente de Appa.
   La tarea incluye resumen y enlace; no se inventa una fecha de vencimiento. Una clave persistente
   evita duplicados si se repite la solicitud o se pierde una respuesta del puente.
-- **Buscar** consulta asunto, remitente, resumen y contenido en la copia SQLite; no vuelve a
-  descargar el buzón ni añade todo el correo al contexto de Codex.
+- **Buscar** consulta asunto, remitente, resumen de Luna y contenido en la copia SQLite; no exige
+  que todas las palabras coincidan. Expande temas comunes, pondera prioridad y recencia, y permite
+  pedir “más recientes” o “más importantes”. No vuelve a descargar el buzón ni añade todo el correo
+  al contexto de Codex.
 - **Preparar borrador** usa `gpt-5.6-luna`. Puedes editarlo, guardarlo y copiarlo.
 - **Revisar y autorizar envío** está disponible solo para Gmail. Appa muestra cuenta,
   destinatario y texto completo, liga una autorización de dos minutos al correo, versión y texto

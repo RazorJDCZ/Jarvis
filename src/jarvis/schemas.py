@@ -89,7 +89,12 @@ class RemoteRegistrationRequest(BaseModel):
 
 
 class RemoteAuthenticationRequest(BaseModel):
-    device_id: str = Field(min_length=32, max_length=64, pattern=r"^[a-f0-9]+$")
+    device_id: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=64,
+        pattern=r"^[a-f0-9]+$",
+    )
 
 
 class RemoteCredentialRequest(BaseModel):

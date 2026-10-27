@@ -22,6 +22,7 @@ from jarvis.services.notifications import NotificationStore
 from jarvis.services.organizer import (
     APPA_DESKTOP_SESSION,
     TZ,
+    CalendarEventCreate,
     CalendarEventEdit,
     EventReview,
     Organizer,
@@ -313,6 +314,46 @@ async def test_appa_calendar_edit_uses_etag_and_updates_cached_event(organizer):
 
 
 @pytest.mark.asyncio
+async def test_calendar_create_range_and_delete_managed_event(organizer):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.method == "POST":
+            payload = json.loads(request.content)
+            assert payload["recurrence"] == ["RRULE:FREQ=WEEKLY"]
+            return httpx.Response(
+                200,
+                json={**payload, "etag": '"created"', "htmlLink": "https://calendar.google.com/e"},
+            )
+        assert request.method == "DELETE"
+        assert request.headers["if-match"] == '"created"'
+        return httpx.Response(204)
+
+    event = CalendarEventCreate(
+        title="Revisión semanal",
+        description="Proyecto Jarvis",
+        start_at="2026-10-20T12:00:00-05:00",
+        end_at="2026-10-20T13:00:00-05:00",
+        reminders=[30],
+        recurrence="weekly",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        organizer.calendar.client = client
+        created = await organizer.create_google_event(event)
+        visible = organizer.calendar_events(
+            "2026-10-01T00:00:00-05:00", "2026-11-01T00:00:00-05:00"
+        )
+        assert visible["events"][0]["id"] == created["id"]
+        assert created["recurrence"] == "weekly" and created["editable"] is True
+        result = await organizer.delete_google_event(created["id"], created["etag"])
+
+    assert result["deleted"] is True
+    assert organizer.store.get("google_event", created["id"]) is None
+    assert [request.method for request in requests] == ["POST", "DELETE"]
+
+
+@pytest.mark.asyncio
 async def test_calendar_oauth_separate_from_mail(organizer):
     organizer.mail.configure("google", "fixture.apps.googleusercontent.com", "fixture")
     url = await organizer.calendar.begin_auth()
@@ -491,12 +532,70 @@ def test_encrypted_backup_roundtrip_and_path_rejection(organizer):
     organizer.capture("Before", "default", "b" * 32)
     result = organizer.recovery.backup()
     archive = organizer.recovery.folder / result["name"]
+    assert result["verified"] is True and result["databases"] >= 1
     assert not archive.read_bytes().startswith(b"PK")
+    verified = organizer.recovery.verify(result["name"])
+    assert verified["sha256"] == result["sha256"]
+    diagnostics = organizer.recovery.diagnostics()
+    assert diagnostics["status"] in {"ok", "warning"}
+    assert next(item for item in diagnostics["checks"] if item["id"] == "backup")["status"] == "ok"
     organizer.store.replace("capture", {})
     organizer.recovery.restore(result["name"])
     assert organizer.today()["captures"][0]["text"] == "Before"
     with pytest.raises(ValueError):
         organizer.recovery.restore("../../outside.jbackup")
+
+
+def test_corrupted_backup_is_rejected_before_restore(organizer):
+    organizer.capture("Safe", "default", "c" * 32)
+    result = organizer.recovery.backup()
+    archive = organizer.recovery.folder / result["name"]
+    content = archive.read_bytes()
+    archive.write_bytes(content[:-32] + b"corrupted-backup-is-not-valid!!")
+    with pytest.raises(ValueError):
+        organizer.recovery.verify(result["name"])
+    with pytest.raises(ValueError):
+        organizer.recovery.restore(result["name"])
+
+
+def test_reliability_center_reports_services_and_resource_mode(organizer):
+    organizer.recovery.backup()
+    result = organizer.reliability()
+    assert result["status"] in {"ok", "warning"}
+    assert {item["id"] for item in result["services"]} == {
+        "mail",
+        "calendar",
+        "appa",
+        "scheduler",
+    }
+    assert result["recovery"]["latest_verification"]["verified"] is True
+    assert organizer.set_resource_mode("eco")["resource_mode"] == "eco"
+    assert organizer.reliability_settings()["resource_mode"] == "eco"
+    with pytest.raises(ValueError):
+        organizer.set_resource_mode("turbo")
+
+
+def test_reliability_api_creates_and_reverifies_backup(organizer):
+    app = create_app(organizer.config)
+    with TestClient(app) as client:
+        configured = client.put(
+            "/api/organizer/reliability/settings", json={"resource_mode": "eco"}
+        )
+        assert configured.status_code == 200
+        created = client.post("/api/organizer/backups")
+        assert created.status_code == 200 and created.json()["verified"] is True
+        name = created.json()["name"]
+        verified = client.post(f"/api/organizer/backups/{name}/verify")
+        assert verified.status_code == 200 and verified.json()["verified"] is True
+        status = client.get("/api/organizer/reliability")
+        assert status.status_code == 200
+        assert status.json()["settings"]["resource_mode"] == "eco"
+        assert (
+            client.put(
+                "/api/organizer/reliability/settings", json={"resource_mode": "turbo"}
+            ).status_code
+            == 422
+        )
 
 
 def test_real_webpush_encrypts_and_signs_without_external_network(organizer, monkeypatch):
@@ -584,6 +683,15 @@ def test_remote_organizer_authorization_and_capture_visibility(organizer, monkey
             == 403
         )
         assert client.post(base + "/api/organizer/backups", headers=headers).status_code == 403
+        assert client.get(base + "/api/organizer/reliability", headers=headers).status_code == 403
+        assert (
+            client.put(
+                base + "/api/organizer/reliability/settings",
+                headers=headers,
+                json={"resource_mode": "eco"},
+            ).status_code
+            == 403
+        )
         assert (
             client.post(
                 base + "/api/organizer/captures",

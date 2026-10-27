@@ -47,15 +47,21 @@ def test_health_and_ui_are_available() -> None:
     assert "CODEX // CHATGPT" in index.text
     assert "HYBRID PRIVATE" in index.text
     assert "agent-v9" in index.text
-    assert "agent-v11" in index.text
-    assert "assistant-v4" in index.text
+    assert "styles.css?v=agent-v15" in index.text
+    assert "app.js?v=agent-v19" in index.text
+    assert "assistant.js?v=assistant-v8" in index.text
     assert manifest.status_code == 200
     assert service_worker.status_code == 200
     assert "javascript" in service_worker.headers["content-type"]
-    assert "jarvis-assistant-interface-v18" in service_worker.text
+    assert "jarvis-assistant-interface-v32" in service_worker.text
     assert "client.navigate(client.url)" in service_worker.text
     assert app_script.status_code == 200
     assert "unlockNeuralAudioPlayback" in app_script.text
+    assert "window.jarvisMobileVoice" in app_script.text
+    assert "for (const track of this.stream?.getTracks?.() || []) track.stop()" in app_script.text
+    assert "if (document.hidden) {" in app_script.text
+    assert "window.__JARVIS_DESKTOP__" in app_script.text
+    assert "disableHandsFreeMode(false)" in app_script.text
     assert "neuralAudioElement" in app_script.text
     assert "height: clamp(610px" in stylesheet.text
     assert "overflow-y: auto" in stylesheet.text
@@ -252,6 +258,7 @@ def test_sensitive_action_requires_and_accepts_confirmation(tmp_path: Path) -> N
             brain_mode="fallback",
             action_model_planning=False,
             voice_preload=False,
+            local_trusted_actions=False,
         )
     )
     app.state.action_engine.catalog.execute = AsyncMock(
@@ -288,6 +295,7 @@ def test_action_decision_cannot_cross_sessions(tmp_path: Path) -> None:
             brain_mode="fallback",
             action_model_planning=False,
             voice_preload=False,
+            local_trusted_actions=False,
         )
     )
     with TestClient(app) as client:

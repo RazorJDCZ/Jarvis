@@ -38,6 +38,8 @@ _SENSITIVE_RESULTS = frozenset(
         "dev.inspect",
         "dev.search",
         "knowledge.search",
+        "personal.search",
+        "action.history",
         "knowledge.add_attachment",
         "attachment.list",
     }

@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 from jarvis.config import Settings
 from jarvis.schemas import ProviderStatus
@@ -29,7 +30,8 @@ def _clean_text(value: str, maximum: int) -> str:
 
 
 def _utc_now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    # Microseconds make optimistic concurrency reliable for two edits in one second.
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 def _third_person_possessive(value: str) -> str:
@@ -44,6 +46,7 @@ class MemoryEntry:
     category: str
     created_at: str
     updated_at: str
+    expires_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +55,19 @@ class MemoryCandidate:
     content: str
     category: str
     explicit: bool = False
+    expires_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PersonalEntity:
+    entity_id: str
+    kind: str
+    name: str
+    relation: str
+    details: str
+    created_at: str
+    updated_at: str
+    expires_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +95,11 @@ class MemoryExtractor:
         "puedes ",
         "podrias ",
         "sabes ",
+    )
+    _TEMPORARY = re.compile(
+        r"^(.+?)\s+(?:durante|por)\s+"
+        r"(un dia|una semana|un mes|tres meses|un ano)$",
+        flags=re.IGNORECASE,
     )
     _SENSITIVE_MARKERS = (
         "contrasena",
@@ -160,6 +181,23 @@ class MemoryExtractor:
         if match is None:
             return None
         content = _clean_text(match.group(1), 500)
+        expires_at = None
+        temporary = cls._TEMPORARY.fullmatch(normalize_memory_text(content))
+        if temporary is not None:
+            normalized_content = temporary.group(1)
+            original_words = content.split()
+            duration_words = len(temporary.group(2).split()) + 1
+            content = _clean_text(" ".join(original_words[:-duration_words]), 500)
+            duration = {
+                "un dia": timedelta(days=1),
+                "una semana": timedelta(days=7),
+                "un mes": timedelta(days=30),
+                "tres meses": timedelta(days=90),
+                "un ano": timedelta(days=365),
+            }[temporary.group(2)]
+            expires_at = (datetime.now(UTC) + duration).isoformat(timespec="seconds")
+            if normalize_memory_text(content) != normalized_content:
+                content = _clean_text(temporary.group(1), 500)
         if not content or cls.contains_sensitive_data(content):
             return None
         personal = cls._PERSONAL_FACT.fullmatch(content)
@@ -173,7 +211,13 @@ class MemoryExtractor:
         else:
             key = f"explicit:{cls._digest(content)}"
             category = "explicito"
-        return MemoryCandidate(key, content.rstrip(".") + ".", category, explicit=True)
+        return MemoryCandidate(
+            key,
+            content.rstrip(".") + ".",
+            category,
+            explicit=True,
+            expires_at=expires_at,
+        )
 
     @classmethod
     def is_explicit_request(cls, message: str) -> bool:
@@ -330,10 +374,24 @@ class MemoryStore:
                         normalized_content TEXT NOT NULL,
                         category TEXT NOT NULL,
                         created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
+                        updated_at TEXT NOT NULL,
+                        expires_at TEXT
                     );
                     CREATE INDEX IF NOT EXISTS idx_memories_category_updated
                         ON memories(category, updated_at DESC);
+                    CREATE TABLE IF NOT EXISTS personal_entities (
+                        entity_id TEXT PRIMARY KEY,
+                        kind TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        normalized_name TEXT NOT NULL,
+                        relation TEXT NOT NULL,
+                        details TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        expires_at TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_personal_entities_kind_name
+                        ON personal_entities(kind, normalized_name);
                     CREATE TABLE IF NOT EXISTS conversation_turns (
                         id INTEGER PRIMARY KEY,
                         session_id TEXT NOT NULL,
@@ -348,6 +406,19 @@ class MemoryStore:
                     PRAGMA user_version = 1;
                     """
                 )
+                memory_columns = {
+                    str(row["name"]) for row in connection.execute("PRAGMA table_info(memories)")
+                }
+                if "expires_at" not in memory_columns:
+                    connection.execute("ALTER TABLE memories ADD COLUMN expires_at TEXT")
+                entity_columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(personal_entities)")
+                }
+                if "expires_at" not in entity_columns:
+                    connection.execute(
+                        "ALTER TABLE personal_entities ADD COLUMN expires_at TEXT"
+                    )
             self.available = True
             self.error = ""
         except (OSError, sqlite3.Error) as exc:
@@ -362,6 +433,7 @@ class MemoryStore:
             category=str(row["category"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
+            expires_at=str(row["expires_at"]) if row["expires_at"] else None,
         )
 
     def upsert(self, candidate: MemoryCandidate) -> MemoryEntry | None:
@@ -374,13 +446,15 @@ class MemoryStore:
                 connection.execute(
                     """
                     INSERT INTO memories (
-                        memory_key, content, normalized_content, category, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        memory_key, content, normalized_content, category, created_at, updated_at,
+                        expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(memory_key) DO UPDATE SET
                         content = excluded.content,
                         normalized_content = excluded.normalized_content,
                         category = excluded.category,
-                        updated_at = excluded.updated_at
+                        updated_at = excluded.updated_at,
+                        expires_at = excluded.expires_at
                     """,
                     (
                         candidate.memory_key,
@@ -389,6 +463,7 @@ class MemoryStore:
                         candidate.category,
                         now,
                         now,
+                        candidate.expires_at,
                     ),
                 )
                 connection.execute(
@@ -415,9 +490,14 @@ class MemoryStore:
         safe_limit = max(1, min(limit, self.max_entries))
         try:
             with self._lock, self._connect() as connection:
+                connection.execute(
+                    "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at<=?",
+                    (_utc_now(),),
+                )
                 rows = connection.execute(
-                    "SELECT * FROM memories ORDER BY updated_at DESC, id DESC LIMIT ?",
-                    (safe_limit,),
+                    "SELECT * FROM memories WHERE expires_at IS NULL OR expires_at>? "
+                    "ORDER BY updated_at DESC, id DESC LIMIT ?",
+                    (_utc_now(), safe_limit),
                 ).fetchall()
             return tuple(self._entry(row) for row in rows)
         except sqlite3.Error as exc:
@@ -447,6 +527,162 @@ class MemoryStore:
                     ),
                 )
             return cursor.rowcount == 1
+
+    @staticmethod
+    def _personal_entity(row: sqlite3.Row) -> PersonalEntity:
+        return PersonalEntity(
+            entity_id=str(row["entity_id"]),
+            kind=str(row["kind"]),
+            name=str(row["name"]),
+            relation=str(row["relation"]),
+            details=str(row["details"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            expires_at=str(row["expires_at"]) if row["expires_at"] else None,
+        )
+
+    def save_entity(
+        self,
+        kind: str,
+        name: str,
+        relation: str = "",
+        details: str = "",
+        *,
+        expires_at: str | None = None,
+        entity_id: str | None = None,
+        expected_updated_at: str | None = None,
+    ) -> PersonalEntity | None:
+        """Create or update one typed personal fact with optimistic concurrency."""
+
+        if not self.available:
+            return None
+        safe_kind = normalize_memory_text(kind)
+        if safe_kind not in {
+            "persona",
+            "lugar",
+            "preferencia",
+            "rutina",
+            "objetivo",
+            "organizacion",
+            "proyecto",
+        }:
+            raise ValueError("Tipo de entidad personal no permitido")
+        safe_name = _clean_text(name, 160)
+        safe_relation = _clean_text(relation, 160)
+        safe_details = _clean_text(details, 1_000)
+        combined = " ".join((safe_name, safe_relation, safe_details))
+        if not safe_name or MemoryExtractor.contains_sensitive_data(combined):
+            raise ValueError("La entidad está vacía o contiene datos sensibles")
+        safe_expiry = self._validate_expiry(expires_at)
+        identifier = entity_id or uuid4().hex
+        if not re.fullmatch(r"[a-f0-9]{32}", identifier):
+            raise ValueError("Identificador de entidad no válido")
+        now = _utc_now()
+        with self._lock, self._connect() as connection:
+            if entity_id is None:
+                connection.execute(
+                    """
+                    INSERT INTO personal_entities(
+                        entity_id, kind, name, normalized_name, relation, details,
+                        created_at, updated_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        identifier,
+                        safe_kind,
+                        safe_name,
+                        normalize_memory_text(safe_name),
+                        safe_relation,
+                        safe_details,
+                        now,
+                        now,
+                        safe_expiry,
+                    ),
+                )
+            else:
+                cursor = connection.execute(
+                    """
+                    UPDATE personal_entities SET
+                        kind=?, name=?, normalized_name=?, relation=?, details=?, updated_at=?,
+                        expires_at=?
+                    WHERE entity_id=? AND updated_at=?
+                    """,
+                    (
+                        safe_kind,
+                        safe_name,
+                        normalize_memory_text(safe_name),
+                        safe_relation,
+                        safe_details,
+                        now,
+                        safe_expiry,
+                        identifier,
+                        expected_updated_at or "",
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return None
+            row = connection.execute(
+                "SELECT * FROM personal_entities WHERE entity_id=?", (identifier,)
+            ).fetchone()
+        return self._personal_entity(row) if row is not None else None
+
+    def list_entities(self, limit: int = 200) -> tuple[PersonalEntity, ...]:
+        if not self.available:
+            return ()
+        safe_limit = max(1, min(int(limit), 1_000))
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM personal_entities WHERE expires_at IS NOT NULL AND expires_at<=?",
+                (_utc_now(),),
+            )
+            rows = connection.execute(
+                "SELECT * FROM personal_entities "
+                "WHERE expires_at IS NULL OR expires_at>? "
+                "ORDER BY kind, normalized_name LIMIT ?",
+                (_utc_now(), safe_limit),
+            ).fetchall()
+        return tuple(self._personal_entity(row) for row in rows)
+
+    @staticmethod
+    def _validate_expiry(value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("La caducidad de la entidad no es valida") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        parsed = parsed.astimezone(UTC)
+        now = datetime.now(UTC)
+        if parsed <= now or parsed > now + timedelta(days=3650):
+            raise ValueError("La caducidad debe estar entre manana y diez anos")
+        return parsed.isoformat(timespec="seconds")
+
+    def delete_entity(self, entity_id: str, expected_updated_at: str) -> bool:
+        if not self.available or not re.fullmatch(r"[a-f0-9]{32}", entity_id):
+            return False
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM personal_entities WHERE entity_id=? AND updated_at=?",
+                (entity_id, expected_updated_at),
+            )
+        return cursor.rowcount == 1
+
+    def relevant_entities(self, query: str, limit: int = 6) -> tuple[PersonalEntity, ...]:
+        query_tokens = self._tokens(query)
+        if not query_tokens:
+            return ()
+        scored: list[tuple[int, str, PersonalEntity]] = []
+        for entity in self.list_entities():
+            tokens = self._tokens(
+                f"{entity.kind} {entity.name} {entity.relation} {entity.details}"
+            )
+            overlap = query_tokens & tokens
+            if overlap:
+                scored.append((len(overlap), entity.updated_at, entity))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return tuple(item[2] for item in scored[: max(1, min(limit, 20))])
 
     @classmethod
     def _tokens(cls, value: str) -> set[str]:
@@ -632,6 +868,7 @@ class MemoryStore:
             with self._lock, self._connect() as connection:
                 connection.execute("DELETE FROM memories")
                 connection.execute("DELETE FROM conversation_turns")
+                connection.execute("DELETE FROM personal_entities")
             self._compact_after_forget()
             return True
         except sqlite3.Error as exc:
@@ -868,8 +1105,18 @@ class MemoryService:
 
     def context(self, query: str) -> str:
         entries = self.store.relevant(query, self.settings.memory_context_items)
+        entities = self.store.relevant_entities(query, self.settings.memory_context_items)
         lines: list[str] = []
         used = 0
+        for entity in entities:
+            description = " · ".join(
+                value for value in (entity.relation, entity.details) if value
+            )
+            line = f"- [{entity.kind}] {entity.name}" + (f": {description}" if description else "")
+            if used + len(line) > 2_200:
+                break
+            lines.append(line)
+            used += len(line)
         for entry in entries:
             line = f"- [{entry.category}] {entry.content}"
             if used + len(line) > 2_200:

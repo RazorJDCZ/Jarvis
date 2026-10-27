@@ -26,6 +26,17 @@ La pantalla **Hoy** aparece después de Dashboard en Appa. También está dispon
 - **Hoy:** prioridades sugeridas a partir de tareas pendientes, correos por responder y
   agenda próxima. El contenido se lee de la copia local; no requiere esperar a un modelo.
   Se señala cuando Appa o Google no se han podido sincronizar.
+- **Finanzas 2.0:** extrae localmente importes, fecha, comercio y tipo de movimiento de
+  notificaciones reconocidas de Produbanco y Banco Pichincha. El panel separa compras,
+  transferencias, retiros e ingresos, muestra categorías y permite excluir o recategorizar cada
+  registro. Las promociones, claves temporales e inicios de sesión no cuentan como gastos. Gmail
+  puede agrupar mensajes con el mismo asunto; Jarvis conserva cada mensaje individual para no
+  subcontarlos. Permite definir un presupuesto total o por categoría, ingreso y meta de ahorro;
+  muestra proyección de cierre, seis meses de tendencia, posibles pagos recurrentes y compras
+  claramente inusuales frente al historial. Se puede corregir un comercio y reutilizar ese alias,
+  además de exportar el mes como CSV. Solo guarda estas preferencias en Jarvis y enlaza el correo
+  original. Appa consume la misma fuente mediante su módulo **Finanzas**: no duplica correos ni
+  credenciales bancarias.
 - **Seguimiento:** por defecto, avisos tras tres días en «Por responder» o «Esperando
   respuesta», como máximo uno cada 24 horas. Los intervalos se ajustan en la página Hoy.
   Los correos resueltos o pospuestos no generan estos avisos. No se envían respuestas.
@@ -38,6 +49,11 @@ La pantalla **Hoy** aparece después de Dashboard en Appa. También está dispon
   duplicarla al reconectar. El dictado se transcribe localmente y se revisa antes de guardar.
   También funciona «Anota esta idea: ...» en el chat de texto o voz. Appa muestra las
   capturas de todos tus dispositivos; cada teléfono consulta las suyas.
+
+El cálculo financiero se puede consultar también por chat o voz, por ejemplo «¿cuánto he gastado
+este mes?», «¿cuánto transferí?» o «¿cuánto gasté esta semana?». Es una estimación basada en los
+correos disponibles: una operación sin notificación, un formato bancario nuevo o una reversión
+pueden requerir revisión. Los estados de cuenta siguen siendo la fuente oficial.
 
 ## Conectar Google Calendar
 
@@ -91,11 +107,19 @@ El estado está en `.data/supervisor.json`; los registros del servidor se rotan 
 Abrir `start.cmd` cuando Jarvis ya está activo reutiliza ese servidor y abre su interfaz.
 
 Cada día se prepara un respaldo cifrado con Windows DPAPI en `.data/backups`. Se conservan
-14 copias. Incluye las bases SQLite de Jarvis, `.env`, preferencias y el perfil local
+14 copias. Cada copia se descifra de nuevo inmediatamente, comprueba su manifiesto y hashes y
+ejecuta `PRAGMA quick_check` sobre cada SQLite antes de declararse válida. Incluye las bases SQLite
+de Jarvis, `.env`, preferencias y el perfil local
 predeterminado. SQLite usa su API de backup para incluir escrituras del diario WAL.
 No incluye modelos, adjuntos, fuentes de documentos ni la base propia de Appa; para esta
 última utiliza los respaldos existentes de Appa. Un respaldo en el mismo disco sirve para
 recuperar errores de software; no protege frente a la pérdida del disco.
+
+En **Mi día → Confiabilidad y recuperación** se puede comprobar el estado de Gmail, Calendar,
+Appa, el programador, las bases locales, el espacio disponible y la copia más reciente. También
+permite verificar otra vez la última copia y escoger actividad normal (cada minuto) o modo ahorro
+(cada tres minutos). El diagnóstico detallado y la creación/verificación de respaldos solo están
+disponibles desde la PC principal; el teléfono no puede ejecutar operaciones de recuperación.
 
 La restauración requiere el mismo usuario de Windows y el material DPAPI de ese perfil:
 
@@ -123,6 +147,9 @@ duplicados y pérdida de respuestas, edición de eventos administrados, ETags, c
 ediciones externas, paginación,
 conservación de caché, capturas tras reinicio, permisos remotos, horarios de estudio,
 notificaciones cifradas y firmadas con la librería real, reintentos, revocación y restauración.
+`tests/test_finance.py` cubre promociones, formatos reales anonimizados de ambos bancos,
+deduplicación, conversaciones agrupadas, totales mensuales, categorías, exclusiones y consultas
+por chat.
 
 `scripts/smoke_organizer_ui.py` prueba Appa compilada y la página móvil con datos ficticios:
 revisión de evento, estudio, capturas, funcionamiento sin conexión, sincronización sin
@@ -132,7 +159,7 @@ de esa prueba se simulan. Los datos personales y los resultados de prueba quedan
 La autorización real de correo/Calendar y el permiso de avisos del teléfono requieren tu
 participación. Ninguna prueba sintética equivale a comprobar entrega en tu teléfono físico.
 
-Verificación final: **870 pruebas Python aprobadas, 3 omitidas** y **23 pruebas Rust
+Verificación final: **996 pruebas Python aprobadas, 4 omitidas** y **23 pruebas Rust
 aprobadas**; formato, TypeScript y compilación de producción completados. Las pruebas
 de navegador pasaron sin errores JavaScript. Se verificó el ejecutable instalado de Appa
 y su comunicación nativa con Jarvis. El supervisor recuperó el servidor después de una

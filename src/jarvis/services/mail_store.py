@@ -6,11 +6,159 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
+import unicodedata
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
+
+_SEARCH_FILLERS = frozenset(
+    {
+        "a",
+        "acerca",
+        "al",
+        "algun",
+        "algunos",
+        "correo",
+        "correos",
+        "cuales",
+        "de",
+        "del",
+        "dime",
+        "el",
+        "email",
+        "emails",
+        "en",
+        "han",
+        "llegado",
+        "llegaron",
+        "la",
+        "las",
+        "lo",
+        "los",
+        "mail",
+        "mails",
+        "me",
+        "mis",
+        "muestra",
+        "relacionado",
+        "relacionados",
+        "por",
+        "que",
+        "se",
+        "sobre",
+        "tema",
+        "tematica",
+        "tengo",
+        "un",
+        "una",
+        "unas",
+        "unos",
+    }
+)
+_TOPIC_GROUPS = (
+    frozenset(
+        {
+            "academico",
+            "asignatura",
+            "campus",
+            "clase",
+            "curso",
+            "deber",
+            "docente",
+            "entrega",
+            "estudio",
+            "examen",
+            "informe",
+            "moodle",
+            "profesor",
+            "tarea",
+            "universidad",
+        }
+    ),
+    frozenset(
+        {
+            "banco",
+            "cobro",
+            "factura",
+            "finanza",
+            "pago",
+            "recibo",
+            "tarjeta",
+            "transferencia",
+        }
+    ),
+    frozenset(
+        {
+            "acceso",
+            "alerta",
+            "contrasena",
+            "cuenta",
+            "inicio",
+            "login",
+            "seguridad",
+            "sesion",
+            "verificacion",
+        }
+    ),
+    frozenset(
+        {
+            "compra",
+            "envio",
+            "orden",
+            "paquete",
+            "pedido",
+            "producto",
+            "tienda",
+        }
+    ),
+    frozenset(
+        {
+            "avion",
+            "hotel",
+            "reserva",
+            "turismo",
+            "viaje",
+            "vuelo",
+        }
+    ),
+    frozenset(
+        {
+            "cita",
+            "clinica",
+            "doctor",
+            "medico",
+            "salud",
+        }
+    ),
+)
+
+
+def _search_normalized(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").casefold())
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    return re.sub(r"[^a-z0-9@._+-]+", " ", text).strip()
+
+
+def _search_tokens(value: object) -> tuple[str, ...]:
+    return tuple(token for token in _search_normalized(value).split() if token)
+
+
+def _stem(value: str) -> str:
+    for suffix in ("mente", "aciones", "acion", "idades", "idad", "es", "os", "as", "s"):
+        if len(value) - len(suffix) >= 4 and value.endswith(suffix):
+            return value[: -len(suffix)]
+    return value
+
+
+def _contains_term(term: str, tokens: tuple[str, ...], normalized: str) -> bool:
+    if term in tokens or (len(term) >= 4 and term in normalized):
+        return True
+    target = _stem(term)
+    return len(target) >= 4 and any(_stem(token) == target for token in tokens)
 
 
 def protect(data: bytes, decrypt: bool = False) -> bytes:
@@ -76,11 +224,29 @@ class MailStore:
                     account_id TEXT PRIMARY KEY, since REAL NOT NULL,
                     page_token TEXT NOT NULL, started REAL NOT NULL,
                     processed INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS mail_messages (
+                    id TEXT PRIMARY KEY, account_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL, version TEXT NOT NULL,
+                    subject TEXT NOT NULL, sender TEXT NOT NULL,
+                    received TEXT NOT NULL, url TEXT NOT NULL,
+                    body TEXT NOT NULL, message_id TEXT NOT NULL DEFAULT '',
+                    UNIQUE(account_id, version));
+                CREATE INDEX IF NOT EXISTS mail_messages_received
+                    ON mail_messages(received DESC);
             """)
             self._ensure_column(db, "mail", "message_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(db, "mail", "reply_to", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(db, "mail", "sent_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(db, "mail", "sent_at", "REAL NOT NULL DEFAULT 0")
+            # Older Jarvis versions only retained the newest message in each conversation.
+            # Seed the immutable archive in one transaction. A bounded Gmail rebuild can then
+            # recover the remaining messages without changing the user's review state.
+            db.execute(
+                "INSERT OR IGNORE INTO mail_messages "
+                "(id,account_id,thread_id,version,subject,sender,received,url,body,message_id) "
+                "SELECT 'legacy:'||account_id||':'||version,account_id,thread_id,version,"
+                "subject,sender,received,url,substr(body,1,30000),message_id FROM mail"
+            )
 
     @staticmethod
     def _ensure_column(db, table: str, column: str, declaration: str) -> None:
@@ -127,12 +293,84 @@ class MailStore:
         with self.db() as db:
             db.execute("DELETE FROM secrets WHERE key=?", (identifier,))
             db.execute("DELETE FROM mail_sync WHERE account_id=?", (identifier,))
+            db.execute("DELETE FROM mail_messages WHERE account_id=?", (identifier,))
             db.execute(
                 "DELETE FROM mail_tasks WHERE mail_id IN (SELECT id FROM mail WHERE account_id=?)",
                 (identifier,),
             )
             db.execute("DELETE FROM mail WHERE account_id=?", (identifier,))
             db.execute("DELETE FROM accounts WHERE id=?", (identifier,))
+
+    def archive(self, account_id, message):
+        """Retain one immutable local copy per provider message for derived private views."""
+
+        version = str(message.get("version") or "").strip()
+        if not version:
+            return False
+        identifier = hashlib.sha256(f"{account_id}:{version}".encode()).hexdigest()[:32]
+        fields = (
+            "thread_id",
+            "version",
+            "subject",
+            "sender",
+            "received",
+            "url",
+            "body",
+            "message_id",
+        )
+        values = [str(message.get(field) or "") for field in fields]
+        values[6] = values[6][:30_000]
+        with self.db() as db:
+            cursor = db.execute(
+                "INSERT OR IGNORE INTO mail_messages "
+                "(id,account_id,thread_id,version,subject,sender,received,url,body,message_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (identifier, account_id, *values),
+            )
+        return bool(cursor.rowcount)
+
+    def archived_messages(self, *, since="", until="", limit=5000):
+        safe_limit = max(1, min(int(limit), 10_000))
+        clauses = []
+        values: list[object] = []
+        if since:
+            clauses.append("mm.received>=?")
+            values.append(since)
+        if until:
+            clauses.append("mm.received<?")
+            values.append(until)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT mm.*,a.email,a.provider FROM mail_messages mm JOIN accounts a "
+                "ON mm.account_id=a.id"
+                + where
+                + " ORDER BY mm.received DESC LIMIT ?",
+                (*values, safe_limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def archive_coverage(self):
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT a.email,a.provider,MIN(mm.received) AS first_message,"
+                "MAX(mm.received) AS last_message,COUNT(mm.id) AS messages "
+                "FROM accounts a LEFT JOIN mail_messages mm ON mm.account_id=a.id "
+                "GROUP BY a.id ORDER BY a.email"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reset_google_sync(self):
+        """Schedule a bounded 30-day rebuild using the existing paginated Gmail worker."""
+
+        with self.db() as db:
+            identifiers = [
+                row[0] for row in db.execute("SELECT id FROM accounts WHERE provider='google'")
+            ]
+            if identifiers:
+                db.execute("DELETE FROM mail_sync")
+                db.execute("UPDATE accounts SET synced=0,error='' WHERE provider='google'")
+        return identifiers
 
     def account_result(self, identifier, *, synced=None, error=""):
         with self.db() as db:
@@ -183,6 +421,7 @@ class MailStore:
         return dict(row) if row else None
 
     def ingest(self, account_id, message):
+        self.archive(account_id, message)
         identifier = hashlib.sha256(f"{account_id}:{message['thread_id']}".encode()).hexdigest()[
             :32
         ]
@@ -236,7 +475,7 @@ class MailStore:
             )
             return [{k: v for k, v in dict(r).items() if k != "body"} for r in rows]
 
-    def search(self, query: str, *, limit: int = 20, include_resolved: bool = True):
+    def _literal_search(self, query: str, *, limit: int = 20, include_resolved: bool = True):
         words = [word.casefold() for word in query.split() if word.strip()]
         if not words or len(query) > 300:
             raise ValueError("La búsqueda debe contener entre 1 y 300 caracteres")
@@ -266,6 +505,145 @@ class MailStore:
                 (*values, safe_limit),
             ).fetchall()
         return [{k: v for k, v in dict(row).items() if k != "body"} for row in rows]
+
+    def search(self, query: str, *, limit: int = 20, include_resolved: bool = True):
+        """Rank broad local matches by meaning, field quality, priority and recency."""
+
+        if not isinstance(query, str) or not query.strip() or len(query) > 300:
+            raise ValueError("La búsqueda debe contener entre 1 y 300 caracteres")
+        safe_limit = max(1, min(int(limit), 50))
+        normalized_query = _search_normalized(query)
+        sort = "relevance"
+        if re.search(r"\b(?:mas recientes?|ultimos?|por fecha|nuevos?)\b", normalized_query):
+            sort = "newest"
+        elif re.search(r"\b(?:mas importantes?|prioridad|urgentes?)\b", normalized_query):
+            sort = "importance"
+        cleaned_query = re.sub(
+            r"\b(?:subject|asunto|sender|remitente|from)\s*:\s*",
+            " ",
+            normalized_query,
+            flags=re.IGNORECASE,
+        )
+        cleaned_query = re.sub(
+            r"(?i)\b(?:ordenados? por )?(?:relevancia|mas recientes?|ultimos?|por fecha|"
+            r"nuevos?|mas importantes?|prioridad|urgentes?)\b",
+            " ",
+            cleaned_query,
+        )
+        core_terms = tuple(
+            dict.fromkeys(
+                token
+                for token in _search_tokens(cleaned_query)[:16]
+                if token not in _SEARCH_FILLERS
+            )
+        )
+        if not core_terms:
+            # Literal punctuation searches such as "%" are valid but cannot match safely.
+            return []
+        phrase = " ".join(core_terms)
+        expanded: set[str] = set()
+        for group in _TOPIC_GROUPS:
+            stems = {_stem(candidate) for candidate in group}
+            if any(_stem(term) in stems for term in core_terms):
+                expanded.update(group)
+        expanded.difference_update(core_terms)
+
+        where = "" if include_resolved else "WHERE m.state!='resolved'"
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT m.*,a.email,a.provider FROM mail m JOIN accounts a "
+                f"ON m.account_id=a.id {where} ORDER BY m.received DESC LIMIT 2500"
+            ).fetchall()
+
+        ranked: list[tuple[tuple[float, float, float], dict[str, object]]] = []
+        now = time.time()
+        for row in rows:
+            item = dict(row)
+            fields = {
+                "subject": _search_normalized(item.get("subject")),
+                "sender": _search_normalized(item.get("sender")),
+                "summary": _search_normalized(item.get("summary")),
+                "body": _search_normalized(item.get("body")),
+                "account": _search_normalized(item.get("email")),
+            }
+            field_tokens = {name: tuple(value.split()) for name, value in fields.items()}
+            weights = {
+                "subject": 9.0,
+                "sender": 10.0,
+                "summary": 6.0,
+                "body": 2.5,
+                "account": 4.0,
+            }
+            matched_core: set[str] = set()
+            reasons: list[str] = []
+            score = 0.0
+            for field, value in fields.items():
+                matches = {
+                    term
+                    for term in core_terms
+                    if _contains_term(term, field_tokens[field], value)
+                }
+                if matches:
+                    matched_core.update(matches)
+                    score += len(matches) * weights[field]
+                    reasons.append(field)
+            topic_hits = {
+                term
+                for term in expanded
+                if any(
+                    _contains_term(term, field_tokens[field], fields[field])
+                    for field in ("subject", "summary", "body")
+                )
+            }
+            if not matched_core and not topic_hits:
+                continue
+            score += min(8.0, len(topic_hits) * 0.9)
+            coverage = len(matched_core) / len(core_terms)
+            score += coverage * 12
+            if phrase:
+                if phrase in fields["subject"]:
+                    score += 24
+                elif phrase in fields["sender"]:
+                    score += 18
+                elif phrase in fields["summary"]:
+                    score += 14
+                elif phrase in fields["body"]:
+                    score += 8
+            priority_rank = {"high": 3.0, "normal": 1.0, "low": 0.0}.get(
+                str(item.get("priority", "normal")), 1.0
+            )
+            score += priority_rank
+            if item.get("state") != "resolved":
+                score += 0.5
+            try:
+                received = datetime.fromisoformat(
+                    str(item.get("received", "")).replace("Z", "+00:00")
+                )
+                if received.tzinfo is None:
+                    received = received.replace(tzinfo=UTC)
+                received_timestamp = received.timestamp()
+            except (TypeError, ValueError):
+                received_timestamp = 0.0
+            age_days = (
+                max(0.0, (now - received_timestamp) / 86_400)
+                if received_timestamp
+                else 3650
+            )
+            score += max(0.0, 3.0 - age_days / 30.0)
+            public = {key: value for key, value in item.items() if key != "body"}
+            public["relevance"] = round(score, 2)
+            public["matched_terms"] = sorted(matched_core)
+            public["topic_matches"] = sorted(topic_hits)[:8]
+            public["match_fields"] = reasons
+            if sort == "newest":
+                rank = (received_timestamp, score, priority_rank)
+            elif sort == "importance":
+                rank = (priority_rank, score, received_timestamp)
+            else:
+                rank = (score, priority_rank, received_timestamp)
+            ranked.append((rank, public))
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for _rank, item in ranked[:safe_limit]]
 
     def update(self, identifier, **values):
         allowed = {

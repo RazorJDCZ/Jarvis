@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#050711" />
+    <title>Jarvis</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="loader.css" />
+    <script src="loader.js" defer></script>
+  </head>
+  <body>
+    <main class="boot-shell">
+      <div class="grid" aria-hidden="true"></div>
+      <section class="boot-card" aria-live="polite">
+        <div class="brand-row">
+          <img src="icon.svg" alt="" />
+          <div>
+            <p>JARVIS // DESKTOP CORE</p>
+            <h1>Preparando el enlace privado</h1>
+          </div>
+        </div>
+
+        <div class="core" aria-hidden="true">
+          <span class="orbit orbit-one"></span>
+          <span class="orbit orbit-two"></span>
+          <span class="pulse"></span>
+          <img src="icon.svg" alt="" />
+        </div>
+
+        <p class="status" id="status">Comprobando el núcleo de Jarvis…</p>
+        <p class="detail" id="detail">
+          Tus cuentas, memoria y conexiones permanecen en el servicio local existente.
+        </p>
+        <div class="actions" id="actions" hidden>
+          <button id="retryButton" type="button">REINTENTAR</button>
+          <button class="secondary" id="logsButton" type="button">ABRIR DIAGNÓSTICO</button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

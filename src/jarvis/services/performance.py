@@ -78,7 +78,9 @@ class PerformanceLog:
         return [item for item in self.records if item["session"] == session][-20:]
 
 
-async def response_events(operation, log: PerformanceLog, session: str):
+async def response_events(
+    operation, log: PerformanceLog, session: str, timeout: float | None = None
+):
     """Bounded per-request stream. Disconnecting cancels inference, never retries actions."""
     queue: asyncio.Queue = asyncio.Queue(maxsize=64)
     timing: dict[str, float] = {}
@@ -95,9 +97,24 @@ async def response_events(operation, log: PerformanceLog, session: str):
         sink_token = token_sink.set(emit)
         time_token = active_timing.set(timing)
         try:
-            result = await operation()
+            if timeout is None:
+                result = await operation()
+            else:
+                async with asyncio.timeout(timeout):
+                    result = await operation()
             timing["total"] = round((time.perf_counter() - started) * 1000, 1)
             await queue.put({"event": "done", **result.model_dump(), "timings_ms": timing})
+        except TimeoutError:
+            timing["timeout"] = round((time.perf_counter() - started) * 1000, 1)
+            await queue.put(
+                {
+                    "event": "error",
+                    "detail": (
+                        "Jarvis tardó demasiado en responder. La solicitud fue cancelada; "
+                        "puedes hablar de nuevo."
+                    ),
+                }
+            )
         except Exception:
             await queue.put({"event": "error", "detail": "No pude completar la solicitud."})
         finally:

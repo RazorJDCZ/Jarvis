@@ -16,6 +16,7 @@ from jarvis.actions.models import (
     ExecutionResult,
     PreparedWorkflow,
 )
+from jarvis.capabilities.computer_files import ComputerFileSearch
 from jarvis.capabilities.connectors import (
     AppaConnector,
     ConnectorError,
@@ -28,6 +29,7 @@ from jarvis.capabilities.gaming import GameInfo, GameLibrary, GameLibraryError
 from jarvis.capabilities.skills import SkillRegistry, SkillValidationError
 from jarvis.capabilities.stores import (
     PermissionStore,
+    ReceiptStore,
     Reminder,
     ReminderStore,
     TraceStore,
@@ -35,6 +37,7 @@ from jarvis.capabilities.stores import (
 from jarvis.capabilities.system import SystemMonitor
 from jarvis.config import Settings
 from jarvis.providers.codex_app_server import CodexAppServerClient, CodexAppServerError
+from jarvis.services.personal_search import PersonalSearchService
 from jarvis.text import strip_emojis
 
 if TYPE_CHECKING:
@@ -77,11 +80,16 @@ class CapabilitySuite:
         self.traces = TraceStore(database)
         self.permissions = PermissionStore(database)
         self.reminders = ReminderStore(database)
+        self.receipts = ReceiptStore(database)
+        from jarvis.services.automations import AutomationStore
         from jarvis.services.notifications import NotificationStore
         from jarvis.services.preferences import PreferenceStore
+        from jarvis.services.weather import WeatherService
 
         self.outbox = NotificationStore(settings.data_dir / "notifications.sqlite3")
         self.preferences = PreferenceStore(settings.data_dir / "preferences.json")
+        self.automations = AutomationStore(settings.data_dir / "automations.sqlite3")
+        self.weather = WeatherService(settings.user_profile_path)
         from jarvis.capabilities.semantic import SemanticKnowledgeStore
 
         self.knowledge = SemanticKnowledgeStore(database, settings)
@@ -109,6 +117,12 @@ class CapabilitySuite:
             appa_timeout=settings.appa_timeout,
         )
         self.developer = DeveloperWorkspace(settings.configured_workspace_roots)
+        self.file_search = ComputerFileSearch(
+            settings.configured_file_search_roots,
+            timeout_seconds=settings.file_search_timeout,
+            max_directories=settings.file_search_max_directories,
+        )
+        self.personal_search = PersonalSearchService(self)
         self.system = SystemMonitor()
         self._notification_callback: NotificationCallback | None = None
         self._notifications: dict[str, list[dict[str, object]]] = {}
@@ -155,6 +169,15 @@ class CapabilitySuite:
         self._monitor_task = None
 
     async def _notify(self, session_id: str, payload: dict[str, object]) -> None:
+        if session_id != "system" and payload.get("event") in {"automation", "upcoming"}:
+            threshold = {"all": 0, "important": 1, "urgent": 2}[
+                self.preferences.get().notification_level
+            ]
+            priority = {"informative": 0, "important": 1, "urgent": 2}.get(
+                str(payload.get("priority", "informative")), 0
+            )
+            if priority < threshold:
+                return
         item = {**payload, "created_at": datetime.now(UTC).isoformat()}
         if session_id == "system":
             self._system_alert_sequence += 1
@@ -273,7 +296,35 @@ class CapabilitySuite:
                 pass
             await asyncio.sleep(60)
 
+    async def _queue_automation_notification(
+        self,
+        session_id: str,
+        dedupe_key: str,
+        payload: dict[str, object],
+    ) -> None:
+        await asyncio.to_thread(
+            self.automations.enqueue_notification,
+            session_id,
+            dedupe_key,
+            payload,
+        )
+
+    async def _drain_automation_jobs(self) -> None:
+        jobs = await asyncio.to_thread(self.automations.due_jobs, limit=20)
+        for job in jobs:
+            try:
+                await self._notify(job.session_id, job.payload)
+            except Exception as exc:
+                await asyncio.to_thread(
+                    self.automations.finish_job,
+                    job.job_id,
+                    error=type(exc).__name__,
+                )
+            else:
+                await asyncio.to_thread(self.automations.finish_job, job.job_id)
+
     async def _proactive_tick(self) -> None:
+        await self._drain_automation_jobs()
         preferences = self.preferences.get()
         now = datetime.now().astimezone()
         if not preferences.proactive or self.preferences.quiet(now.hour):
@@ -282,14 +333,117 @@ class CapabilitySuite:
             return
         self._last_proactive_minute = now.strftime("%Y-%m-%d %H:%M")
         for session in self.outbox.sessions():
-            identifier = "briefing:" + now.date().isoformat()
-            if now.hour >= preferences.briefing_hour and not self.outbox.has_event(
-                session, identifier
-            ):
-                briefing = await self.briefing(session)
-                await self._notify(
-                    session, {"event": "briefing", "id": identifier, "title": briefing["summary"]}
-                )
+            for rule in self.automations.list(enabled_only=True):
+                if rule.kind == "daily_briefing" and now.hour >= rule.hour:
+                    run_key = now.date().isoformat()
+                    if self.automations.claim(rule.rule_id, session, run_key):
+                        briefing = await self.briefing(session)
+                        await self._queue_automation_notification(
+                            session,
+                            f"briefing:{run_key}",
+                            {
+                                "event": "automation",
+                                "id": f"briefing:{run_key}",
+                                "title": briefing["summary"],
+                                "automation": rule.name,
+                                "priority": "informative",
+                            },
+                        )
+                elif rule.kind == "weather_daily" and now.hour >= rule.hour:
+                    run_key = now.date().isoformat()
+                    if self.automations.claim(rule.rule_id, session, run_key):
+                        try:
+                            weather = await self.weather.current()
+                        except Exception:
+                            continue
+                        await self._queue_automation_notification(
+                            session,
+                            f"automation:{rule.rule_id}:{run_key}",
+                            {
+                                "event": "automation",
+                                "id": f"automation:{rule.rule_id}:{run_key}",
+                                "title": weather["summary"],
+                                "automation": rule.name,
+                                "priority": "informative",
+                            },
+                        )
+                elif rule.kind == "important_mail" and self.mail is not None:
+                    important = self.mail.insights(20)["items"]
+                    run_key = now.date().isoformat()
+                    if important and self.automations.claim(rule.rule_id, session, run_key):
+                        subjects = "; ".join(
+                            str(item.get("subject", "Sin asunto"))[:80]
+                            for item in important[:3]
+                        )
+                        remainder = len(important) - 3
+                        suffix = f"; y {remainder} más" if remainder > 0 else ""
+                        await self._queue_automation_notification(
+                            session,
+                            f"automation:{rule.rule_id}:{run_key}",
+                            {
+                                "event": "automation",
+                                "id": f"automation:{rule.rule_id}:{run_key}",
+                                "title": f"Correos importantes: {subjects}{suffix}",
+                                "automation": rule.name,
+                                "priority": "important",
+                            },
+                        )
+                elif rule.kind == "deadline_watch" and self.mail is not None:
+                    deadlines = [
+                        item
+                        for item in self.mail.insights(50)["items"]
+                        if item.get("deadline")
+                    ]
+                    run_key = now.date().isoformat()
+                    if deadlines and self.automations.claim(rule.rule_id, session, run_key):
+                        subjects = "; ".join(
+                            f"{item.get('subject', 'Sin asunto')} — {item.get('deadline')}"
+                            for item in deadlines[:3]
+                        )
+                        await self._queue_automation_notification(
+                            session,
+                            f"automation:{rule.rule_id}:{run_key}",
+                            {
+                                "event": "automation",
+                                "id": f"automation:{rule.rule_id}:{run_key}",
+                                "title": f"Fechas límite detectadas: {subjects}",
+                                "automation": rule.name,
+                                "priority": "important",
+                            },
+                        )
+                elif rule.kind == "calendar_soon" and self.organizer is not None:
+                    for event in self.organizer.today(session).get("events", [])[:100]:
+                        try:
+                            start = datetime.fromisoformat(
+                                str(event["start_at"]).replace("Z", "+00:00")
+                            )
+                            if start.tzinfo is None:
+                                start = start.replace(tzinfo=now.tzinfo)
+                            seconds = (start.astimezone(now.tzinfo) - now).total_seconds()
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        if not 0 < seconds <= rule.lead_minutes * 60:
+                            continue
+                        event_id = str(event.get("id", ""))
+                        run_key = f"{event_id}:{event.get('start_at', '')}"
+                        if not event_id or not self.automations.claim(
+                            rule.rule_id, session, run_key
+                        ):
+                            continue
+                        await self._queue_automation_notification(
+                            session,
+                            f"automation:{rule.rule_id}:{event_id}",
+                            {
+                                "event": "automation",
+                                "id": f"automation:{rule.rule_id}:{event_id}",
+                                "title": (
+                                    f"En menos de {rule.lead_minutes} minutos: "
+                                    f"{event.get('title', 'Evento')}"
+                                ),
+                                "automation": rule.name,
+                                "priority": "urgent",
+                            },
+                        )
             for reminder in self.reminders.list(session):
                 due = datetime.fromisoformat(reminder.due_at)
                 identifier = f"upcoming:{reminder.reminder_id}:{reminder.due_at}"
@@ -302,8 +456,10 @@ class CapabilitySuite:
                             "event": "upcoming",
                             "id": identifier,
                             "title": f"En menos de 15 minutos: {reminder.title}",
+                            "priority": "urgent",
                         },
                     )
+        await self._drain_automation_jobs()
 
     async def _system_loop(self) -> None:
         while True:
@@ -677,6 +833,54 @@ class CapabilitySuite:
                     f"{focus_text}",
                     {"appa_context": context, "verified": True, "source": "appa"},
                 )
+            if name is ActionName.PERSONAL_SEARCH:
+                result = await self.personal_search.search(
+                    session_id,
+                    arguments["query"],
+                    limit=25,
+                )
+                items = result["items"]
+                if not items:
+                    message = "No encontré información relacionada en tus fuentes personales."
+                else:
+                    message = "Encontré: " + "; ".join(
+                        f"[{item['source']}] {item['title']}"
+                        for item in items[:10]
+                    )
+                unavailable = [
+                    source
+                    for source, status in result["sources"].items()
+                    if status != "ok"
+                ]
+                if unavailable:
+                    message += ". Fuentes no disponibles: " + ", ".join(unavailable)
+                return ExecutionResult(bool(items), message, result)
+            if name is ActionName.FILE_SEARCH:
+                result = await asyncio.to_thread(
+                    self.file_search.search,
+                    arguments["query"],
+                    limit=20,
+                )
+                items = result["items"]
+                suffix = (
+                    " La búsqueda alcanzó su límite de tiempo; puedes precisar el nombre "
+                    "para reducir resultados."
+                    if result["truncated"]
+                    else ""
+                )
+                return ExecutionResult(
+                    True,
+                    (
+                        "No encontré archivos con ese nombre."
+                        if not items
+                        else "Archivos encontrados: "
+                        + "; ".join(
+                            f"{item['name']} — {item['path']}" for item in items[:10]
+                        )
+                    )
+                    + suffix,
+                    result,
+                )
             if name is ActionName.MAIL_SEARCH:
                 if self.mail is None:
                     return ExecutionResult(False, "El servicio de correo no está disponible.")
@@ -688,10 +892,13 @@ class CapabilitySuite:
                     if not items
                     else "Correos encontrados: "
                     + "; ".join(
-                        f"{item['subject']} — {item['sender']} — {item['received']}"
+                        f"{item['subject']} — {item['sender']} — "
+                        f"{item['summary'] or item['received']}"
                         for item in items[:10]
                     ),
                     {
+                        "query": result["query"],
+                        "order": result.get("order", "relevance"),
                         "items": [
                             {
                                 "id": item["id"],
@@ -700,6 +907,10 @@ class CapabilitySuite:
                                 "received": item["received"],
                                 "summary": item["summary"][:500],
                                 "state": item["state"],
+                                "priority": item["priority"],
+                                "relevance": item.get("relevance", 0),
+                                "matched_terms": item.get("matched_terms", []),
+                                "topic_matches": item.get("topic_matches", []),
                             }
                             for item in items[:20]
                         ]
@@ -781,7 +992,8 @@ class CapabilitySuite:
                     True, f"Cre\u00e9 la tarea {item.title}.", {"task": item.as_dict()}
                 )
             if name is ActionName.TASK_COMPLETE:
-                tasks = await self.connectors.tasks.list_tasks(session_id)
+                connector = self.connectors.tasks
+                tasks = await connector.list_tasks(session_id)
                 needle = _normalized(arguments["task"])
                 exact_matches = [
                     item
@@ -795,9 +1007,19 @@ class CapabilitySuite:
                     return ExecutionResult(
                         False, "No encontr\u00e9 una \u00fanica tarea con ese nombre."
                     )
-                item = await self.connectors.tasks.complete_task(session_id, matches[0].task_id)
+                item = await connector.complete_task(session_id, matches[0].task_id)
+                receipt = await asyncio.to_thread(
+                    self.receipts.record,
+                    session_id,
+                    name.value,
+                    f"Tarea completada: {item.title}",
+                    "task.set_completed",
+                    {"task_id": item.task_id, "connector": connector.name},
+                )
                 return ExecutionResult(
-                    True, f"Marqu\u00e9 {item.title} como completada.", {"task": item.as_dict()}
+                    True,
+                    f"Marqu\u00e9 {item.title} como completada. Puedes deshacer este cambio.",
+                    {"task": item.as_dict(), "receipt": asdict(receipt)},
                 )
             if name is ActionName.PROJECT_LIST:
                 projects = await self.connectors.require_appa().list_projects()
@@ -921,10 +1143,21 @@ class CapabilitySuite:
                     due,
                     arguments["recurrence"],
                 )
+                receipt = await asyncio.to_thread(
+                    self.receipts.record,
+                    session_id,
+                    name.value,
+                    f"Recordatorio creado: {item.title}",
+                    "reminder.cancel",
+                    {"reminder_id": item.reminder_id},
+                )
                 return ExecutionResult(
                     True,
-                    f"Program\u00e9 {item.title} para {item.due_at}.",
-                    {"reminder": self._reminder_dict(item)},
+                    f"Program\u00e9 {item.title} para {item.due_at}. Puedes deshacerlo.",
+                    {
+                        "reminder": self._reminder_dict(item),
+                        "receipt": asdict(receipt),
+                    },
                 )
             if name is ActionName.REMINDER_CANCEL:
                 reminders = await asyncio.to_thread(self.reminders.list, session_id)
@@ -947,6 +1180,71 @@ class CapabilitySuite:
                 return ExecutionResult(
                     cancelled,
                     "Cancel\u00e9 el recordatorio." if cancelled else "No pude cancelarlo.",
+                )
+            if name is ActionName.ACTION_HISTORY:
+                receipts = await asyncio.to_thread(self.receipts.list, session_id)
+                active = [item for item in receipts if item.undone_at is None]
+                message = (
+                    "No hay cambios recientes que pueda deshacer."
+                    if not active
+                    else "Cambios reversibles: "
+                    + "; ".join(item.description for item in active[:10])
+                    + "."
+                )
+                return ExecutionResult(
+                    True,
+                    message,
+                    {"receipts": [asdict(item) for item in receipts]},
+                )
+            if name is ActionName.ACTION_UNDO:
+                receipt_id = arguments.get("receipt")
+                if receipt_id:
+                    available = {
+                        item.receipt_id: item
+                        for item in await asyncio.to_thread(self.receipts.list, session_id)
+                        if item.undone_at is None
+                    }
+                    receipt = available.get(str(receipt_id))
+                else:
+                    receipt = await asyncio.to_thread(
+                        self.receipts.latest_undoable, session_id
+                    )
+                if receipt is None:
+                    return ExecutionResult(False, "No hay un cambio reciente que pueda deshacer.")
+                if receipt.undo_kind == "reminder.cancel":
+                    target = str(receipt.undo_payload.get("reminder_id", ""))
+                    changed = await asyncio.to_thread(
+                        self.reminders.cancel, target, session_id
+                    )
+                elif receipt.undo_kind == "task.set_completed":
+                    connector = self.connectors.tasks
+                    expected = str(receipt.undo_payload.get("connector", ""))
+                    if connector.name != expected:
+                        return ExecutionResult(
+                            False,
+                            "La fuente de tareas cambi\u00f3; no deshar\u00e9 el cambio a ciegas.",
+                        )
+                    target = str(receipt.undo_payload.get("task_id", ""))
+                    await connector.set_task_completed(session_id, target, False)
+                    changed = True
+                else:  # pragma: no cover - ReceiptStore enforces the allow-list.
+                    changed = False
+                if not changed:
+                    return ExecutionResult(
+                        False, "El estado ya cambi\u00f3 y no fue seguro aplicar la reversi\u00f3n."
+                    )
+                marked = await asyncio.to_thread(
+                    self.receipts.mark_undone, receipt.receipt_id, session_id
+                )
+                if not marked:
+                    return ExecutionResult(
+                        False,
+                        "El cambio se revirti\u00f3, pero el recibo ya hab\u00eda sido usado.",
+                    )
+                return ExecutionResult(
+                    True,
+                    f"Deshice el cambio: {receipt.description}.",
+                    {"receipt": asdict(receipt), "undone": True},
                 )
             if name is ActionName.KNOWLEDGE_LIST:
                 sources = await asyncio.to_thread(self.knowledge.list_sources, session_id)

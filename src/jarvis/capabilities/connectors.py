@@ -199,6 +199,10 @@ class TaskConnector(Protocol):
 
     async def complete_task(self, session_id: str, task_id: str) -> TaskItem: ...
 
+    async def set_task_completed(
+        self, session_id: str, task_id: str, completed: bool
+    ) -> TaskItem: ...
+
 
 def _is_link_or_reparse(path: Path) -> bool:
     try:
@@ -461,12 +465,25 @@ class LocalTaskConnector:
         return self._item(row)
 
     async def complete_task(self, session_id: str, task_id: str) -> TaskItem:
-        completed_at = datetime.now(UTC).isoformat()
+        return await self.set_task_completed(session_id, task_id, True)
+
+    async def set_task_completed(
+        self, session_id: str, task_id: str, completed: bool
+    ) -> TaskItem:
+        changed_at = datetime.now(UTC).isoformat()
+        completed_at = changed_at if completed else None
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
-                """UPDATE tasks SET completed = 1, completed_at = ?, updated_at = ?
-                WHERE task_id = ? AND session_id = ? AND completed = 0""",
-                (completed_at, completed_at, task_id, session_id),
+                """UPDATE tasks SET completed = ?, completed_at = ?, updated_at = ?
+                WHERE task_id = ? AND session_id = ? AND completed != ?""",
+                (
+                    int(bool(completed)),
+                    completed_at,
+                    changed_at,
+                    task_id,
+                    session_id,
+                    int(bool(completed)),
+                ),
             )
             if cursor.rowcount != 1:
                 raise ConnectorError(
@@ -477,7 +494,7 @@ class LocalTaskConnector:
                 (task_id, session_id),
             ).fetchone()
         if row is None:
-            raise ConnectorError("No pude verificar la tarea completada.")
+            raise ConnectorError("No pude verificar el estado de la tarea.")
         return self._item(row)
 
 
@@ -958,6 +975,11 @@ class AppaConnector:
         return self._decode(self._json(response))
 
     async def complete_task(self, session_id: str, task_id: str) -> TaskItem:
+        return await self.set_task_completed(session_id, task_id, True)
+
+    async def set_task_completed(
+        self, session_id: str, task_id: str, completed: bool
+    ) -> TaskItem:
         del session_id
         task_id = task_id.strip()
         if self._TASK_ID.fullmatch(task_id) is None:
@@ -967,11 +989,11 @@ class AppaConnector:
         response = await self._request(
             "PATCH",
             f"/tasks/{encoded_task_id}",
-            json_body={"completed": True},
+            json_body={"completed": bool(completed)},
         )
         task = self._decode(self._json(response))
-        if task.task_id != task_id or not task.completed:
-            raise ConnectorError("Appa no confirm\u00f3 la tarea completada.")
+        if task.task_id != task_id or task.completed != bool(completed):
+            raise ConnectorError("Appa no confirm\u00f3 el nuevo estado de la tarea.")
         return task
 
     @staticmethod
@@ -1247,6 +1269,12 @@ class UnavailableTaskConnector:
 
     async def complete_task(self, session_id: str, task_id: str) -> TaskItem:
         del session_id, task_id
+        self._raise()
+
+    async def set_task_completed(
+        self, session_id: str, task_id: str, completed: bool
+    ) -> TaskItem:
+        del session_id, task_id, completed
         self._raise()
 
 

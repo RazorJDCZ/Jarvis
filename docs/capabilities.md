@@ -34,8 +34,8 @@ de Appa.
 La integración también permite listar y crear proyectos, consultar y crear eventos, capturar ideas
 en el inbox y consultar o iniciar sesiones focus. Ejemplos: “dime mis proyectos de Appa”, “agenda
 una reunión mañana a las 9”, “guarda en mi inbox revisar esta idea” e “inicia focus de 25 minutos”.
-Las lecturas son de riesgo bajo; toda creación es de riesgo medio y requiere la confirmación normal
-del motor, también desde el celular.
+Las lecturas son de riesgo bajo y las creaciones de riesgo medio. En la PC, el modo local confiable
+ejecuta estas últimas directamente; desde el celular conservan confirmación explícita.
 
 El descriptor contiene una URL `http://127.0.0.1:<puerto>/v1` y un token rotatorio. Jarvis exige
 loopback exacto, Bearer, versión de contrato compatible, archivo regular y límites estrictos;
@@ -72,6 +72,12 @@ concede permiso.
 No envía SMS, correos ni mensajes por su cuenta. “Lista mis recordatorios” y “cancela el
 recordatorio…” están disponibles por voz, y el Control Deck ofrece creación y cancelación manual.
 
+Las reglas proactivas incluyen resumen diario, clima, correo importante, calendario próximo y una
+vigilancia opcional de fechas límite detectadas en correo. Los avisos se escriben primero en una
+cola SQLite persistente, se deduplican por sesión y evento y usan reintentos acotados. El usuario
+puede aceptar todos, solo importantes/urgentes o solo urgentes. Ninguna regla nueva se habilita de
+forma silenciosa.
+
 ### Biblioteca privada y adjuntos móviles
 
 La PWA permite adjuntar TXT, Markdown, CSV, JSON, XML, PDF, JPEG, PNG y WebP. Los archivos se
@@ -104,9 +110,31 @@ alto. La alerta permanece enclavada hasta observar una recuperación sostenida c
 en el que informa la normalización; una pestaña nueva nunca reproduce avisos históricos. Jamás
 termina procesos ni cambia prioridades.
 
-“Resume/explica/corrige/traduce mi portapapeles” requiere confirmación, lee el texto una sola vez y
-lo analiza con Luna. El contenido se censura en auditoría, no se incorpora a la memoria y no se
-envía si parece contener una credencial.
+“Resume/explica/corrige/traduce mi portapapeles” es riesgo medio, lee el texto una sola vez y lo
+analiza con Luna. Es directo en la PC y se confirma desde el celular. El contenido se censura en
+auditoría, no se incorpora a la memoria y no se envía si parece contener una credencial.
+
+### Búsqueda de archivos del computador
+
+`file.search` localiza archivos por nombre, extensión o fragmentos de ruta en los discos locales.
+Solo consulta directorios y metadatos: no abre contenido, no crea índices persistentes y no puede
+modificar ni borrar archivos. El recorrido omite reparse points, dependencias y árboles de Windows
+o aplicaciones, y está limitado por tiempo y número de carpetas para no bloquear Jarvis.
+
+### Búsqueda personal, prioridad y deshacer seguro
+
+- `personal.search` consulta en paralelo la copia local de Gmail, Google Calendar, Appa, memoria,
+  biblioteca y metadatos de archivos. Cada fuente tiene tiempo límite propio y una falla no derriba
+  las demás. Nunca abre ni modifica un resultado.
+- El correo genera localmente una bandeja de atención por respuesta pendiente, prioridad alta o
+  fecha límite próxima. No devuelve el cuerpo crudo y responder sigue exigiendo el correo y texto
+  exactos autorizados.
+- Completar una tarea y crear un recordatorio generan un recibo local con siete días de caducidad.
+  El deshacer solo reabre esa tarea en el mismo conector, incluido Appa, o cancela ese recordatorio.
+  Es directo en la PC confiable y confirmado desde el celular; no existen inversas para correo,
+  archivos, ventanas, proyectos ni calendarios.
+- Las entidades personales aceptan caducidad opcional. Un recuerdo explícito puede decir "durante
+  un día/una semana/un mes/tres meses/un año" y se elimina antes de volver a recuperarse.
 
 ### Espacios de desarrollo
 
@@ -148,6 +176,7 @@ De forma predeterminada todo queda dentro de `.data`:
 
 - `capabilities.sqlite3`: trazas, permisos, recordatorios y biblioteca.
 - `tasks.sqlite3`: tareas locales.
+- `automations.sqlite3`: reglas, ejecuciones deduplicadas y cola persistente de avisos.
 - `attachments/`: adjuntos temporales aislados.
 - `skills/`: manifiestos declarativos opcionales.
 
@@ -182,6 +211,7 @@ necesario: SQLite, Ollama, Steam/Epic local y la PWA funcionan sin suscripción.
 - No borra archivos ni controla procesos desde estas capacidades.
 - Appa debe permanecer ejecutándose o en la bandeja para que su puente loopback responda.
 - Las tareas locales previas requieren una migración explícita antes de activar Appa.
-- Las notificaciones móviles dependen de que la PWA esté abierta; todavía no existe un servicio
-  push externo en segundo plano.
+- Las notificaciones móviles requieren que la PC y Jarvis sigan en línea. La entrega en segundo
+  plano depende de las restricciones de Android y del navegador; la cola local conserva el aviso
+  hasta que una sesión pueda recibirlo.
 - El reconocimiento de juegos depende de los manifiestos instalados, no de una búsqueda en línea.

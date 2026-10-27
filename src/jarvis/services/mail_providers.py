@@ -299,24 +299,34 @@ class MailProvider:
             ]
             if not messages:
                 continue
-            latest = max(messages, key=lambda m: int(m.get("internalDate", 0)))
-            headers = {h["name"].lower(): h["value"] for h in latest["payload"].get("headers", [])}
-            body = gmail_body(latest["payload"]) or plain(latest.get("snippet"))
-            rows.append(
-                {
-                    "thread_id": thread["id"],
-                    "version": latest["id"],
-                    "subject": plain(headers.get("subject", "Sin asunto"))[:300],
-                    "sender": plain(headers.get("from", ""))[:300],
-                    "received": datetime.fromtimestamp(
-                        int(latest["internalDate"]) / 1000, UTC
-                    ).isoformat(),
-                    "url": "https://mail.google.com/mail/u/0/#all/" + quote(thread["id"], safe=""),
-                    "body": body,
-                    "message_id": plain(headers.get("message-id", ""))[:500],
-                    "reply_to": plain(headers.get("reply-to", headers.get("from", "")))[:300],
+            parsed = []
+            url = "https://mail.google.com/mail/u/0/#all/" + quote(thread["id"], safe="")
+            for current in messages:
+                payload = current.get("payload") or {}
+                headers = {
+                    h["name"].lower(): h["value"]
+                    for h in payload.get("headers", [])
+                    if h.get("name")
                 }
-            )
+                parsed.append(
+                    {
+                        "thread_id": thread["id"],
+                        "version": current["id"],
+                        "subject": plain(headers.get("subject", "Sin asunto"))[:300],
+                        "sender": plain(headers.get("from", ""))[:300],
+                        "received": datetime.fromtimestamp(
+                            int(current.get("internalDate", 0)) / 1000, UTC
+                        ).isoformat(),
+                        "url": url,
+                        "body": gmail_body(payload) or plain(current.get("snippet")),
+                        "message_id": plain(headers.get("message-id", ""))[:500],
+                        "reply_to": plain(
+                            headers.get("reply-to", headers.get("from", ""))
+                        )[:300],
+                    }
+                )
+            latest = max(parsed, key=lambda item: item["received"])
+            rows.append({**latest, "_thread_messages": parsed})
         return rows, listing.get("nextPageToken", "")
 
     async def messages(self, since):

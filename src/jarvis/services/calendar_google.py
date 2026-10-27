@@ -7,6 +7,7 @@ import hashlib
 import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
+from uuid import uuid4
 
 import httpx
 
@@ -154,8 +155,8 @@ class GoogleCalendar(MailService):
                     page = None
                     for _ in range(20):
                         params = {
-                            "timeMin": (now - timedelta(days=1)).isoformat(),
-                            "timeMax": (now + timedelta(days=90)).isoformat(),
+                            "timeMin": (now - timedelta(days=45)).isoformat(),
+                            "timeMax": (now + timedelta(days=365)).isoformat(),
                             "singleEvents": "true",
                             "maxResults": 250,
                             **({"pageToken": page} if page else {}),
@@ -206,7 +207,7 @@ class GoogleCalendar(MailService):
                     else:
                         raise MailError("Agenda demasiado grande; se conserva la copia anterior")
                 if len(events) > 2000:
-                    raise MailError("La agenda supera el límite de 2000 eventos en 90 días")
+                    raise MailError("La agenda supera el límite de 2000 eventos sincronizados")
                 self.records.replace("google_event", events)
                 self.records.put("meta", "calendar_sync", {"synced": time.time(), "error": ""})
             except (MailError, httpx.HTTPError, ValueError, KeyError):
@@ -224,7 +225,7 @@ class GoogleCalendar(MailService):
     @staticmethod
     def event_payload(event):
         field = "date" if event["all_day"] else "dateTime"
-        return {
+        payload = {
             "summary": event["title"],
             "description": event.get("description", ""),
             "start": {field: event["start_at"]},
@@ -237,6 +238,69 @@ class GoogleCalendar(MailService):
                 ],
             },
         }
+        frequencies = {"daily": "DAILY", "weekly": "WEEKLY", "monthly": "MONTHLY"}
+        if frequency := frequencies.get(event.get("recurrence", "")):
+            payload["recurrence"] = [f"RRULE:FREQ={frequency}"]
+        return payload
+
+    @staticmethod
+    def cached_event(calendar, event, fallback):
+        key = calendar + ":" + event["id"]
+        return key, {
+            "id": key,
+            "calendar_id": calendar,
+            "event_id": event["id"],
+            "title": event.get("summary", fallback["title"]),
+            "description": event.get("description", fallback.get("description", ""))[:4000],
+            "start_at": event.get("start", {}).get(
+                "dateTime", event.get("start", {}).get("date", fallback["start_at"])
+            ),
+            "end_at": event.get("end", {}).get(
+                "dateTime", event.get("end", {}).get("date", fallback["end_at"])
+            ),
+            "all_day": "date" in event.get("start", {}),
+            "busy": event.get("transparency") != "transparent",
+            "source": "Google Calendar",
+            "url": event.get("htmlLink", fallback.get("url", "")),
+            "calendar": "Jarvis",
+            "etag": event.get("etag", ""),
+            "reminders": list(fallback.get("reminders", [])),
+            "editable": True,
+            "recurrence": fallback.get("recurrence", ""),
+        }
+
+    async def create_managed_event(self, event):
+        async with self.write_lock:
+            managed = await self.managed_calendar()
+            identifier = uuid4().hex
+            path = "/calendars/" + quote(managed, safe="") + "/events"
+            response = await self.request(
+                "POST",
+                path,
+                json={"id": identifier, **self.event_payload(event)},
+            )
+            if response.status_code == 409:
+                response = await self.request("GET", path + "/" + identifier)
+            return self.cached_event(managed, response.json(), event)
+
+    async def delete_managed_event(self, cached, etag):
+        async with self.write_lock:
+            managed = await self.managed_calendar()
+            if not cached.get("editable") or cached.get("calendar_id") != managed:
+                raise MailError("Solo se pueden eliminar eventos del calendario Jarvis")
+            if not etag or cached.get("etag") != etag:
+                raise MailError("El evento cambió; actualiza la agenda antes de eliminarlo")
+            path = (
+                "/calendars/"
+                + quote(managed, safe="")
+                + "/events/"
+                + quote(cached["event_id"], safe="")
+            )
+            response = await self.request("DELETE", path, headers={"If-Match": etag})
+            if response.status_code == 412:
+                raise MailError(
+                    "El evento fue modificado en Google. Actualiza la agenda antes de eliminarlo"
+                )
 
     async def update_managed_event(self, cached, event):
         async with self.write_lock:
@@ -265,29 +329,7 @@ class GoogleCalendar(MailService):
                 raise MailError(
                     "El evento fue modificado en Google. Actualiza la agenda y revisa los cambios"
                 )
-            data = response.json()
-            key = managed + ":" + event["event_id"]
-            return key, {
-                "id": key,
-                "calendar_id": managed,
-                "event_id": event["event_id"],
-                "title": data.get("summary", event["title"]),
-                "description": data.get("description", event.get("description", ""))[:4000],
-                "start_at": data.get("start", {}).get(
-                    "dateTime", data.get("start", {}).get("date", event["start_at"])
-                ),
-                "end_at": data.get("end", {}).get(
-                    "dateTime", data.get("end", {}).get("date", event["end_at"])
-                ),
-                "all_day": "date" in data.get("start", {}),
-                "busy": data.get("transparency") != "transparent",
-                "source": "Google Calendar",
-                "url": data.get("htmlLink", cached.get("url", "")),
-                "calendar": "Jarvis",
-                "etag": data.get("etag", ""),
-                "reminders": list(event.get("reminders", [])),
-                "editable": True,
-            }
+            return self.cached_event(managed, response.json(), {**cached, **event})
 
     async def publish(self, proposal):
         async with self.write_lock:

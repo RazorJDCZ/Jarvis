@@ -151,6 +151,7 @@ def isolated_engine(
             action_model_planning=False,
             information_verification_enabled=False,
             memory_enabled=False,
+            local_trusted_actions=False,
         ),
         catalog=catalog,
         planner=planner,

@@ -18,9 +18,11 @@ ejecución local controlada. El proyecto está dividido en cinco etapas:
 - Conversa por texto o voz con Codex usando la sesión de ChatGPT ya iniciada, sin almacenar una
   API key en Jarvis.
 - Transcribe localmente con Faster Whisper y habla con la voz masculina grave `am_onyx` de Kokoro
-  82M a velocidad natural ágil; Piper y las voces de Windows quedan como respaldos automáticos.
-- Ofrece modo pulsar-para-hablar y manos libres con la frase “Jarvis”.
-- Ejecuta 85 acciones tipadas sobre Windows, aplicaciones, pantalla, navegadores y capacidades
+  82M a velocidad natural ágil. La salida elimina marcas visuales y acorta silencios excesivos de
+  puntuación; Piper y las voces de Windows quedan como respaldos automáticos.
+- Ofrece modo pulsar-para-hablar y manos libres con la frase “Jarvis”; la aplicación Android
+  añade escucha ambiental mediante un servicio de micrófono visible y detenible.
+- Ejecuta 86 acciones tipadas sobre Windows, aplicaciones, pantalla, navegadores y capacidades
   locales controladas.
 - Usa una vía determinista rápida para acciones evidentes y Codex para entender
   metas expresadas con contexto, cortesía, motivación, pronombres o lenguaje indirecto; no exige una
@@ -45,6 +47,8 @@ ejecución local controlada. El proyecto está dividido en cinco etapas:
 - Aprende selectivamente preferencias, relaciones, estudios, proyectos y objetivos en una base
   SQLite local. Recupera solo los recuerdos relevantes y conserva una ventana limitada de diálogo
   reciente para continuar después de reiniciar.
+- Permite organizar personas, lugares, rutinas, objetivos y proyectos en un mapa personal
+  estructurado editable, sin aceptar contraseñas, tokens ni datos bancarios.
 - Funciona como PWA tanto en la PC como en el teléfono. El servidor siempre permanece limitado a
   `127.0.0.1`; Tailscale Serve proporciona el único enlace HTTPS privado hacia el celular.
 - Añade un Control Deck para trazas, recordatorios, adjuntos y métricas; integra tareas locales o
@@ -61,6 +65,17 @@ por `gpt-5.6-luna`, además de estados y tareas en Appa. Gmail puede enviar úni
 ligada al correo y texto que confirmes dos veces; Outlook permanece en lectura. Configura los clientes OAuth y conecta tus
 cuentas siguiendo la
 [guía de correo](docs/mail-integration.md); el acceso a los buzones requiere tu inicio de sesión.
+La búsqueda local ya no exige coincidencias exactas: pondera asunto, remitente, resumen de Luna y
+cuerpo, expande temas cotidianos y permite ordenar por relevancia, importancia o fecha.
+
+**Finanzas 2.0** vive dentro de **Mi día** y también tiene un módulo propio en Appa. Calcula
+gastos a partir de notificaciones reconocidas de Produbanco y Banco Pichincha, conserva cada
+mensaje bancario individual aunque Gmail lo agrupe en una conversación, ignora promociones y
+separa compras, transferencias, retiros e ingresos. Añade presupuestos totales o por categoría,
+proyección de cierre de mes, meta de ahorro, tendencia de seis meses, detección conservadora de
+pagos recurrentes y movimientos inusuales, corrección reutilizable de comercios y exportación CSV.
+Los ajustes se guardan en Jarvis y nunca modifican Gmail ni el banco. Sigue siendo una estimación
+corregible, no un sustituto del estado de cuenta.
 
 ## Instalación
 
@@ -86,6 +101,23 @@ start.cmd
 Se abrirá `http://127.0.0.1:8765`. La primera transcripción puede tardar mientras Whisper termina de
 cargar el modelo.
 
+### Aplicación de escritorio
+
+`Jarvis.exe` ofrece la interfaz completa en una ventana nativa ligera basada en Tauri/WebView2. El
+ejecutable reutiliza el mismo servicio, memoria y conectores locales: no copia credenciales ni crea
+otra base de datos. Si Jarvis todavía no responde, la aplicación inicia el supervisor y espera a que
+los motores estén listos. Cerrar la ventana la oculta en la bandeja; el núcleo y el acceso móvil
+continúan activos.
+
+Para reconstruir y desplegar la aplicación en el Escritorio:
+
+```powershell
+.\scripts\build_desktop_app.ps1
+```
+
+La arquitectura, controles de seguridad y procedimiento de prueba están documentados en
+[la guía de Jarvis Desktop](docs/desktop-app.md).
+
 ### Acceso móvil privado
 
 El teléfono no se conecta mediante un puerto público. Jarvis combina dos barreras: la identidad
@@ -97,7 +129,8 @@ teléfono.
 3. Reinicia Jarvis con `start.cmd`.
 4. En la interfaz local abre **ACCESO MÓVIL** y genera un código de un solo uso.
 5. Abre en el teléfono la URL privada que muestra Jarvis, escribe el código y crea la passkey.
-6. En el navegador móvil usa **Añadir a pantalla de inicio** para instalar la PWA.
+6. Instala la PWA desde el navegador o compila la aplicación nativa para Pixel 8 siguiendo
+   [la guía de Jarvis Mobile](docs/android-app.md). La app nativa agrega voz ambiental.
 
 En el celular, toda acción que cambie el equipo pide confirmación aunque normalmente fuese de
 riesgo bajo. Las consultas de estado y lectura conservan ejecución directa. El botón rojo
@@ -138,7 +171,7 @@ sus runners; el siguiente arranque elimina runners huérfanos de la carpeta del 
 ## Uso
 
 - Mantén presionado el núcleo central o la barra espaciadora mientras hablas.
-- Activa **Manos libres**, guarda silencio durante la calibración y di “Jarvis”.
+- Activa **Modo ambiental**, guarda silencio durante la calibración y di “Jarvis”.
 - Pulsa **Respuesta de voz** para silenciar o reactivar las respuestas.
 - Usa la consola derecha si prefieres escribir.
 - Cuando aparezca **SECURITY GATE**, revisa la acción y pulsa **CONFIRMAR** o **CANCELAR**. También
@@ -233,6 +266,10 @@ estados pasajeros ni mensajes que parezcan contener contraseñas, tokens, códig
 Los recuerdos se recuperan por relevancia y las conversaciones recientes solo se inyectan al abrir
 una sesión nueva, evitando llenar innecesariamente el contexto de Codex.
 
+Los datos temporales pueden llevar caducidad desde el editor o mediante frases como "recuerda que
+estoy usando una laptop prestada durante una semana"; al vencer se eliminan de la recuperación y
+de la base local.
+
 Comandos de voz útiles:
 
 - “Recuerda que mi color favorito es azul”.
@@ -304,11 +341,15 @@ los permisos del motor, y el archivo temporal se elimina al terminar.
 ### Sistema, portapapeles y archivos
 
 - “Estado del sistema” informa CPU, memoria, disco y batería cuando están disponibles.
-- “Lee el portapapeles” y `copia "Texto" al portapapeles` requieren confirmación.
+- “Lee el portapapeles” y `copia "Texto" al portapapeles` son riesgo medio: directos en la PC y
+  confirmados desde el celular.
 - “Resume mi portapapeles”, “explícalo”, “corrígelo” o “tradúcelo al inglés” lo analiza de forma
   efímera con Luna sin incorporarlo a memoria y bloquea contenido que parece una credencial.
 - “Abre la carpeta Descargas”.
-- `abre el archivo "D:\Datos\reporte.pdf"` requiere confirmación. Solo se permiten formatos
+- “Busca el archivo informe final en mi computadora” o “dónde está el documento presupuesto 2026”
+  recorre de forma acotada los discos locales y devuelve únicamente nombre, ruta, tamaño y fecha.
+  No abre, indexa ni modifica el contenido; omite enlaces, carpetas del sistema y dependencias.
+- `abre el archivo "D:\Datos\reporte.pdf"` es directo en la PC y se confirma desde el celular. Solo se permiten formatos
   comunes de documentos sin macros, texto, imagen, audio, video y archivos ZIP.
 - “Dime la hora”, “dime la fecha”, “qué versión eres”, “ayuda”.
 - “Olvida esta conversación”.
@@ -324,10 +365,16 @@ los permisos del motor, y el archivo temporal se elimina al terminar.
 - “Crea una tarea para…”, “lista mis pendientes” y “completa la tarea…” usan SQLite local o
   descubren automáticamente el puente privado de Appa. Jarvis entiende fechas naturales,
   prioridad, categoría y proyecto sin enviar texto ambiguo al backend.
-- Appa también aporta proyectos, calendario, inbox y sesiones focus por voz. Las creaciones se
-  confirman y todo permanece en loopback, incluso cuando Appa está oculta en la bandeja.
+- Appa también aporta proyectos, calendario, inbox y sesiones focus por voz. Desde la PC las
+  operaciones de riesgo medio se ejecutan directamente; desde el celular se confirman. Todo
+  permanece en loopback, incluso cuando Appa está oculta en la bandeja.
 - Los eventos del calendario Google creado por Jarvis se pueden editar desde Hoy o por voz; Appa
   usa el ETag para no pisar cambios hechos en otro dispositivo.
+- La vista mensual de Appa integra eventos, tareas, recordatorios y proyectos. Desde ella también
+  se pueden crear eventos de Google diarios, semanales o mensuales y eliminar de forma segura los
+  que pertenecen al calendario administrado por Jarvis.
+- **Automatizaciones proactivas** configura resumen diario, clima, correos importantes y avisos de
+  calendario. El horario de no molestar tiene prioridad y cada ejecución se deduplica en SQLite.
 - “Lista mis skills” y “ejecuta la receta diagnóstico rápido” usan recetas declarativas que vuelven
   a pasar por el catálogo y las confirmaciones normales.
 - “Lista los proyectos autorizados”, “busca … en el proyecto Jarvis” y “ejecuta las pruebas del
@@ -354,6 +401,17 @@ el contexto real de tareas, proyectos, agenda, inbox y focus. Consulta
 [la integración de Codex](docs/codex-integration.md) y
 [la arquitectura del agente](docs/agent-architecture.md).
 
+### Mejoras de asistencia personal
+
+- La búsqueda global del panel **Asistente** cruza correo, Google Calendar, Appa, memoria,
+  biblioteca y nombres de archivo. Es de solo lectura y cada fuente falla de forma aislada.
+- Las automatizaciones cubren resumen, clima, correo importante, calendario y fechas límite. Cada
+  aviso se deduplica y pasa por una cola SQLite persistente con reintentos; el usuario puede filtrar
+  por prioridad.
+- "Muestra los cambios reversibles" y "deshaz el último cambio" usan recibos locales que caducan.
+  Solo se revierten tareas completadas y recordatorios recién creados; no existe un deshacer
+  genérico para archivos, correo, calendario ni acciones de Windows.
+
 ## Seguridad
 
 - No existe ninguna acción de PowerShell, CMD, terminal ni comandos arbitrarios.
@@ -368,8 +426,9 @@ el contexto real de tareas, proyectos, agenda, inbox y focus. Consulta
   mueve el cursor y se exige una confirmación adicional.
 - Cada acción pertenece a un catálogo cerrado y valida tipo, longitud, rango y formato de sus
   argumentos antes de ejecutarse.
-- Las mutaciones sugeridas por Codex se elevan automáticamente a confirmación aunque la
-  acción normalmente sea de riesgo bajo.
+- Las mutaciones sugeridas por Codex conservan su elevación de riesgo. En localhost, el modo de
+  escritorio confiable ejecuta riesgo medio directamente; una solicitud móvil sigue confirmándolo.
+  El riesgo alto siempre exige confirmación en ambos canales.
 - Las confirmaciones están vinculadas a la sesión, tienen identificadores impredecibles, expiran y
   no pueden reutilizarse desde otra sesión. Una solicitud nueva cancela la confirmación anterior,
   evitando que un “sí” tardío autorice una acción de otro tema.
@@ -424,6 +483,7 @@ JARVIS_REMOTE_SESSION_HOURS=12
 JARVIS_SAFE_ACTIONS_ENABLED=true
 JARVIS_ACTION_MODEL_PLANNING=true
 JARVIS_ACTION_CONFIRMATION_SECONDS=90
+JARVIS_LOCAL_TRUSTED_ACTIONS=true
 JARVIS_VISION_ACTIONS_ENABLED=true
 JARVIS_VISION_TIMEOUT=180
 JARVIS_BROWSER_SEARCH_URL=https://www.google.com/search?q={query}
@@ -433,12 +493,14 @@ JARVIS_APPA_AUTO_DISCOVER=true
 JARVIS_APPA_BRIDGE_CONFIG=
 JARVIS_APPA_URL=
 JARVIS_WORKSPACE_ROOTS=D:\Verano_2026
+JARVIS_FILE_SEARCH_ROOTS=
 ```
 
 `JARVIS_BROWSER_SEARCH_URL` debe ser HTTP/HTTPS y contener exactamente `{query}`. Puedes apagar todo
 el motor con `JARVIS_SAFE_ACTIONS_ENABLED=false`, desactivar solo la interpretación flexible con
 `JARVIS_ACTION_MODEL_PLANNING=false` o apagar la percepción visual con
 `JARVIS_VISION_ACTIONS_ENABLED=false`.
+`JARVIS_LOCAL_TRUSTED_ACTIONS=false` recupera las confirmaciones de riesgo medio también en la PC.
 El paquete de capacidades también puede desactivarse de una vez con
 `JARVIS_CAPABILITIES_ENABLED=false`; sus almacenes permanecen en `.data` y no se eliminan.
 

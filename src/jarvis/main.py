@@ -121,6 +121,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if action_engine.capabilities is not None:
         action_engine.capabilities.mail = mail
         action_engine.capabilities.organizer = organizer
+        action_engine.capabilities.personal_search.attach(
+            mail=mail,
+            organizer=organizer,
+            memory=conversation.memory,
+        )
 
     async def warm_brain() -> bool:
         try:
@@ -405,6 +410,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "remote_origin": config.remote_origin,
             "identity": (
                 {"login": identity.login, "name": identity.name} if identity is not None else None
+            ),
+            "has_registered_passkey": bool(
+                identity is not None
+                and any(
+                    device.login == identity.login
+                    for device in remote_access.list_devices(include_private=True)
+                )
             ),
             "device": device.public_dict() if device is not None else None,
             "devices": remote_access.list_devices() if not is_remote else [],
@@ -730,6 +742,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except HTTPException:
             raise
+        except asyncio.CancelledError:
+            await state_hub.set("standby", "Solicitud de voz cancelada; sigo escuchando")
+            raise
         except Exception as exc:
             await state_hub.set("error", "Fallo en el pipeline de voz")
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -771,6 +786,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 lambda: voice_utterance(request, owned_audio, session_id, wake_mode, wake_fast),
                 performance,
                 session,
+                timeout=config.voice_pipeline_timeout,
             ),
             media_type="application/x-ndjson",
             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
@@ -854,6 +870,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def manifest() -> FileResponse:
         return FileResponse(config.web_dir / "manifest.webmanifest")
 
+    @app.get("/.well-known/assetlinks.json", include_in_schema=False)
+    async def android_asset_links() -> JSONResponse:
+        return JSONResponse(
+            [
+                {
+                    "relation": [
+                        "delegate_permission/common.handle_all_urls",
+                        "delegate_permission/common.get_login_creds",
+                    ],
+                    "target": {
+                        "namespace": "android_app",
+                        "package_name": config.android_package_name,
+                        "sha256_cert_fingerprints": [
+                            config.android_certificate_sha256,
+                        ],
+                    },
+                }
+            ]
+        )
+
     @app.get("/service-worker.js", include_in_schema=False)
     async def service_worker() -> FileResponse:
         return FileResponse(
@@ -875,13 +911,36 @@ app = create_app()
 
 def run() -> None:
     settings = Settings()
-    uvicorn.run(
-        app,
-        host=settings.host,
-        port=settings.port,
-        reload=False,
-        access_log=False,
-    )
+    shutdown_request = settings.data_dir / "server.shutdown"
+
+    async def serve() -> None:
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=settings.host,
+                port=settings.port,
+                reload=False,
+                access_log=False,
+            )
+        )
+
+        async def watch_desktop_shutdown() -> None:
+            while not server.should_exit:
+                if shutdown_request.exists():
+                    server.should_exit = True
+                    return
+                await asyncio.sleep(0.25)
+
+        watcher = asyncio.create_task(watch_desktop_shutdown())
+        try:
+            await server.serve()
+        finally:
+            watcher.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher
+            shutdown_request.unlink(missing_ok=True)
+
+    asyncio.run(serve())
 
 
 if __name__ == "__main__":

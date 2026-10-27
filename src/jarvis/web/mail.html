@@ -2,7 +2,7 @@
 <html lang="es">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Correos · Jarvis</title><link rel="stylesheet" href="/static/mail.css">
-  <script src="/static/mail.js" defer></script>
+  <script src="/static/mail.js?v=2" defer></script>
 </head>
 <body><main>
   <a href="/">← Volver a Jarvis</a> · <a href="/organizer">Hoy y Calendar</a>
@@ -15,7 +15,7 @@
       <button data-connect="microsoft">Conectar universidad · Microsoft 365</button>
       <button id="sync">Revisar ahora</button></div>
     <p id="coverage" class="muted"></p>
-    <p class="muted">Permisos de lectura. Los borradores se revisan en Appa; no se envían mensajes desde Jarvis.</p>
+    <p class="muted">Gmail permite lectura y una respuesta exacta solo tras tu autorización; Microsoft permanece en lectura. Los borradores también se revisan en Appa.</p>
   </section>
   <details id="setup"><summary>Configurar la conexión por primera vez</summary>
     <p>Esta instalación necesita sus propios identificadores de aplicación. No introduzcas aquí tu contraseña de correo.</p>
@@ -36,6 +36,10 @@
     </div>
     <p class="muted">Windows cifra las credenciales para tu usuario. Al desconectar se elimina la copia local de esa cuenta y sus correos; puedes revocar también el permiso desde Google o Microsoft. Las tareas ya creadas en Appa se conservan.</p>
   </details>
+  <section><div class="actions"><h2>Atención priorizada</h2><span class="local-badge">ANÁLISIS LOCAL</span></div>
+    <p class="muted">Jarvis ordena respuestas pendientes, prioridades y fechas límite sin exponer el cuerpo del correo.</p>
+    <div id="insights"></div>
+  </section>
   <section><div class="actions"><h2>Últimos pendientes</h2><button id="refresh">Actualizar vista</button></div>
     <div id="items"></div><p class="muted">Gestiona estados, posposición, tareas y borradores en la sección Correos Pendientes de Appa.</p>
   </section>

@@ -169,7 +169,10 @@ const appState = {
   deckMetricsTimer: null,
   cameraStream: null,
   cameraStarting: false,
+  speechWatchdog: null,
 };
+
+const TTS_REQUEST_TIMEOUT_MS = 30000;
 
 function setVisualState(state, detail) {
   appState.visualState = state;
@@ -183,6 +186,28 @@ function showToast(message, duration = 3600) {
   elements.toast.textContent = message;
   elements.toast.classList.add("visible");
   appState.toastTimer = window.setTimeout(() => elements.toast.classList.remove("visible"), duration);
+}
+
+function notifyNative(method, ...values) {
+  const bridge = window.JarvisNative;
+  if (!bridge || typeof bridge[method] !== "function") return;
+  try {
+    bridge[method](...values.map((value) => String(value ?? "").slice(0, 240)));
+  } catch (error) {
+    console.debug("Native Jarvis bridge unavailable", error);
+  }
+}
+
+function syncNativeConnectionState() {
+  if (!appState.initialized) {
+    notifyNative("onConnectionState", appState.remoteAuthenticated ? "starting" : "locked", "");
+    return;
+  }
+  if (appState.remote && !appState.remoteAuthenticated) {
+    notifyNative("onConnectionState", "locked", "Desbloquea Jarvis con tu biometría");
+    return;
+  }
+  notifyNative("onConnectionState", "ready", "Enlace privado autenticado");
 }
 
 function cancelActiveClientWork() {
@@ -1540,6 +1565,7 @@ function showCoreUnavailable() {
   elements.remoteGate.hidden = false;
   setRemoteGateError();
   setVisualState("error", local ? "Núcleo local desconectado" : "Enlace privado desconectado");
+  notifyNative("onConnectionState", "offline", "No puedo alcanzar tu computadora");
   scheduleBootstrapRetry();
 }
 
@@ -1550,12 +1576,14 @@ function setRemoteGateError(message = "") {
 function showRemotePairing() {
   elements.remoteAuthenticationPanel.hidden = true;
   elements.remotePairingForm.hidden = false;
-  elements.showAuthenticationPanelButton.hidden = !storedRemoteDeviceId();
+  elements.showAuthenticationPanelButton.hidden = !(
+    storedRemoteDeviceId() || appState.remoteStatus?.has_registered_passkey
+  );
   setRemoteGateError();
 }
 
 function showRemoteAuthentication() {
-  if (!storedRemoteDeviceId()) {
+  if (!(storedRemoteDeviceId() || appState.remoteStatus?.has_registered_passkey)) {
     showRemotePairing();
     return;
   }
@@ -1574,9 +1602,11 @@ function requireRemoteUnlock(message = "") {
   appState.socket = null;
   elements.remoteGate.hidden = false;
   elements.emergencyStopButton.hidden = true;
-  if (storedRemoteDeviceId()) showRemoteAuthentication();
-  else showRemotePairing();
+  if (storedRemoteDeviceId() || appState.remoteStatus?.has_registered_passkey) {
+    showRemoteAuthentication();
+  } else showRemotePairing();
   if (message) setRemoteGateError(message);
+  notifyNative("onConnectionState", "locked", message || "Desbloquea Jarvis con tu biometría");
 }
 
 async function finishRemoteUnlock(device) {
@@ -1587,6 +1617,7 @@ async function finishRemoteUnlock(device) {
   elements.emergencyStopButton.hidden = false;
   elements.networkMode.innerHTML =
     '<i class="online-indicator"></i> TAILNET // PASSKEY // SECURE';
+  notifyNative("onConnectionState", "ready", "Enlace privado autenticado");
   startCore();
   await restoreRemoteSession();
 }
@@ -1615,12 +1646,11 @@ async function authenticateRemoteDevice() {
     throw new Error("Este navegador no ofrece passkeys/WebAuthn.");
   }
   const deviceId = storedRemoteDeviceId();
-  if (!deviceId) {
-    showRemotePairing();
-    return;
-  }
   try {
-    const ceremony = await postJson("/api/remote/auth/options", { device_id: deviceId });
+    const ceremony = await postJson(
+      "/api/remote/auth/options",
+      deviceId ? { device_id: deviceId } : {},
+    );
     const credential = await navigator.credentials.get({
       publicKey: authenticationOptionsFromJson(ceremony.options),
     });
@@ -1632,9 +1662,10 @@ async function authenticateRemoteDevice() {
     await finishRemoteUnlock(verified.device);
     showToast("Dispositivo verificado con passkey.");
   } catch (error) {
-    if (/no está emparejado|no está autorizada|no está activo/i.test(error.message)) {
+    if (deviceId && /no está emparejado|no está autorizada|no está activo/i.test(error.message)) {
       clearRemoteDeviceId();
-      showRemotePairing();
+      if (appState.remoteStatus?.has_registered_passkey) showRemoteAuthentication();
+      else showRemotePairing();
     }
     throw error;
   }
@@ -1984,6 +2015,8 @@ async function unlockNeuralAudioPlayback() {
 }
 
 function finishSpeaking() {
+  window.clearTimeout(appState.speechWatchdog);
+  appState.speechWatchdog = null;
   appState.interruptionPaused = false;
   appState.speaking = false;
   appState.busy = Boolean(appState.streaming);
@@ -1994,6 +2027,8 @@ function finishSpeaking() {
 }
 
 function stopSpeaking() {
+  window.clearTimeout(appState.speechWatchdog);
+  appState.speechWatchdog = null;
   appState.speechGeneration += 1;
   for (const controller of appState.ttsControllers) {
     controller.abort();
@@ -2071,6 +2106,11 @@ async function prepareSpeech(text) {
   const controller = new AbortController();
   appState.ttsControllers.add(controller);
   appState.activeControllers.add(controller);
+  let timedOut = false;
+  const timeoutTimer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, TTS_REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch("/api/tts", {
       method: "POST",
@@ -2081,9 +2121,11 @@ async function prepareSpeech(text) {
     if (!response.ok) throw new Error(await readError(response));
     return { blob: await response.blob() };
   } catch (error) {
+    if (timedOut) return { error: new Error("La síntesis de voz tardó demasiado") };
     if (error.name === "AbortError") throw error;
     return { error };
   } finally {
+    window.clearTimeout(timeoutTimer);
     appState.ttsControllers.delete(controller);
     appState.activeControllers.delete(controller);
   }
@@ -2099,6 +2141,15 @@ async function speak(text, preparedAudio = null) {
   appState.speaking = true;
   appState.busy = true;
   setVisualState("speaking", "Transmitiendo respuesta");
+  window.clearTimeout(appState.speechWatchdog);
+  const maximumPlaybackMs = Math.max(15000, Math.min(90000, text.length * 140 + 8000));
+  appState.speechWatchdog = window.setTimeout(() => {
+    if (speechGeneration !== appState.speechGeneration || !appState.speaking) return;
+    console.warn("Voice playback watchdog recovered a stalled response");
+    stopSpeaking();
+    finishSpeaking();
+    showToast("La reproducción se atascó y fue reiniciada. Puedes hablar de nuevo.", 6000);
+  }, maximumPlaybackMs);
 
   if (appState.ttsAvailable) {
     try {
@@ -2107,13 +2158,24 @@ async function speak(text, preparedAudio = null) {
       if (!audioBlob) {
         const controller = new AbortController();
         appState.ttsController = controller;
-        const response = await fetch("/api/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-          signal: controller.signal,
-        });
-        appState.ttsController = null;
+        let timedOut = false;
+        const timeoutTimer = window.setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, TTS_REQUEST_TIMEOUT_MS);
+        let response;
+        try {
+          response = await fetch("/api/tts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+            signal: controller.signal,
+          });
+        } finally {
+          window.clearTimeout(timeoutTimer);
+          appState.ttsController = null;
+        }
+        if (timedOut) throw new Error("La síntesis de voz tardó demasiado");
         if (!response.ok) throw new Error(await readError(response));
         audioBlob = await response.blob();
       }
@@ -2260,10 +2322,21 @@ class LocalMicrophone {
     this.calibrating = false;
     this.calibrationTimer = null;
     this.interruptionCapture = false;
+    this.initPromise = null;
   }
 
   async init() {
     if (this.ready) return;
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this.initialize();
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
+  }
+
+  async initialize() {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Este navegador no permite acceder al micrófono");
     }
@@ -2307,7 +2380,8 @@ class LocalMicrophone {
       return;
     }
     const interruptionMode =
-      (this.capturing && this.interruptionCapture) || (this.ready && appState.speaking);
+      this.handsFree
+      && ((this.capturing && this.interruptionCapture) || (this.ready && appState.speaking));
     if (
       (!this.handsFree && !interruptionMode) ||
       (appState.busy && !interruptionMode) ||
@@ -2389,12 +2463,43 @@ class LocalMicrophone {
 
   disableHandsFree() {
     this.handsFree = false;
+    this.cancelManual();
+  }
+
+  shutdown() {
+    if (this.processor) {
+      this.processor.onaudioprocess = null;
+      try { this.processor.disconnect(); } catch { /* Already disconnected. */ }
+    }
+    try { this.source?.disconnect(); } catch { /* Already disconnected. */ }
+    try { this.analyser?.disconnect(); } catch { /* Already disconnected. */ }
+    try { this.silentGain?.disconnect(); } catch { /* Already disconnected. */ }
+    for (const track of this.stream?.getTracks?.() || []) track.stop();
+    if (
+      this.context
+      && this.context.state !== "closed"
+      && typeof this.context.close === "function"
+    ) {
+      void this.context.close().catch(() => {});
+    }
+    this.stream = null;
+    this.context = null;
+    this.source = null;
+    this.analyser = null;
+    this.processor = null;
+    this.silentGain = null;
+    this.ready = false;
+  }
+
+  cancelManual() {
+    this.manual = false;
     this.capturing = false;
     this.chunks = [];
     this.totalSamples = 0;
     this.preRoll = [];
     this.preRollSamples = 0;
     this.interruptionCapture = false;
+    if (!this.handsFree) this.shutdown();
   }
 
   async startManual() {
@@ -2407,7 +2512,7 @@ class LocalMicrophone {
   }
 
   finish(wakeMode, interruptOnly = false) {
-    if (!this.capturing) return;
+    if (!this.capturing) return false;
     const duration = this.context ? this.totalSamples / this.context.sampleRate : 0;
     const wasInterruption = interruptOnly || this.interruptionCapture;
     const samples = concatenateChunks(this.chunks, this.totalSamples);
@@ -2420,14 +2525,17 @@ class LocalMicrophone {
     this.preRollSamples = 0;
     this.interruptionCapture = false;
     if (duration < 0.25) {
+      if (!this.handsFree) this.shutdown();
       if (wasInterruption) resumeSpeakingAfterInterruption();
       if (!wasInterruption) {
         setVisualState("ready", "Mantén pulsado un poco más para hablar");
       }
-      return;
+      return false;
     }
     const blob = encodeWav(resampleVoice(samples, this.context.sampleRate), 16000);
+    if (!this.handsFree) this.shutdown();
     this.onUtterance(blob, wakeMode, wasInterruption);
+    return true;
   }
 }
 
@@ -2465,6 +2573,7 @@ async function sendUtterance(blob, wakeMode, interruptOnly = false) {
   }
   if (appState.busy) return;
   appState.busy = true;
+  notifyNative("onVoiceState", "processing", "Procesando tu voz");
   setVisualState("transcribing", "Convirtiendo voz en texto localmente");
   const form = new FormData();
   form.append("audio", blob, "utterance.wav");
@@ -2473,24 +2582,31 @@ async function sendUtterance(blob, wakeMode, interruptOnly = false) {
   form.append("wake_fast", String(localStorage.getItem("jarvis-wake-mode") === "light"));
   const generation = appState.operationGeneration;
   try {
-    const payload = await receiveAssistantStream("/api/voice/stream", {
-      method: "POST",
-      body: form,
-    });
+    const payload = await receiveAssistantStream(
+      "/api/voice/stream",
+      {
+        method: "POST",
+        body: form,
+      },
+      VOICE_STREAM_TIMEOUT_MS,
+    );
     if (generation !== appState.operationGeneration) return;
     if (!payload.transcript) {
       appState.busy = false;
       setVisualState("standby", "No detecté una frase clara");
+      notifyNative("onVoiceState", "idle", "No detecté una frase clara");
       return;
     }
     if (!payload.accepted) {
       appState.busy = false;
       setVisualState("standby", "En espera de “Jarvis”");
+      notifyNative("onVoiceState", "idle", "No escuché la palabra Jarvis");
       return;
     }
     if (payload.needs_command) {
       appState.busy = false;
       setVisualState("listening", "Te escucho");
+      notifyNative("onVoiceState", "idle", "Di ahora tu instrucción");
       return;
     }
     if (payload.response) {
@@ -2499,12 +2615,18 @@ async function sendUtterance(blob, wakeMode, interruptOnly = false) {
       appState.busy = false;
       setVisualState("ready", "Solicitud recibida");
     }
+    notifyNative("onVoiceState", "complete", "Respuesta recibida");
   } catch (error) {
     if (error.name === "AbortError") return;
     appState.busy = false;
     setVisualState("error", "El pipeline de voz no está disponible");
     addMessage("system", error.message);
     showToast(error.message, 6000);
+    notifyNative(
+      "onVoiceState",
+      appState.remote && !appState.remoteAuthenticated ? "locked" : "error",
+      error.message,
+    );
   }
 }
 
@@ -2512,26 +2634,85 @@ const microphone = new LocalMicrophone(sendUtterance);
 
 async function beginManualCapture() {
   if (appState.streaming && appState.speaking) cancelActiveClientWork();
-  if (appState.handsFree || (appState.busy && !appState.speaking)) return;
+  if (appState.remote && !appState.remoteAuthenticated) {
+    appState.manualIntent = false;
+    notifyNative("onVoiceState", "locked", "Desbloquea Jarvis con tu biometría");
+    return false;
+  }
+  if (!appState.initialized) {
+    appState.manualIntent = false;
+    notifyNative("onVoiceState", "error", "Jarvis todavía está conectando");
+    return false;
+  }
+  if (appState.handsFree || (appState.busy && !appState.speaking)) {
+    appState.manualIntent = false;
+    notifyNative("onVoiceState", "busy", "Jarvis todavía está procesando");
+    return false;
+  }
   if (appState.speaking) stopSpeaking();
   try {
     await microphone.startManual();
     if (!appState.manualIntent) {
       microphone.finish(false);
-      return;
+      notifyNative("onVoiceState", "idle", "Micrófono cerrado");
+      return false;
     }
     setVisualState("listening", "Habla ahora");
+    notifyNative("onVoiceState", "recording", "Te escucho mientras mantienes pulsado");
+    return true;
   } catch (error) {
+    appState.manualIntent = false;
     setVisualState("error", "No tengo permiso para usar el micrófono");
     showToast(`${error.message}. Revisa el permiso del navegador.`, 6000);
+    notifyNative("onVoiceState", "error", error.message);
+    return false;
   }
 }
 
 function endManualCapture() {
   appState.manualIntent = false;
-  if (!microphone.manual) return;
-  microphone.finish(false);
+  if (!microphone.manual) {
+    notifyNative("onVoiceState", "idle", "El micrófono no llegó a abrirse");
+    return false;
+  }
+  const submitted = microphone.finish(false);
+  notifyNative(
+    "onVoiceState",
+    submitted ? "processing" : "too_short",
+    submitted ? "Procesando tu voz" : "Mantén pulsado un poco más",
+  );
+  return submitted;
 }
+
+function cancelManualCapture() {
+  appState.manualIntent = false;
+  if (!microphone.manual && !microphone.capturing) return;
+  microphone.cancelManual();
+  if (!appState.busy) setVisualState("ready", "Micrófono cerrado");
+  notifyNative("onVoiceState", "idle", "Micrófono cerrado");
+}
+
+window.jarvisMobileVoice = {
+  async start() {
+    appState.manualIntent = true;
+    notifyNative("onVoiceState", "starting", "Abriendo micrófono");
+    return beginManualCapture();
+  },
+  stop() {
+    endManualCapture();
+  },
+  cancel() {
+    cancelManualCapture();
+  },
+  syncNativeState() {
+    syncNativeConnectionState();
+    notifyNative(
+      "onVoiceState",
+      microphone.manual ? "recording" : appState.busy ? "processing" : "idle",
+      "",
+    );
+  },
+};
 
 elements.micButton.addEventListener("pointerdown", (pointerEvent) => {
   pointerEvent.preventDefault();
@@ -2571,6 +2752,24 @@ window.addEventListener("keyup", (keyboardEvent) => {
   }
 });
 
+function disableHandsFreeMode(updateVisualState = true) {
+  microphone.disableHandsFree();
+  appState.handsFree = false;
+  elements.handsFreeButton.setAttribute("aria-pressed", "false");
+  elements.handsFreeButton.querySelector("small").textContent = "Di “Jarvis”";
+  elements.footerHint.textContent = "PULSA Y MANTÉN PARA HABLAR // ESPACIO TAMBIÉN FUNCIONA";
+  if (updateVisualState && !appState.busy) {
+    setVisualState("ready", "Mantén pulsado el núcleo para hablar");
+  }
+}
+
+window.jarvisDesktop = {
+  prepareForHide() {
+    cancelManualCapture();
+    if (appState.handsFree) disableHandsFreeMode(false);
+  },
+};
+
 elements.handsFreeButton.addEventListener("click", async () => {
   if (!appState.handsFree) {
     try {
@@ -2580,8 +2779,8 @@ elements.handsFreeButton.addEventListener("click", async () => {
       appState.handsFree = true;
       elements.handsFreeButton.setAttribute("aria-pressed", "true");
       elements.handsFreeButton.querySelector("small").textContent = "Escuchando “Jarvis”";
-      elements.footerHint.textContent = "MODO MANOS LIBRES // TODO EL AUDIO SE PROCESA LOCALMENTE";
-      showToast("Modo manos libres activo. El audio se procesa únicamente en este equipo.");
+      elements.footerHint.textContent = "MODO AMBIENTAL // MICRÓFONO VISIBLE Y CONTROLADO";
+      showToast("Modo ambiental activo. Solo cada frase terminada se envía al núcleo privado de Jarvis.");
     } catch (error) {
       microphone.disableHandsFree();
       setVisualState("error", "No pude activar el micrófono");
@@ -2590,12 +2789,7 @@ elements.handsFreeButton.addEventListener("click", async () => {
       elements.handsFreeButton.disabled = false;
     }
   } else {
-    microphone.disableHandsFree();
-    appState.handsFree = false;
-    elements.handsFreeButton.setAttribute("aria-pressed", "false");
-    elements.handsFreeButton.querySelector("small").textContent = "Di “Jarvis”";
-    elements.footerHint.textContent = "PULSA Y MANTÉN PARA HABLAR // ESPACIO TAMBIÉN FUNCIONA";
-    setVisualState("ready", "Mantén pulsado el núcleo para hablar");
+    disableHandsFreeMode();
   }
 });
 
@@ -2753,7 +2947,13 @@ elements.remotePairingForm.addEventListener("submit", async (event) => {
   try {
     await pairRemoteDevice();
   } catch (error) {
-    setRemoteGateError(error.name === "NotAllowedError" ? "Operación cancelada." : error.message);
+    setRemoteGateError(
+      error.name === "NotAllowedError"
+        ? "Operación cancelada."
+        : error.name === "InvalidStateError"
+          ? "Esta passkey ya existe. Pulsa «Usar mi passkey existente»."
+          : error.message,
+    );
   } finally {
     button.disabled = false;
   }
@@ -2778,6 +2978,10 @@ window.addEventListener("online", () => {
   if (!appState.initialized) void bootstrapApplication();
 });
 document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    cancelManualCapture();
+    if (window.__JARVIS_DESKTOP__ && appState.handsFree) disableHandsFreeMode(false);
+  }
   if (!document.hidden && !appState.initialized) void bootstrapApplication();
 });
 
@@ -2808,7 +3012,17 @@ elements.emergencyStopButton.addEventListener("click", async () => {
   }
 });
 
-function drawWaveform() {
+let lastWaveformFrame = 0;
+
+function drawWaveform(frameTime = performance.now()) {
+  const waveformActive = microphone.capturing
+    || ["listening", "thinking", "speaking", "transcribing"].includes(appState.visualState);
+  const minimumInterval = waveformActive ? 16 : 80;
+  if (document.hidden || frameTime - lastWaveformFrame < minimumInterval) {
+    requestAnimationFrame(drawWaveform);
+    return;
+  }
+  lastWaveformFrame = frameTime;
   const canvas = elements.waveform;
   const rect = canvas.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
@@ -2884,6 +3098,7 @@ function startNeuralField() {
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let width = 0;
   let height = 0;
+  let lastFrame = 0;
 
   const resize = () => {
     const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -2901,10 +3116,16 @@ function startNeuralField() {
       if (!reducedMotion) window.requestAnimationFrame(draw);
       return;
     }
-    context.clearRect(0, 0, width, height);
     const active = ["listening", "thinking", "transcribing", "speaking"].includes(
       appState.visualState,
     );
+    const minimumInterval = active ? 32 : 100;
+    if (!reducedMotion && time - lastFrame < minimumInterval) {
+      window.requestAnimationFrame(draw);
+      return;
+    }
+    lastFrame = time;
+    context.clearRect(0, 0, width, height);
     const orbBounds = elements.micButton?.getBoundingClientRect();
     const centerX = orbBounds ? orbBounds.left + orbBounds.width / 2 : width / 2;
     const centerY = orbBounds ? orbBounds.top + orbBounds.height / 2 : height * 0.46;
@@ -3012,11 +3233,13 @@ if ("serviceWorker" in navigator) {
 
 function startCore() {
   if (appState.initialized) {
+    syncNativeConnectionState();
     connectStateSocket();
     refreshHealth();
     return;
   }
   appState.initialized = true;
+  syncNativeConnectionState();
   refreshHealth();
   appState.healthTimer = window.setInterval(refreshHealth, 30000);
   pollNotifications();

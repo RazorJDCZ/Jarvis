@@ -14,6 +14,7 @@ class Preferences(BaseModel):
     voice: Literal["am_onyx", "em_alex", "em_santa", "ef_dora"] = "am_onyx"
     voice_speed: float = Field(default=1.20, ge=0.75, le=1.25)
     proactive: bool = False
+    notification_level: Literal["all", "important", "urgent"] = "all"
     briefing_hour: int = Field(default=8, ge=0, le=23)
     quiet_start: int = Field(default=22, ge=0, le=23)
     quiet_end: int = Field(default=7, ge=0, le=23)

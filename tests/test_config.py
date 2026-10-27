@@ -74,6 +74,21 @@ def test_codex_configuration_defaults_to_account_models() -> None:
     assert settings.codex_effort == "high"
     assert settings.codex_action_effort == "high"
     assert settings.codex_coding_permissions == "jarvis-project-only"
+    assert settings.voice_pipeline_timeout == 90
+    assert settings.local_trusted_actions is True
+
+
+def test_file_search_defaults_are_bounded_and_safe(tmp_path: Path) -> None:
+    settings = Settings(project_root=tmp_path)
+
+    assert settings.configured_file_search_roots is None
+    assert settings.file_search_timeout == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize("seconds", [29, 301])
+def test_voice_pipeline_timeout_is_bounded(seconds: float) -> None:
+    with pytest.raises(ValueError, match="voz"):
+        Settings(voice_pipeline_timeout=seconds)
 
 
 @pytest.mark.parametrize("mode", ["cloud", "local", ""])

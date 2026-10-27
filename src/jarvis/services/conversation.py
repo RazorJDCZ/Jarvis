@@ -17,6 +17,7 @@ from jarvis.config import (
 from jarvis.providers.brain import AutoBrain, Brain
 from jarvis.services.analysis import AnalysisChoice, AnalysisCoordinator
 from jarvis.services.commands import SafeCommandRouter
+from jarvis.services.finance import finance_query
 from jarvis.services.information import InformationVerifier
 from jarvis.services.memory import MemoryService
 from jarvis.services.performance import token_sink
@@ -389,6 +390,9 @@ class ConversationService:
                 else "No tengo prioridades registradas. Puedes revisar Hoy en Appa.",
                 "local-today",
             )
+        if organizer is not None and finance_query(message):
+            self._supersede_pending_action(session_id)
+            return ConversationReply(organizer.finance.answer(message), "local-finance")
         mail = getattr(self, "mail", None)
         normalized_message = normalize_request(message)
         if (

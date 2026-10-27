@@ -1,14 +1,16 @@
-const CACHE_NAME = "jarvis-assistant-interface-v18";
+const CACHE_NAME = "jarvis-assistant-interface-v32";
 const CACHE_PREFIX = "jarvis-assistant-interface-";
 const STATIC_ASSETS = [
   "/",
   "/organizer",
-  "/static/organizer.js?v=2",
-  "/static/organizer.css?v=2",
+  "/static/organizer.js?v=5",
+  "/static/organizer.css?v=5",
   "/static/mail.css",
-  "/static/styles.css?v=agent-v10",
-  "/static/app.js?v=agent-v11",
-  "/static/assistant.js?v=assistant-v4",
+  "/static/mail.js?v=2",
+  "/static/mobile-shell.js?v=1",
+  "/static/styles.css?v=agent-v15",
+  "/static/app.js?v=agent-v19",
+  "/static/assistant.js?v=assistant-v8",
   "/static/icon.svg?v=agent-v9",
   "/manifest.webmanifest?v=agent-v9",
 ];
